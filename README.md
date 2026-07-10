@@ -10,12 +10,17 @@
 
 ## 현재 단계
 
-Phase 0 기획은 완료됐으며 **Phase 1: 프레임 탐색 기술 스파이크 인계 상태**이다.
+Phase 0 기획과 **Phase 1: 프레임 탐색 기술 스파이크**를 완료했다. 사용자 승인 전 Phase 2 최소 뷰어 구현은 시작하지 않는다.
 
-- 올바른 작업공간: `C:\AI_Codex\workspace\CCR`
-- 실제 로컬 샘플 1개 준비됨
-- Electron/React/TypeScript scaffold는 아직 없음
-- FFmpeg/ffprobe는 아직 준비되지 않았으며 취득 방식에 대한 사용자 승인이 필요함
+- 실제 로컬 샘플은 Git에 포함하지 않으며 컴퓨터별 `local-samples/`에서 확인함
+- Electron/React/TypeScript 최소 scaffold 작성됨
+- 데스크톱·모바일 공용 영상 분석 모델, 프레임 검증 규칙과 `VideoProbeProvider` 포트 작성됨
+- 고정 BtbN LGPL shared FFmpeg/ffprobe 취득·checksum·라이선스 기록 절차 작성됨
+- `FfmpegCliProbeProvider` 실제 실행, timeout·취소·출력 제한과 비식별 Sample A 분석 완료
+- 실제 비식별 샘플 세 개에서 프레임·PTS·픽셀 fingerprint 정확성 검증 완료
+- FFmpeg stdout RGBA rawvideo와 61프레임 RAM 구간 캐시를 Phase 2 기본안으로 결정
+- 전체 raw RAM, 전체 PNG 디스크와 181프레임 RAM 캐시는 실측 결과 기본안에서 제외
+- 최소 기술 검증 UI에서 파일 열기, Canvas 프레임 표시, 전후 이동, 직접 이동, PTS·cache 상태 표시 구현
 - 다음 작업은 [Phase 1 Handoff](HANDOFF_PHASE1.md)에서 이어간다.
 
 ## v0.1 범위

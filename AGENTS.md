@@ -12,6 +12,10 @@
 - MP4의 화면 픽셀 보정과 DICOM의 HU 기반 window를 혼동하지 않는다. MP4 preset에는 HU 값을 붙이지 않는다.
 - 원본 영상은 읽기 전용으로 취급하고, 환자 영상·파일명·사용 정보를 외부로 전송하지 않는다.
 - 사용자가 명시적으로 승인하기 전 DICOM, PACS, AI 또는 클라우드 기능으로 범위를 넓히지 않는다.
+- 향후 모바일 앱을 개발할 계획이 있으므로 핵심 기능의 의미와 데이터 모델은 데스크탑과 모바일에서 공유 가능하게 설계한다.
+- 데스크탑과 모바일의 화면 구성·조작 방식은 크게 달라질 수 있으므로 UI 구현은 플랫폼별로 분리하고, 공통 로직을 특정 UI나 Electron에 묶지 않는다.
+- 공통화는 데이터 모델, 검증 규칙, 좌표계, 프로젝트 schema처럼 의미가 같아야 하는 영역에 우선 적용한다.
+- 데스크탑 프레임 이동의 hot path에는 불필요한 IPC, JSON 직렬화, 프로세스 재실행, 과한 추상화 비용을 넣지 않는다.
 
 ## 작업 순서
 
@@ -20,16 +24,16 @@
 3. 검증: 가능한 명령, 테스트, 파일 확인으로 결과를 확인한다.
 4. 요약: 변경 내용과 남은 위험을 짧게 보고한다.
 
-## 현재 단계: Phase 1 기술 스파이크
+## 현재 단계: Phase 1 완료, Phase 2 승인 대기
 
 - Phase 0 기획은 완료됐다.
-- 올바른 작업공간은 `C:\AI_Codex\workspace\CCR`이다.
 - `HANDOFF_PHASE1.md`를 읽고 인계 상태와 차단 사항을 확인한다.
-- 사용자는 Electron + React + TypeScript 기반의 최소 Phase 1 기술 스파이크를 승인했다.
-- 허용 범위는 ffprobe 분석, frameIndex/PTS 관리, 전후 프레임 이동, 캐시 전략 비교, 최소 UI, 측정, 자동 테스트와 결과 문서이다.
-- FFmpeg 바이너리는 제공처와 라이선스 방식을 사용자가 승인한 뒤에만 다운로드하거나 배치한다.
+- 사용자는 Electron + React + TypeScript 기반의 Phase 1 기술 스파이크를 승인했고 해당 범위는 완료됐다.
+- ffprobe 분석, frameIndex/PTS 관리, 실제 프레임 디코딩, 캐시 전략 비교, 최소 검증 UI, 측정과 자동 테스트를 완료했다.
+- FFmpeg는 Phase 1B에서 승인된 BtbN Windows x64 LGPL shared 고정 자산만 사용하며 `scripts/setup-ffmpeg.ps1`의 checksum 검증을 거쳐 로컬 배치한다.
+- Phase 1C 결과로 FFmpeg stdout RGBA rawvideo와 61프레임 RAM 구간 캐시(뒤 20, 현재 1, 앞 40)를 Phase 2 기본안으로 결정했다.
 - 주석, 이미지 저장, Sharp, Denoise, Video Display Preset, 프로젝트 저장, DICOM, PACS 및 Phase 2 제품 기능은 구현하지 않는다.
-- 기술 스파이크 완료 후 Phase 2로 넘어가지 않고 결과와 다음 승인 사항을 보고한다.
+- 사용자 승인 전 Phase 2로 넘어가지 않고 결과와 다음 승인 사항을 보고한다.
 
 ## 단계별 개발 규칙
 
@@ -39,10 +43,12 @@
 - 측정하지 않은 성능을 주장하지 않는다.
 - `frameIndex`와 PTS를 혼동하지 않고 FPS만으로 프레임 위치를 계산하지 않는다.
 - 원본 MP4를 수정하거나 재인코딩하지 않는다.
+- `src/domain`에는 플랫폼·UI·Electron IPC·파일 시스템 의존성을 넣지 않는다.
+- 프레임 분석, 프로젝트 schema, 주석 좌표, 표시 보정 preset처럼 모바일에서도 동일해야 하는 규칙은 공통 코어로 유지한다.
 
 ## Troubleshooting
 
-- Codex, Browser, Windows, 권한, 샌드박스 또는 실행 환경 문제가 의심되면 먼저 `C:\AI_Codex\workspace\공용 설정\troubleshooting\troubleshooting.md`를 확인한다.
+- Codex, Browser, Windows, 권한, 샌드박스 또는 실행 환경 문제가 의심되면 먼저 현재 환경의 공용 troubleshooting 문서를 확인한다.
 - 여러 프로젝트에서 재발할 수 있는 새 환경 문제를 해결했다면 공용 문서에 증상, 원인, 해결 절차와 검증 방법을 기록한다.
 - CT Cine Reviewer에서만 발생하는 영상 처리, 렌더링, 상태, 캐시 또는 배포 문제는 `docs/troubleshooting.md`에 기록한다.
 - 같은 해결 절차를 두 문서에 중복 작성하지 않는다. 프로젝트 문제에 공용 원인이 섞여 있으면 공용 문서를 참조하고 프로젝트별 조건만 기록한다.

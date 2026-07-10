@@ -1,0 +1,30 @@
+{
+  "name": "ct-cine-reviewer",
+  "version": "0.1.0-phase1",
+  "private": true,
+  "description": "Phase 1 technical spike for local CT cine MP4 frame review.",
+  "type": "module",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.electron.json && vite build",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "analyze:sample-a": "tsx scripts/analyze-sample-a.ts",
+    "benchmark:phase1c": "node --expose-gc --import tsx scripts/benchmark-phase1c.ts",
+    "benchmark:ipc": "electron scripts/electron-ipc-benchmark.cjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "electron": "^43.1.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}

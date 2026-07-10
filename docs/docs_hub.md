@@ -21,15 +21,18 @@
 | Data and State Model | `04_DATA_AND_STATE_MODEL.md` | 원본 식별, 프레임, 보정, 주석, preset, 프로젝트 저장 개념 |
 | Roadmap | `05_ROADMAP.md` | Phase별 목적, 산출물, 진입·완료 조건과 사용자 승인 |
 | Decisions and Open Questions | `06_DECISIONS_AND_OPEN_QUESTIONS.md` | 확정 사항, 제안, 미결정과 Phase 1 승인 체크리스트 |
+| Phase 1 Spike Results | `07_PHASE1_SPIKE_RESULTS.md` | Phase 1 scaffold, 테스트, 실제 샘플 측정 결과와 남은 차단 사항 |
+| FFmpeg Distribution | `08_FFMPEG_DISTRIBUTION.md` | 고정 BtbN 자산, checksum, buildconf, 라이선스와 취득 절차 |
+| Frame Decoding and Cache | `09_FRAME_DECODING_AND_CACHE.md` | Phase 1C 프레임 전달·정확성·캐시 실측과 추천 전략 |
 | Project Troubleshooting | `troubleshooting.md` | CT Cine Reviewer에서만 발생하는 문제와 검증된 해결 방법 |
 | Docs Hub | `docs_hub.md` | 프로젝트 문서 목록과 위치 안내 |
 
 ## 현재 단계
 
 - Phase 0 기획은 완료됐다.
-- Phase 1 기술 스파이크는 인계 상태이며 scaffold는 아직 생성하지 않았다.
-- 로컬 샘플은 준비됐고 FFmpeg 취득 방식에 대한 사용자 승인이 남아 있다.
-- Phase 1 완료 전 Phase 2 제품 기능을 시작하지 않는다.
+- Phase 1 기술 스파이크와 Electron/React/TypeScript 최소 검증 UI 구현을 완료했다.
+- Phase 1C 프레임 디코딩과 캐시 전략 비교를 완료하고 61-frame RAM 구간 캐시를 추천안으로 결정했다.
+- 사용자 승인 전 Phase 2 제품 기능, 재생, 보정과 주석을 시작하지 않는다.
 
 ## 갱신 규칙
 

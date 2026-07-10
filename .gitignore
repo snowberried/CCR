@@ -14,6 +14,7 @@ tools/ffmpeg/
 # Node / Electron build output
 node_modules/
 dist/
+dist-electron/
 out/
 coverage/
 *.log

@@ -19,12 +19,25 @@
 | 개인정보 | 로컬 처리, 클라우드·로그인·텔레메트리 없음 | 환자 자료 외부 전송 최소화 |
 | v0.1 제외 | DICOM, PACS, AI, 클라우드, 실제 HU 측정 | 동영상 핵심 완성도에 집중 |
 | 개발 방식 | 작은 Phase, 각 단계 검증 및 다음 단계 전 사용자 승인 | 과설계와 추측 구현 방지 |
+| 공통 코어 | 영상 분석 모델과 검증 규칙은 플랫폼 독립 TypeScript로 유지 | 향후 모바일에서 같은 의미와 데이터 계약을 재사용하기 위해 |
+| 분석 포트 | `VideoProbeProvider<TSource>`의 입력은 플랫폼별 타입, 출력은 공통 결과 | Windows 경로를 모바일 입력 모델에 강제하지 않기 위해 |
+| PTS 저장 | 원시 정수 문자열과 초 단위 값을 함께 보존 | 정확한 순서 검증과 화면 표시를 분리하기 위해 |
+| Phase 1 기술 구성 | Electron + React + TypeScript scaffold와 공통 포트 검증 | 현재 기술 스파이크 범위에서 빌드와 mock 테스트가 통과함 |
+| FFmpeg 배포판 | BtbN `n8.1.2-21-gce3c09c101` Windows x64 LGPL shared 월말 고정 자산 | checksum·buildconf·H.264/H.265 decoder를 실제 검증함 |
+| FFmpeg 저장 정책 | 바이너리는 Git 제외, 고정 setup 스크립트와 배포 문서는 Git 보관 | 저장소 용량을 줄이면서 재현성과 checksum 검증을 유지하기 위해 |
+| 최소 Windows | Windows 10 22H2 이상 | BtbN이 이 버전 이상만 보장함 |
+| Sample A probe | 406×720 H.264, 518 frame entry, PTS 이상 0건, 전체 약 698ms | 실제 로컬 비식별 샘플 측정 결과 |
+| 프레임 전달 | FFmpeg stdout의 RGBA 8-bit rawvideo | 디스크에 프레임을 남기지 않고 Canvas ImageData와 직접 호환되며 실제 정확성 검증을 통과함 |
+| 기본 캐시 | 61프레임 RAM 구간 캐시: 뒤 20, 현재 1, 앞 40 | 약 68MiB로 hit p95 0.003ms 미만, miss p95 365.9~418.3ms를 달성함 |
+| 전체 캐시 | 전체 raw RAM과 전체 PNG 디스크 캐시는 기본안에서 제외 | 짧은 영상도 RAM 약 638MiB 증가, PNG는 최대 761MiB와 22초가 필요함 |
+| Electron IPC | 현재 406×720 RGBA payload는 IPC 전달 가능 | 1,169,280 bytes 30회 왕복 p95 약 3.4ms로 현재 목표의 병목이 아님 |
+| Phase 1C 정확성 | Sample A/B/C에서 frame/PTS 및 픽셀 fingerprint 불일치 0건 | presentation order baseline과 순·역·교대 탐색으로 검증함 |
 
 ## 현재 제안
 
 | 항목 | 1순위 제안 | 확정 조건 |
 | --- | --- | --- |
-| 기술 구성 | Electron + React + TypeScript + FFmpeg/ffprobe | Phase 1 시작 승인 |
+| 다음 단계 | 61프레임 RAM 캐시 기반 Phase 2 최소 뷰어 | 별도 사용자 승인과 현재 범위 유지 |
 | FFmpeg 연동 | 먼저 CLI process로 검증, native addon은 근거가 생길 때만 검토 | 성능·배포 측정 |
 | 초기 배포 | 포터블 Windows 앱 | 실제 사용 및 보안 정책 확인 |
 | 프로젝트 형식 | versioned JSON 계열 | schema와 저장 안전성 검토 |
@@ -33,11 +46,11 @@
 
 ## 중요한 미결정 사항
 
-### 1. 전체 선디코딩 대 구간 캐시
+### 1. 구간 캐시의 방향 적응
 
-- 선택지 A: 전체 선디코딩—이후 왕복이 단순하고 빠르지만 초기 시간·메모리·디스크 비용이 크다.
-- 선택지 B: 구간 캐시—첫 표시와 자원 사용에 유리하지만 캐시 miss 이전 탐색이 복잡하다.
-- 결정 근거: 대표 영상별 첫 표시, p95 탐색 지연, peak memory, disk 사용량.
+- 기본 61프레임 범위는 뒤 20, 현재 1, 앞 40으로 확정했다.
+- 역방향 연속 탐색에서는 miss가 더 많으므로 방향이 바뀌면 뒤 40, 앞 20으로 전환할지 미결정이다.
+- Phase 2에서 빠른 wheel 입력과 Canvas draw를 포함한 end-to-end 측정 후 결정한다.
 
 ### 2. 지원할 최대 영상 크기와 길이
 
@@ -79,8 +92,8 @@
 
 ### 9. 지원할 Windows 최소 버전
 
-- 실제 사용 PC의 Windows 버전과 GPU/드라이버를 확인해야 한다.
-- 지원 버전은 Electron/WebView/FFmpeg 선택과 배포 테스트에 영향을 준다.
+- Phase 1 기준 최소 버전은 Windows 10 22H2로 확정했다.
+- 실제 제품 배포 전 Electron과 GPU/드라이버 조합을 별도로 검증한다.
 
 ### 10. 샘플 영상 확보와 개인정보 제거
 
@@ -95,14 +108,21 @@
 
 ### 12. 기술 스택 최종 확정
 
-- Electron이 1순위이나 아직 구현 결정은 아니다.
-- Phase 1에서 프레임 전달·캐시·내보내기 성능이 부족하면 Tauri, Qt, .NET을 근거와 함께 재평가한다.
+- Phase 1 기준 데스크톱 구현은 Electron + React + TypeScript + FFmpeg CLI로 확정했다.
+- 향후 내보내기·고해상도·장시간 영상에서 측정된 병목이 생길 때만 Tauri, Qt, .NET 또는 native addon을 재평가한다.
 
 ## Phase 1 시작 전 사용자 승인 체크리스트
 
-- [ ] 대표 샘플 3~5개와 개인정보 처리 방식
-- [ ] Electron + React + TypeScript 기반 기술 스파이크
-- [ ] FFmpeg/ffprobe 바이너리 출처와 라이선스 검토
-- [ ] 스파이크가 UI 완성본이 아니라 디코딩·탐색 검증에 한정됨
-- [ ] 측정 결과에 따라 캐시 전략과 성능 목표를 조정할 수 있음
-- [ ] DICOM/PACS는 계속 범위 밖임
+- [x] 비식별 Sample A와 개인정보 처리 방식
+- [x] Electron + React + TypeScript 기반 기술 스파이크
+- [x] FFmpeg/ffprobe 바이너리 출처와 라이선스 검토
+- [x] Phase 1B를 ffprobe 분석으로 제한하고 디코딩·캐시는 제외
+- [x] 측정 결과에 따라 캐시 전략과 성능 목표를 조정할 수 있음
+- [x] DICOM/PACS는 계속 범위 밖임
+
+## Phase 2 시작 전 사용자 승인 체크리스트
+
+- [ ] 61프레임 RAM 캐시 기반 최소 뷰어 진입
+- [ ] 이동 방향별 cache 비율 전환을 측정 대상으로 포함
+- [ ] Phase 2 범위를 파일 열기·프레임 표시·정확한 전후 탐색·최소 상태 표시로 제한
+- [ ] 재생, 보정, 주석, 이미지 저장, DICOM/PACS는 계속 제외
