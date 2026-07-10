@@ -1,0 +1,24 @@
+# Patient and local media
+local-samples/
+local-cache/
+temp/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.ctreview.json
+
+# Project-local external binaries
+tools/ffmpeg/
+
+# Node / Electron build output
+node_modules/
+dist/
+out/
+coverage/
+*.log
+
+# Local environment
+.env
+.env.*
+!.env.example
