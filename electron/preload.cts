@@ -1,8 +1,10 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 contextBridge.exposeInMainWorld("ccr", {
   getRuntimeStatus: () => ipcRenderer.invoke("runtime:getStatus"),
   openVideo: () => ipcRenderer.invoke("frame:open"),
+  openDroppedVideo: (file: File) =>
+    ipcRenderer.invoke("frame:openDropped", { filePath: webUtils.getPathForFile(file) }),
   getFrame: (sessionId: string, frameIndex: number) =>
     ipcRenderer.invoke("frame:get", { sessionId, frameIndex }),
   cancelFrame: () => ipcRenderer.invoke("frame:cancel"),

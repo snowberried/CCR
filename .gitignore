@@ -16,6 +16,8 @@ node_modules/
 dist/
 dist-electron/
 out/
+release/
+artifacts/
 coverage/
 *.log
 

@@ -39,6 +39,12 @@ export type FrameCacheStatus = {
   byteLength: number;
   hits: number;
   misses: number;
+  direction: "forward" | "reverse" | "balanced";
+  budgetBytes: number;
+  bytesPerFrame: number;
+  frameCapacity: number;
+  reusedFrames: number;
+  decodedFrames: number;
 };
 
 export function validateFrameRequest(request: FrameRequest, frameCount: number): FrameDecodeErrorCode | null {

@@ -24,16 +24,18 @@
 3. 검증: 가능한 명령, 테스트, 파일 확인으로 결과를 확인한다.
 4. 요약: 변경 내용과 남은 위험을 짧게 보고한다.
 
-## 현재 단계: Phase 1 완료, Phase 2 승인 대기
+## 현재 단계: Phase 2.1 설치형 파일럿 검증 대기
 
 - Phase 0 기획은 완료됐다.
 - `HANDOFF_PHASE1.md`를 읽고 인계 상태와 차단 사항을 확인한다.
-- 사용자는 Electron + React + TypeScript 기반의 Phase 1 기술 스파이크를 승인했고 해당 범위는 완료됐다.
-- ffprobe 분석, frameIndex/PTS 관리, 실제 프레임 디코딩, 캐시 전략 비교, 최소 검증 UI, 측정과 자동 테스트를 완료했다.
+- Phase 1 기술 스파이크와 Phase 2 최소 실사용 뷰어 범위는 승인됐고 완료됐다.
+- 파일 열기, Canvas 표시, 정확한 프레임 탐색, 상태·진단 표시와 방향성 RAM cache를 구현했다.
 - FFmpeg는 Phase 1B에서 승인된 BtbN Windows x64 LGPL shared 고정 자산만 사용하며 `scripts/setup-ffmpeg.ps1`의 checksum 검증을 거쳐 로컬 배치한다.
-- Phase 1C 결과로 FFmpeg stdout RGBA rawvideo와 61프레임 RAM 구간 캐시(뒤 20, 현재 1, 앞 40)를 Phase 2 기본안으로 결정했다.
-- 주석, 이미지 저장, Sharp, Denoise, Video Display Preset, 프로젝트 저장, DICOM, PACS 및 Phase 2 제품 기능은 구현하지 않는다.
-- 사용자 승인 전 Phase 2로 넘어가지 않고 결과와 다음 승인 사항을 보고한다.
+- 기본 cache 예산은 72MiB, 목표 최소 5·최대 61프레임이다. 대표 영상은 순방향 20/40, 역방향 40/20, 교대 30/30을 사용한다.
+- 자동 재생, Zoom/Pan, 보정, 주석, 이미지 저장, 프로젝트 저장, DICOM과 PACS는 아직 구현하지 않는다.
+- 실제 사용 피드백과 사용자 승인 전 Phase 3로 넘어가지 않는다.
+- NSIS 패키징과 unpacked 검증은 완료됐지만 실제 설치·제거·재설치는 아직 시행하지 않았다.
+- `HANDOFF_PHASE2_1.md`의 미완료 검증을 끝내기 전 제품 기능을 추가하지 않는다.
 
 ## 단계별 개발 규칙
 

@@ -88,3 +88,38 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ffmpeg.p
 
 - `scripts/setup-ffmpeg.ps1`
 - `docs/08_FFMPEG_DISTRIBUTION.md`
+## 2026-07-10 Electron 프로덕션 창이 흰 화면인 경우
+
+상태: 검증 완료
+
+### 증상
+
+- Vite 개발 서버에서는 UI가 보이지만 `npm start`의 `file://` 프로덕션 창은 흰 화면이다.
+
+### 원인
+
+- Vite 기본 asset URL이 `/assets/...` 절대 경로라 `file://`에서 앱의 `dist/assets`가 아닌 드라이브 루트를 찾았다.
+
+### 해결과 검증
+
+- `vite.config.ts`에 `base: "./"`를 둔다.
+- `npm run build` 후 실제 Electron 창에서 dark viewer UI가 표시되는지 확인한다.
+
+## 2026-07-10 Electron preload bridge가 없는 경우
+
+상태: 검증 완료
+
+### 증상
+
+- UI는 보이지만 파일 열기 시 `ELECTRON_RUNTIME_REQUIRED`가 표시된다.
+
+### 원인
+
+- sandbox preload가 ESM `preload.js`로 출력되어 실행되지 않았다.
+
+### 해결과 검증
+
+- preload source를 `preload.cts`로 두어 CommonJS `preload.cjs`를 출력한다.
+- `electron/main.ts`가 같은 출력 파일을 가리키게 한다.
+- `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`는 유지한다.
+- 실제 Electron 파일 대화상자로 synthetic 영상과 Sample A/B/C를 열어 bridge 동작을 검증한다.

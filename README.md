@@ -10,7 +10,7 @@
 
 ## 현재 단계
 
-Phase 0 기획과 **Phase 1: 프레임 탐색 기술 스파이크**를 완료했다. 사용자 승인 전 Phase 2 최소 뷰어 구현은 시작하지 않는다.
+Phase 0 기획과 Phase 1 기술 스파이크를 거쳐 **Phase 2 최소 실사용 뷰어**를 구현했다. Phase 2.1 NSIS 설치 패키지와 unpacked 검증까지 완료했으며, 실제 설치·제거·재설치는 아직 시행하지 않았다. 자세한 재개 지점은 [Phase 2.1 Handoff](HANDOFF_PHASE2_1.md)에 기록했다.
 
 - 실제 로컬 샘플은 Git에 포함하지 않으며 컴퓨터별 `local-samples/`에서 확인함
 - Electron/React/TypeScript 최소 scaffold 작성됨
@@ -20,8 +20,13 @@ Phase 0 기획과 **Phase 1: 프레임 탐색 기술 스파이크**를 완료했
 - 실제 비식별 샘플 세 개에서 프레임·PTS·픽셀 fingerprint 정확성 검증 완료
 - FFmpeg stdout RGBA rawvideo와 61프레임 RAM 구간 캐시를 Phase 2 기본안으로 결정
 - 전체 raw RAM, 전체 PNG 디스크와 181프레임 RAM 캐시는 실측 결과 기본안에서 제외
-- 최소 기술 검증 UI에서 파일 열기, Canvas 프레임 표시, 전후 이동, 직접 이동, PTS·cache 상태 표시 구현
-- 다음 작업은 [Phase 1 Handoff](HANDOFF_PHASE1.md)에서 이어간다.
+- 파일 선택, `Ctrl+O`, MP4 drag/drop과 세션 전환 구현
+- Canvas 원본 비율 표시와 UI 1 기반 프레임 탐색 구현
+- 72MiB 예산 기반 최대 61프레임 방향성 RAM cache 구현
+- Sample A/B/C와 합성 HEVC·1080p/60fps·VFR·B-frame·회전 metadata QA 완료
+- 실행: `npm start`
+- Windows 패키지 생성: `npm run package:win`
+- 세부 결과는 [Phase 2 Minimum Viewer](docs/10_PHASE2_MINIMUM_VIEWER.md)에서 확인한다.
 
 ## v0.1 범위
 

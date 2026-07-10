@@ -1,6 +1,6 @@
-# Phase 1 Handoff
+# Project Handoff
 
-이 문서는 CT Cine Reviewer의 완료된 Phase 1 기술 스파이크와 Phase 2 승인 대기 상태를 인계한다.
+이 문서는 CT Cine Reviewer의 완료된 Phase 1 기술 스파이크와 Phase 2 최소 실사용 뷰어 상태를 인계한다.
 
 ## 현재 상태
 
@@ -23,6 +23,10 @@
 - Phase 1C Sample A/B/C: 2,879/2,560/518프레임, 모두 406×720 H.264, frame/PTS·fingerprint 불일치 0건
 - 캐시 결정: stdout RGBA + 61프레임 RAM cache(뒤 20, 현재 1, 앞 40), 약 68MiB
 - 성능: first 241~273ms, hit p95 0.003ms 미만, miss p95 366~418ms, far seek 312~366ms
+- Phase 2 UI: 파일 선택·Ctrl+O·drag/drop, Canvas 표시, UI 1 기반 ±1/±5/Home/End/직접 입력 구현
+- Phase 2 cache: 72MiB 예산, 최대 61프레임, 방향성 20/40·40/20·30/30과 overlap 재사용 구현
+- Phase 2 QA: 실제 Sample A/B/C 정확성 오류 0건, 합성 HEVC·1080p/60fps·VFR·B-frame·회전 metadata 통과
+- Phase 2 soak: 20분, 52,410회 요청, 20회 파일 전환, 오류 0건, 후반 heap 기울기 약 +0.7KiB/분
 - `local-samples/`: 현재 컴퓨터의 동영상 후보를 비식별 분류해 대표 2개와 짧은 1개를 사용함
 - 샘플 총 크기: 미측정
 - 실제 파일명과 전체 경로는 문서·로그·완료 보고에 기록하지 않음
@@ -43,7 +47,7 @@
 
 다음 사항은 아직 승인되지 않았다.
 
-- Phase 2 최소 뷰어 구현
+- Phase 3 기능 범위
 - 재생, 보정, 주석, 이미지 저장 등 제품 기능
 
 ## FFmpeg 확정 상태
@@ -88,6 +92,7 @@
 7. `docs/troubleshooting.md`
 8. `docs/07_PHASE1_SPIKE_RESULTS.md`
 9. `docs/09_FRAME_DECODING_AND_CACHE.md`
+10. `docs/10_PHASE2_MINIMUM_VIEWER.md`
 
 환경·권한·샌드박스 문제가 발생하면 현재 환경의 공용 troubleshooting 문서를 먼저 확인한다.
 
@@ -97,9 +102,9 @@
 2. `.gitignore`가 `local-samples/`와 `tools/ffmpeg/`를 제외하는지 확인한다.
 3. 샘플 수만 확인하고 실제 파일명을 출력하지 않는다.
 4. FFmpeg 로컬 도구가 없으면 고정 setup 스크립트로 checksum 검증 후 준비한다.
-5. `npm test`, `npm run build`로 현재 Phase 1C 기준선을 확인한다.
-6. 필요할 때만 `npm run benchmark:phase1c`와 `npm run benchmark:ipc`를 다시 실행한다.
-7. 다음 사용자 승인 전에는 Phase 2 최소 뷰어와 제품 기능을 시작하지 않는다.
+5. `npm test`, `npm run build`로 현재 Phase 2 기준선을 확인한다.
+6. `npm start`로 Electron 최소 뷰어를 실행한다.
+7. 다음 사용자 승인 전에는 Phase 3와 제품 기능을 시작하지 않는다.
 
 ## 개인정보 규칙
 
@@ -113,11 +118,10 @@
 ## 다음 작업에 보낼 첫 메시지
 
 ```text
-HANDOFF_PHASE1.md, AGENTS.md와 docs/09_FRAME_DECODING_AND_CACHE.md를 먼저 읽어라.
-Phase 2 최소 뷰어 진입이 승인되기 전에는 구현을 시작하지 마라.
-승인되면 61프레임 RAM 캐시 기본안을 사용하고 파일 열기·프레임 표시·정확한 탐색에만 범위를 제한하라.
+HANDOFF_PHASE1.md, AGENTS.md와 docs/10_PHASE2_MINIMUM_VIEWER.md를 먼저 읽어라.
+Phase 2 실제 사용 피드백을 확인하고 Phase 3 범위를 사용자에게 승인받기 전에는 구현을 시작하지 마라.
 ```
 
 ## 인계 시점의 차단 사항
 
-Phase 1C 프레임 디코딩·캐시 기술 스파이크는 완료됐다. 다음 차단 사항은 61프레임 RAM 캐시 기반 Phase 2 최소 뷰어 진입에 대한 사용자 승인이다.
+Phase 2 최소 실사용 뷰어는 완료됐다. 다음 차단 사항은 실제 사용 피드백과 Phase 3 범위에 대한 사용자 승인이다.

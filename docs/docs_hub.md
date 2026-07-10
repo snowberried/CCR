@@ -7,7 +7,8 @@
 | 문서 | 위치 | 용도 |
 | --- | --- | --- |
 | 프로젝트 개요 | `../README.md` | CT Cine Reviewer 명칭, 현재 단계, v0.1 범위와 제외 범위 |
-| Phase 1 Handoff | `../HANDOFF_PHASE1.md` | 새 Codex 프로젝트에서 Phase 1을 이어가기 위한 현재 상태와 시작 절차 |
+| Latest Project Handoff | `../HANDOFF_PHASE2_1.md` | Phase 2.1 패키징·unpacked 검증 상태와 설치 파일럿 재개 절차 |
+| Phase 1 Handoff | `../HANDOFF_PHASE1.md` | Phase 1~2 구현 과정과 이전 기준선 |
 | 프로젝트 작업 지침 | `../AGENTS.md` | 중요한 결정 전 사용자 확인, 의료·보안 경계, 단계별 검증 원칙 |
 
 ## 기획 문서
@@ -24,15 +25,17 @@
 | Phase 1 Spike Results | `07_PHASE1_SPIKE_RESULTS.md` | Phase 1 scaffold, 테스트, 실제 샘플 측정 결과와 남은 차단 사항 |
 | FFmpeg Distribution | `08_FFMPEG_DISTRIBUTION.md` | 고정 BtbN 자산, checksum, buildconf, 라이선스와 취득 절차 |
 | Frame Decoding and Cache | `09_FRAME_DECODING_AND_CACHE.md` | Phase 1C 프레임 전달·정확성·캐시 실측과 추천 전략 |
+| Phase 2 Minimum Viewer | `10_PHASE2_MINIMUM_VIEWER.md` | 최소 실사용 UI, 방향성 cache, 실제·합성 QA와 메모리 검사 |
 | Project Troubleshooting | `troubleshooting.md` | CT Cine Reviewer에서만 발생하는 문제와 검증된 해결 방법 |
 | Docs Hub | `docs_hub.md` | 프로젝트 문서 목록과 위치 안내 |
 
 ## 현재 단계
 
 - Phase 0 기획은 완료됐다.
-- Phase 1 기술 스파이크와 Electron/React/TypeScript 최소 검증 UI 구현을 완료했다.
-- Phase 1C 프레임 디코딩과 캐시 전략 비교를 완료하고 61-frame RAM 구간 캐시를 추천안으로 결정했다.
-- 사용자 승인 전 Phase 2 제품 기능, 재생, 보정과 주석을 시작하지 않는다.
+- Phase 1 기술 스파이크와 Phase 2 최소 실사용 뷰어를 완료했다.
+- Phase 2.1 NSIS 패키징과 unpacked smoke test를 완료했고 실제 설치·제거·재설치는 보류했다.
+- 메모리 예산 기반 최대 61-frame 방향성 RAM cache를 적용했다.
+- 사용자 승인 전 Phase 3, 재생, Zoom/Pan, 보정, 주석과 저장을 시작하지 않는다.
 
 ## 갱신 규칙
 

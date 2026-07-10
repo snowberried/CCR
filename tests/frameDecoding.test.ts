@@ -36,6 +36,12 @@ test("coalesces requests and rejects stale results", async () => {
     byteLength: 0,
     hits: 0,
     misses: 0,
+    direction: "forward",
+    budgetBytes: 1024,
+    bytesPerFrame: 4,
+    frameCapacity: 10,
+    reusedFrames: 0,
+    decodedFrames: 0,
   };
   const provider: VideoFrameProvider<number> = {
     async requestFrame(request: FrameRequest): Promise<FrameDecodeResult<number>> {
@@ -70,4 +76,47 @@ test("coalesces requests and rejects stale results", async () => {
   const firstResult = await first;
   assert.equal(firstResult.accepted, false);
   assert.equal(firstResult.result, null);
+});
+
+test("accepts a new request after cancellation", async () => {
+  const status: FrameCacheStatus = {
+    startFrameIndex: null,
+    endFrameIndex: null,
+    frameCount: 0,
+    byteLength: 0,
+    hits: 0,
+    misses: 0,
+    direction: "forward",
+    budgetBytes: 4,
+    bytesPerFrame: 4,
+    frameCapacity: 1,
+    reusedFrames: 0,
+    decodedFrames: 0,
+  };
+  const provider: VideoFrameProvider<number> = {
+    async requestFrame(request) {
+      return {
+        request,
+        descriptor: {
+          frameIndex: request.frameIndex,
+          pts: String(request.frameIndex),
+          ptsSeconds: request.frameIndex,
+          width: 1,
+          height: 1,
+          pixelFormat: "rgba",
+          byteLength: 4,
+          fingerprint: String(request.frameIndex),
+        },
+        payload: request.frameIndex,
+        cache: "miss",
+      };
+    },
+    getCacheStatus: () => status,
+    closeSession: async () => {},
+  };
+  const coordinator = new FrameRequestCoordinator(provider);
+  coordinator.cancel();
+  const result = await coordinator.request("session", 4);
+  assert.equal(result.accepted, true);
+  assert.equal(result.result?.payload, 4);
 });

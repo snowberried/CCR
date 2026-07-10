@@ -1,30 +1,96 @@
 {
   "name": "ct-cine-reviewer",
-  "version": "0.1.0-phase1",
+  "version": "0.2.0-phase2",
   "private": true,
-  "description": "Phase 1 technical spike for local CT cine MP4 frame review.",
+  "author": "snowberried",
+  "description": "Local CT cine MP4 frame review viewer.",
   "type": "module",
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.electron.json && vite build",
+    "build": "node --import tsx scripts/clean-build-output.ts && tsc -p tsconfig.json && tsc -p tsconfig.electron.json && vite build",
     "test": "node --import tsx --test tests/*.test.ts",
     "analyze:sample-a": "tsx scripts/analyze-sample-a.ts",
     "benchmark:phase1c": "node --expose-gc --import tsx scripts/benchmark-phase1c.ts",
-    "benchmark:ipc": "electron scripts/electron-ipc-benchmark.cjs"
+    "benchmark:ipc": "electron scripts/electron-ipc-benchmark.cjs",
+    "benchmark:phase2": "node --import tsx scripts/benchmark-phase2-cache.ts",
+    "qa:phase2": "node --import tsx scripts/qa-phase2-synthetic.ts",
+    "soak:phase2": "node --expose-gc --import tsx scripts/soak-phase2.ts --minutes=20",
+    "start": "npm run build && electron .",
+    "package:unpacked": "npm run build && electron-builder --win dir --x64",
+    "package:win": "npm run build && electron-builder --win nsis --x64 && node --import tsx scripts/finalize-windows-package.ts",
+    "verify:package": "node --import tsx scripts/finalize-windows-package.ts --verify-only"
   },
   "dependencies": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.4",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
     "electron": "^43.1.0",
+    "electron-builder": "^26.15.3",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.7"
+  },
+  "build": {
+    "appId": "com.snowberried.ctcinereviewer",
+    "productName": "CT Cine Reviewer",
+    "executableName": "CT Cine Reviewer",
+    "artifactName": "CT-Cine-Reviewer-Setup-${version}.${ext}",
+    "asar": true,
+    "directories": {
+      "output": "artifacts"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "tools/ffmpeg/bin",
+        "to": "tools/ffmpeg/bin"
+      },
+      {
+        "from": "tools/ffmpeg/licenses",
+        "to": "tools/ffmpeg/licenses"
+      },
+      {
+        "from": "tools/ffmpeg",
+        "to": "tools/ffmpeg",
+        "filter": [
+          "VERSION.md",
+          "BUILDINFO.md",
+          "SHA256SUMS.txt"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CT Cine Reviewer",
+      "uninstallDisplayName": "CT Cine Reviewer",
+      "deleteAppDataOnUninstall": true
+    }
   }
 }

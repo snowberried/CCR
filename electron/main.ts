@@ -2,7 +2,8 @@ import { app, BrowserWindow, ipcMain } from "electron";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { registerFrameIpc } from "./frameIpc.js";
+import { registerFrameIpc, shutdownFrameIpcResources } from "./frameIpc.js";
+import { resolveFfmpegRuntimePaths } from "./runtimePaths.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -15,7 +16,7 @@ function createWindow() {
     minHeight: 620,
     title: "CT Cine Reviewer",
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -32,12 +33,14 @@ function createWindow() {
 
 ipcMain.handle("runtime:getStatus", () => {
   const appRoot = app.getAppPath();
+  const { ffmpegPath, ffprobePath } = resolveFfmpegRuntimePaths({
+    isPackaged: app.isPackaged,
+    appPath: appRoot,
+    resourcesPath: process.resourcesPath,
+  });
   return {
-    phase: "phase1c-frame",
-    ffmpegConfigured:
-      existsSync(path.join(appRoot, "tools", "ffmpeg", "bin", "ffmpeg.exe")) &&
-      existsSync(path.join(appRoot, "tools", "ffmpeg", "bin", "ffprobe.exe")),
-    sampleAnalysisReady: existsSync(path.join(appRoot, "local-samples", "Sample_A.mp4")),
+    phase: "phase2.1-windows-pilot",
+    ffmpegConfigured: existsSync(ffmpegPath) && existsSync(ffprobePath),
   };
 });
 
@@ -57,4 +60,14 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+let shutdownStarted = false;
+app.on("before-quit", (event) => {
+  if (shutdownStarted) {
+    return;
+  }
+  event.preventDefault();
+  shutdownStarted = true;
+  void shutdownFrameIpcResources().finally(() => app.quit());
 });

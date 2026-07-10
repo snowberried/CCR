@@ -6,7 +6,18 @@ import type {
 } from "../../src/domain/frameDecoding.js";
 import { validateFrameRequest } from "../../src/domain/frameDecoding.js";
 import type { VideoFrameProvider } from "../../src/application/ports/VideoFrameProvider.js";
-import { FfmpegRawFrameDecoder, RawFrameDecodeError } from "./FfmpegRawFrameDecoder.js";
+import {
+  CacheDirectionTracker,
+  cacheWindowForDirection,
+  createFrameCachePolicy,
+  type FrameCachePolicy,
+} from "../../src/domain/frameCachePolicy.js";
+import {
+  FfmpegRawFrameDecoder,
+  RawFrameDecodeError,
+  type DecodeRangeOptions,
+  type RawFrameRangeResult,
+} from "./FfmpegRawFrameDecoder.js";
 
 type CachedFrame = {
   descriptor: Awaited<ReturnType<FfmpegRawFrameDecoder["decodeRange"]>>["descriptors"][number];
@@ -23,10 +34,42 @@ export class FrameProviderError extends Error {
 export type SegmentFrameProviderOptions = {
   sessionId: string;
   frameCount: number;
-  decoder: FfmpegRawFrameDecoder;
+  decoder: FrameRangeDecoder;
+  width?: number;
+  height?: number;
+  cachePolicy?: FrameCachePolicy;
+  directional?: boolean;
   backwardFrames?: number;
   forwardFrames?: number;
 };
+
+export type FrameRangeDecoder = {
+  decodeRange(
+    startFrameIndex: number,
+    requestedCount: number,
+    options?: DecodeRangeOptions,
+  ): Promise<RawFrameRangeResult>;
+};
+
+type FrameRange = { start: number; end: number };
+
+function missingRanges(cache: ReadonlyMap<number, CachedFrame>, start: number, end: number): FrameRange[] {
+  const ranges: FrameRange[] = [];
+  let rangeStart: number | null = null;
+  for (let index = start; index <= end; index += 1) {
+    if (!cache.has(index) && rangeStart === null) {
+      rangeStart = index;
+    }
+    if (cache.has(index) && rangeStart !== null) {
+      ranges.push({ start: rangeStart, end: index - 1 });
+      rangeStart = null;
+    }
+  }
+  if (rangeStart !== null) {
+    ranges.push({ start: rangeStart, end });
+  }
+  return ranges;
+}
 
 function mapDecodeError(error: RawFrameDecodeError): FrameDecodeErrorCode {
   switch (error.code) {
@@ -46,15 +89,26 @@ function mapDecodeError(error: RawFrameDecodeError): FrameDecodeErrorCode {
 
 export class FfmpegSegmentFrameProvider implements VideoFrameProvider<Buffer> {
   private readonly cache = new Map<number, CachedFrame>();
-  private readonly backwardFrames: number;
-  private readonly forwardFrames: number;
+  private readonly policy: FrameCachePolicy;
+  private readonly fixedWindow: { backwardFrames: number; forwardFrames: number } | null;
+  private readonly directionTracker = new CacheDirectionTracker();
+  private readonly directional: boolean;
   private hits = 0;
   private misses = 0;
+  private reusedFrames = 0;
+  private decodedFrames = 0;
   private closed = false;
 
   constructor(private readonly options: SegmentFrameProviderOptions) {
-    this.backwardFrames = options.backwardFrames ?? 60;
-    this.forwardFrames = options.forwardFrames ?? 120;
+    const hasFixedWindow = options.backwardFrames !== undefined || options.forwardFrames !== undefined;
+    this.fixedWindow = hasFixedWindow
+      ? {
+          backwardFrames: options.backwardFrames ?? 0,
+          forwardFrames: options.forwardFrames ?? 0,
+        }
+      : null;
+    this.policy = options.cachePolicy ?? createFrameCachePolicy(options.width ?? 406, options.height ?? 720);
+    this.directional = options.directional ?? !hasFixedWindow;
   }
 
   async requestFrame(
@@ -69,6 +123,9 @@ export class FfmpegSegmentFrameProvider implements VideoFrameProvider<Buffer> {
       throw new FrameProviderError(requestError);
     }
 
+    const direction = this.directional
+      ? this.directionTracker.observe(request.frameIndex)
+      : "forward";
     const cached = this.cache.get(request.frameIndex);
     if (cached) {
       this.hits += 1;
@@ -81,19 +138,34 @@ export class FfmpegSegmentFrameProvider implements VideoFrameProvider<Buffer> {
     }
 
     this.misses += 1;
-    const startFrameIndex = Math.max(0, request.frameIndex - this.backwardFrames);
+    const window = this.fixedWindow ?? cacheWindowForDirection(this.policy.frameCapacity, direction);
+    const startFrameIndex = Math.max(0, request.frameIndex - window.backwardFrames);
     const endFrameIndex = Math.min(
       this.options.frameCount - 1,
-      request.frameIndex + this.forwardFrames,
+      request.frameIndex + window.forwardFrames,
     );
 
-    let decoded;
+    for (const frameIndex of this.cache.keys()) {
+      if (frameIndex < startFrameIndex || frameIndex > endFrameIndex) {
+        this.cache.delete(frameIndex);
+      }
+    }
+
+    const additions = new Map<number, CachedFrame>();
     try {
-      decoded = await this.options.decoder.decodeRange(
-        startFrameIndex,
-        endFrameIndex - startFrameIndex + 1,
-        { signal, retainPixels: true },
-      );
+      for (const range of missingRanges(this.cache, startFrameIndex, endFrameIndex)) {
+        const decoded = await this.options.decoder.decodeRange(
+          range.start,
+          range.end - range.start + 1,
+          { signal, retainPixels: true },
+        );
+        decoded.descriptors.forEach((descriptor, index) => {
+          additions.set(descriptor.frameIndex, {
+            descriptor,
+            pixels: decoded.pixelBuffers[index],
+          });
+        });
+      }
     } catch (error) {
       if (error instanceof RawFrameDecodeError) {
         throw new FrameProviderError(mapDecodeError(error));
@@ -105,13 +177,22 @@ export class FfmpegSegmentFrameProvider implements VideoFrameProvider<Buffer> {
       throw new FrameProviderError(signal?.aborted ? "DECODE_CANCELLED" : "SESSION_CHANGED");
     }
 
+    const nextCache = new Map<number, CachedFrame>();
+    let reused = 0;
+    for (let index = startFrameIndex; index <= endFrameIndex; index += 1) {
+      const existing = this.cache.get(index);
+      const added = additions.get(index);
+      if (existing) {
+        nextCache.set(index, existing);
+        reused += 1;
+      } else if (added) {
+        nextCache.set(index, added);
+      }
+    }
     this.cache.clear();
-    decoded.descriptors.forEach((descriptor, index) => {
-      this.cache.set(descriptor.frameIndex, {
-        descriptor,
-        pixels: decoded.pixelBuffers[index],
-      });
-    });
+    nextCache.forEach((frame, index) => this.cache.set(index, frame));
+    this.reusedFrames += reused;
+    this.decodedFrames += additions.size;
 
     const result = this.cache.get(request.frameIndex);
     if (!result) {
@@ -138,6 +219,14 @@ export class FfmpegSegmentFrameProvider implements VideoFrameProvider<Buffer> {
       byteLength,
       hits: this.hits,
       misses: this.misses,
+      direction: this.directional ? this.directionTracker.current() : "forward",
+      budgetBytes: this.policy.budgetBytes,
+      bytesPerFrame: this.policy.bytesPerFrame,
+      frameCapacity: this.fixedWindow
+        ? this.fixedWindow.backwardFrames + 1 + this.fixedWindow.forwardFrames
+        : this.policy.frameCapacity,
+      reusedFrames: this.reusedFrames,
+      decodedFrames: this.decodedFrames,
     };
   }
 

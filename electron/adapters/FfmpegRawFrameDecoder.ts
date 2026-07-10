@@ -104,6 +104,7 @@ export class FfmpegRawFrameDecoder {
       args.push("-ss", String(startFrame.ptsSeconds));
     }
     args.push(
+      "-noautorotate",
       "-i",
       this.options.sourcePath,
       "-map",
