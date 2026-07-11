@@ -159,6 +159,11 @@ export function parseFfprobeOutput(stdout: string): VideoProbeResult {
       durationSeconds: optionalNumber(videoStream.duration),
       reportedFrameCount: optionalInteger(videoStream.nb_frames),
       rotationDegrees: readRotation(videoStream),
+      pixelFormat: optionalString(videoStream.pix_fmt),
+      colorRange: optionalString(videoStream.color_range),
+      colorSpace: optionalString(videoStream.color_space),
+      colorPrimaries: optionalString(videoStream.color_primaries),
+      colorTransfer: optionalString(videoStream.color_transfer),
     },
     frames,
   });

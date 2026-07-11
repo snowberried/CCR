@@ -26,6 +26,7 @@
 | FFmpeg Distribution | `08_FFMPEG_DISTRIBUTION.md` | 고정 BtbN 자산, checksum, buildconf, 라이선스와 취득 절차 |
 | Frame Decoding and Cache | `09_FRAME_DECODING_AND_CACHE.md` | Phase 1C 프레임 전달·정확성·캐시 실측과 추천 전략 |
 | Phase 2 Minimum Viewer | `10_PHASE2_MINIMUM_VIEWER.md` | 최소 실사용 UI, 방향성 cache, 실제·합성 QA와 메모리 검사 |
+| Phase 2.2 Handoff | `../HANDOFF_PHASE2_2.md` | 연속 탐색·대용량 YUV RAM cache spike 중단 지점과 재개 절차 |
 | Project Troubleshooting | `troubleshooting.md` | CT Cine Reviewer에서만 발생하는 문제와 검증된 해결 방법 |
 | Docs Hub | `docs_hub.md` | 프로젝트 문서 목록과 위치 안내 |
 

@@ -10,7 +10,7 @@
 
 ## 현재 단계
 
-Phase 0 기획과 Phase 1 기술 스파이크를 거쳐 **Phase 2 최소 실사용 뷰어**를 구현했다. Phase 2.1 NSIS 설치 패키지와 unpacked 검증까지 완료했으며, 실제 설치·제거·재설치는 아직 시행하지 않았다. 자세한 재개 지점은 [Phase 2.1 Handoff](HANDOFF_PHASE2_1.md)에 기록했다.
+Phase 0 기획과 Phase 1 기술 스파이크를 거쳐 **Phase 2 최소 실사용 뷰어**를 구현했다. Phase 2.1 설치 검증 후 Phase 2.2 연속 탐색·대용량 RAM 캐시 기술 스파이크를 진행하다 안전 지점에서 중단했다. 최신 재개 지점은 [Phase 2.2 Handoff](HANDOFF_PHASE2_2.md)에 기록했다.
 
 - 실제 로컬 샘플은 Git에 포함하지 않으며 컴퓨터별 `local-samples/`에서 확인함
 - Electron/React/TypeScript 최소 scaffold 작성됨

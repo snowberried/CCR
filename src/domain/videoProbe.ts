@@ -20,6 +20,11 @@ export type VideoStreamMetadata = {
   durationSeconds: number | null;
   reportedFrameCount: number | null;
   rotationDegrees: number | null;
+  pixelFormat: string | null;
+  colorRange: string | null;
+  colorSpace: string | null;
+  colorPrimaries: string | null;
+  colorTransfer: string | null;
 };
 
 export type VideoProbeResult = {

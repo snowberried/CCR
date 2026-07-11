@@ -51,6 +51,8 @@ export function App() {
   const pumpingRef = useRef(false);
   const uiGenerationRef = useRef(0);
   const wheelRef = useRef(new WheelFrameAccumulator());
+  const navigationFrameRef = useRef<number | null>(null);
+  const forceRgbaRef = useRef(false);
   const [metadata, setMetadata] = useState<SessionMetadata | null>(null);
   const [frameIndex, setFrameIndex] = useState(0);
   const [frameInput, setFrameInput] = useState("1");
@@ -78,7 +80,7 @@ export function App() {
     releaseCanvas(canvasRef.current);
   }, []);
 
-  const drawFrame = useCallback((frame: CcrFrameResponse) => {
+  const renderFrame = useCallback(async (frame: CcrFrameResponse) => {
     if (!frame.accepted || !frame.descriptor || !frame.pixels) {
       return;
     }
@@ -87,25 +89,62 @@ export function App() {
     if (!canvas || !context) {
       return;
     }
+    let rendered = frame;
     canvas.width = frame.descriptor.width;
     canvas.height = frame.descriptor.height;
-    context.putImageData(
-      new ImageData(
+    if (frame.descriptor.pixelFormat === "i420" && frame.layout && frame.colorSpace) {
+      let videoFrame: VideoFrame | null = null;
+      try {
+        videoFrame = new VideoFrame(frame.pixels, {
+          format: "I420",
+          codedWidth: frame.descriptor.width,
+          codedHeight: frame.descriptor.height,
+          timestamp: Math.max(0, Math.round((frame.descriptor.ptsSeconds ?? frame.descriptor.frameIndex) * 1_000_000)),
+          layout: [frame.layout.y, frame.layout.u, frame.layout.v],
+          colorSpace: {
+            fullRange: frame.colorSpace.fullRange,
+            matrix: frame.colorSpace.matrix,
+            primaries: frame.colorSpace.primaries,
+            transfer: frame.colorSpace.transfer,
+          },
+        });
+        context.drawImage(videoFrame, 0, 0);
+      } catch {
+        forceRgbaRef.current = true;
+        const sessionId = sessionIdRef.current;
+        const fallback = sessionId
+          ? await window.ccr?.getFrame?.(sessionId, frame.descriptor.frameIndex, "rgba")
+          : null;
+        if (!fallback?.accepted || !fallback.descriptor || !fallback.pixels) {
+          setError("VIDEOFRAME_RENDER_FAILED");
+          setStatus("error");
+          return;
+        }
+        rendered = fallback;
+        context.putImageData(new ImageData(
+          new Uint8ClampedArray(fallback.pixels),
+          fallback.descriptor.width,
+          fallback.descriptor.height,
+        ), 0, 0);
+      } finally {
+        videoFrame?.close();
+      }
+    } else {
+      context.putImageData(new ImageData(
         new Uint8ClampedArray(frame.pixels),
         frame.descriptor.width,
         frame.descriptor.height,
-      ),
-      0,
-      0,
-    );
-    displayedFrameRef.current = frame.descriptor.frameIndex;
-    setFrameIndex(frame.descriptor.frameIndex);
-    setFrameInput(String(internalToDisplayFrame(frame.descriptor.frameIndex)));
-    setPtsSeconds(frame.descriptor.ptsSeconds);
-    setCacheResult(frame.cache ?? "-");
-    setRequestMs(frame.requestMs ?? null);
-    setCacheStatus(frame.cacheStatus ?? null);
-    setDiagnostics(frame.diagnostics ?? null);
+      ), 0, 0);
+    }
+    if (!rendered.descriptor) return;
+    displayedFrameRef.current = rendered.descriptor.frameIndex;
+    setFrameIndex(rendered.descriptor.frameIndex);
+    setFrameInput(String(internalToDisplayFrame(rendered.descriptor.frameIndex)));
+    setPtsSeconds(rendered.descriptor.ptsSeconds);
+    setCacheResult(rendered.cache ?? "-");
+    setRequestMs(rendered.requestMs ?? null);
+    setCacheStatus(rendered.cacheStatus ?? null);
+    setDiagnostics(rendered.diagnostics ?? null);
   }, []);
 
   const pump = useCallback(async () => {
@@ -125,7 +164,7 @@ export function App() {
         desiredFrameRef.current !== displayedFrameRef.current
       ) {
         const target = desiredFrameRef.current;
-        const response = await window.ccr.getFrame(sessionId, target);
+        const response = await window.ccr.getFrame(sessionId, target, forceRgbaRef.current ? "rgba" : "i420");
         if (uiGeneration !== uiGenerationRef.current || sessionId !== sessionIdRef.current) {
           return;
         }
@@ -141,7 +180,7 @@ export function App() {
           continue;
         }
         if (target === desiredFrameRef.current) {
-          drawFrame(response);
+          await renderFrame(response);
         }
       }
       if (uiGeneration === uiGenerationRef.current && !failed) {
@@ -150,14 +189,23 @@ export function App() {
     } finally {
       pumpingRef.current = false;
     }
-  }, [drawFrame, metadata]);
+  }, [metadata, renderFrame]);
 
-  const goToFrame = useCallback((nextFrameIndex: number) => {
+  const goToFrame = useCallback((nextFrameIndex: number, defer = false) => {
     if (!metadata) {
       return;
     }
     desiredFrameRef.current = clampFrameIndex(nextFrameIndex, metadata.frameCount);
-    void pump();
+    if (!defer) {
+      void pump();
+      return;
+    }
+    if (navigationFrameRef.current === null) {
+      navigationFrameRef.current = requestAnimationFrame(() => {
+        navigationFrameRef.current = null;
+        void pump();
+      });
+    }
   }, [metadata, pump]);
 
   const acceptOpenedVideo = useCallback(async (promise: Promise<CcrOpenVideoResponse>) => {
@@ -193,9 +241,11 @@ export function App() {
     desiredFrameRef.current = 0;
     displayedFrameRef.current = -1;
     wheelRef.current.reset();
-    drawFrame(opened.frame);
+    forceRgbaRef.current = false;
+    await renderFrame(opened.frame);
+    await window.ccr?.ackFirstFrame?.(opened.sessionId);
     setStatus("ready");
-  }, [clearViewer, drawFrame, metadata]);
+  }, [clearViewer, metadata, renderFrame]);
 
   const openVideo = useCallback(() => {
     if (!window.ccr?.openVideo) {
@@ -264,6 +314,10 @@ export function App() {
       if (!metadata) {
         return;
       }
+      if (metadata.spike22 && metadata.analysisReady === false && event.key === "End") {
+        event.preventDefault();
+        return;
+      }
       const target = navigationTargetForKey(
         event,
         desiredFrameRef.current,
@@ -272,14 +326,31 @@ export function App() {
       );
       if (target !== null) {
         event.preventDefault();
-        goToFrame(target);
+        goToFrame(target, event.repeat);
       } else if (event.key === "Escape" && !isTextEntryElement(event.target)) {
         cancel();
       }
     };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && navigationFrameRef.current !== null) {
+        cancelAnimationFrame(navigationFrameRef.current);
+        navigationFrameRef.current = null;
+        void pump();
+      }
+    };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
   }, [cancel, goToFrame, metadata, openVideo]);
+
+  useEffect(() => window.ccr?.onSpikeMetadata?.((update) => {
+    if (update.sessionId !== sessionIdRef.current || !update.metadata) return;
+    setMetadata((current) => current ? { ...current, ...update.metadata } : current);
+    setCacheStatus(update.cacheStatus);
+  }), []);
 
   useEffect(() => () => {
     uiGenerationRef.current += 1;
@@ -364,7 +435,7 @@ export function App() {
             min={1}
             max={metadata?.frameCount ?? 1}
             value={frameInput}
-            disabled={!metadata}
+            disabled={!metadata || (metadata.spike22 === true && metadata.analysisReady === false)}
             onChange={(event) => setFrameInput(event.target.value)}
             onBlur={submitFrameInput}
             onKeyDown={onFrameInputKeyDown}
@@ -373,7 +444,7 @@ export function App() {
         </div>
         <button type="button" title="다음 프레임" onClick={() => goToFrame(desiredFrameRef.current + 1)} disabled={!metadata}>&gt;</button>
         <button type="button" title="5프레임 다음" onClick={() => goToFrame(desiredFrameRef.current + 5)} disabled={!metadata}>+5</button>
-        <button type="button" title="마지막 프레임" onClick={() => metadata && goToFrame(metadata.frameCount - 1)} disabled={!metadata}>&gt;|</button>
+        <button type="button" title="마지막 프레임" onClick={() => metadata && goToFrame(metadata.frameCount - 1)} disabled={!metadata || (metadata.spike22 === true && metadata.analysisReady === false)}>&gt;|</button>
         <button type="button" title="디코딩 취소" onClick={cancel} disabled={status !== "decoding" && status !== "probing"}>취소</button>
       </nav>
     </main>

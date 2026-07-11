@@ -72,6 +72,11 @@ test("parses the first video stream and ignores frames from other streams", () =
     durationSeconds: 119,
     reportedFrameCount: 3,
     rotationDegrees: -90,
+    pixelFormat: null,
+    colorRange: null,
+    colorSpace: null,
+    colorPrimaries: null,
+    colorTransfer: null,
   });
   assert.deepEqual(
     result.frames.map((frame) => ({ frameIndex: frame.frameIndex, pts: frame.pts })),

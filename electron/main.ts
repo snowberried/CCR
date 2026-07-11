@@ -3,10 +3,12 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { registerFrameIpc, shutdownFrameIpcResources } from "./frameIpc.js";
+import { registerSpikeFrameIpc, shutdownSpikeFrameIpcResources } from "./spike22/spikeFrameIpc.js";
 import { resolveFfmpegRuntimePaths } from "./runtimePaths.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
+const spike22 = process.env.CCR_PHASE22_SPIKE === "1";
 
 function createWindow() {
   const window = new BrowserWindow({
@@ -39,12 +41,13 @@ ipcMain.handle("runtime:getStatus", () => {
     resourcesPath: process.resourcesPath,
   });
   return {
-    phase: "phase2.1-windows-pilot",
+    phase: spike22 ? "phase2.2-cache-spike" : "phase2.1-windows-pilot",
     ffmpegConfigured: existsSync(ffmpegPath) && existsSync(ffprobePath),
   };
 });
 
-registerFrameIpc();
+if (spike22) registerSpikeFrameIpc();
+else registerFrameIpc();
 
 app.whenReady().then(() => {
   createWindow();
@@ -69,5 +72,5 @@ app.on("before-quit", (event) => {
   }
   event.preventDefault();
   shutdownStarted = true;
-  void shutdownFrameIpcResources().finally(() => app.quit());
+  void (spike22 ? shutdownSpikeFrameIpcResources() : shutdownFrameIpcResources()).finally(() => app.quit());
 });

@@ -6,7 +6,7 @@ type CcrFrameDescriptor = {
   ptsSeconds: number | null;
   width: number;
   height: number;
-  pixelFormat: "rgba";
+  pixelFormat: "rgba" | "i420";
   byteLength: number;
   fingerprint: string;
 };
@@ -24,6 +24,31 @@ type CcrCacheStatus = {
   frameCapacity: number;
   reusedFrames: number;
   decodedFrames: number;
+  blockCount?: number;
+  readyFrameCount?: number;
+  evictions?: number;
+  backgroundComplete?: boolean;
+  backgroundDecodedFrames?: number;
+  backgroundDecodeCount?: number;
+  seekDecodeCount?: number;
+  analysisReady?: boolean;
+  backgroundCacheMs?: number | null;
+  fullProbeMs?: number | null;
+};
+
+type CcrI420Layout = {
+  y: { offset: number; stride: number };
+  u: { offset: number; stride: number };
+  v: { offset: number; stride: number };
+  byteLength: number;
+};
+
+type CcrVideoColorSpace = {
+  fullRange: boolean;
+  matrix: "bt709" | "smpte170m";
+  primaries: "bt709" | "smpte170m";
+  transfer: "bt709" | "smpte170m";
+  source: "metadata" | "candidate-bt601-limited";
 };
 
 type CcrFrameDiagnostics = {
@@ -36,6 +61,8 @@ type CcrFrameResponse = {
   accepted: boolean;
   descriptor?: CcrFrameDescriptor;
   pixels?: Uint8Array;
+  layout?: CcrI420Layout;
+  colorSpace?: CcrVideoColorSpace;
   cache?: "hit" | "miss";
   requestMs?: number;
   cacheStatus?: CcrCacheStatus | null;
@@ -56,7 +83,7 @@ type CcrOpenVideoResponse = {
     durationSeconds: number | null;
     rotationDegrees: number | null;
     probeMs: number;
-    cachePolicy: {
+    cachePolicy?: {
       bytesPerFrame: number;
       budgetBytes: number;
       minimumTargetFrames: number;
@@ -64,6 +91,10 @@ type CcrOpenVideoResponse = {
       frameCapacity: number;
       belowMinimumTarget: boolean;
     };
+    analysisReady?: boolean;
+    spike22?: boolean;
+    blockFrames?: number;
+    colorSource?: string;
   };
   frame?: CcrFrameResponse;
   error?: string;
@@ -77,7 +108,13 @@ interface Window {
     }>;
     openVideo: () => Promise<CcrOpenVideoResponse>;
     openDroppedVideo: (file: File) => Promise<CcrOpenVideoResponse>;
-    getFrame: (sessionId: string, frameIndex: number) => Promise<CcrFrameResponse>;
+    getFrame: (sessionId: string, frameIndex: number, displayFormat?: "i420" | "rgba") => Promise<CcrFrameResponse>;
+    ackFirstFrame?: (sessionId: string) => Promise<void>;
+    onSpikeMetadata?: (callback: (value: {
+      sessionId: string;
+      metadata: CcrOpenVideoResponse["metadata"];
+      cacheStatus: CcrCacheStatus;
+    }) => void) => () => void;
     cancelFrame: () => Promise<void>;
     closeVideo: () => Promise<void>;
   };
