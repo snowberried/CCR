@@ -34,6 +34,8 @@ type CcrCacheStatus = {
   analysisReady?: boolean;
   backgroundCacheMs?: number | null;
   fullProbeMs?: number | null;
+  backgroundError?: string | null;
+  cacheMode?: "full" | "lru" | "fallback";
 };
 
 type CcrI420Layout = {
@@ -72,6 +74,7 @@ type CcrFrameResponse = {
 
 type CcrOpenVideoResponse = {
   canceled: boolean;
+  qaSampleIndex?: number;
   sessionId?: string;
   generation?: number;
   metadata?: {
@@ -95,6 +98,7 @@ type CcrOpenVideoResponse = {
     spike22?: boolean;
     blockFrames?: number;
     colorSource?: string;
+    cacheMode?: "full" | "lru" | "fallback";
   };
   frame?: CcrFrameResponse;
   error?: string;
@@ -108,6 +112,7 @@ interface Window {
     }>;
     openVideo: () => Promise<CcrOpenVideoResponse>;
     openDroppedVideo: (file: File) => Promise<CcrOpenVideoResponse>;
+    openQaVideo?: (sampleIndex: number) => Promise<CcrOpenVideoResponse>;
     getFrame: (sessionId: string, frameIndex: number, displayFormat?: "i420" | "rgba") => Promise<CcrFrameResponse>;
     ackFirstFrame?: (sessionId: string) => Promise<void>;
     onSpikeMetadata?: (callback: (value: {

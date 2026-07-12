@@ -3,13 +3,21 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { createHash } from "node:crypto";
 import { createI420Layout, chooseI420BlockFrames } from "../../src/domain/i420.js";
+import { createFrameCachePolicy } from "../../src/domain/frameCachePolicy.js";
 import { createYuvCachePolicy } from "../../src/domain/yuvCachePolicy.js";
 import type { FramePoint } from "../../src/domain/frameSequence.js";
-import { FfmpegCliProbeProvider } from "../adapters/FfmpegCliProbeProvider.js";
+import { FfmpegFrameIndexProvider } from "../adapters/FfmpegFrameIndexProvider.js";
 import { FfmpegQuickProbeProvider, type QuickVideoProbe } from "../adapters/FfmpegQuickProbeProvider.js";
 import { FfmpegRawFrameDecoder } from "../adapters/FfmpegRawFrameDecoder.js";
 import { FfmpegYuvDecoder } from "../adapters/FfmpegYuvDecoder.js";
+import { FfmpegSegmentFrameProvider } from "../adapters/FfmpegSegmentFrameProvider.js";
 import { YuvBlockCache, type YuvCacheBlock } from "../adapters/YuvBlockCache.js";
+
+export type YuvSpikeSessionOptions = {
+  totalMemoryBytes?: number;
+  availableMemoryBytes?: number;
+  cacheBudgetBytes?: number;
+};
 
 export type SpikeColorSpace = {
   fullRange: boolean;
@@ -61,7 +69,7 @@ export class YuvSpikeSession {
   readonly cache: YuvBlockCache;
   private readonly controller = new AbortController();
   private readonly decoder: FfmpegYuvDecoder;
-  private readonly fullProbe: FfmpegCliProbeProvider;
+  private readonly frameIndexProbe: FfmpegFrameIndexProvider;
   private frames: readonly FramePoint[] = [];
   private frameCount: number;
   private analysisReady = false;
@@ -74,7 +82,12 @@ export class YuvSpikeSession {
   private seekDecodeCount = 0;
   private backgroundCacheMs: number | null = null;
   private fullProbeMs: number | null = null;
+  private backgroundError: string | null = null;
   private closed = false;
+  private cacheMode: "full" | "lru" | "fallback";
+  private readonly initialBudgetBytes: number;
+  private rgbaProvider: FfmpegSegmentFrameProvider | null = null;
+  private rgbaRequestId = 0;
 
   private constructor(
     private readonly paths: { ffmpegPath: string; ffprobePath: string },
@@ -82,6 +95,7 @@ export class YuvSpikeSession {
     readonly quickProbe: QuickVideoProbe,
     firstFrame: Buffer,
     readonly firstFrameMs: number,
+    private readonly options: YuvSpikeSessionOptions,
   ) {
     this.layout = createI420Layout(quickProbe.width, quickProbe.height);
     if (firstFrame.byteLength !== this.layout.byteLength) throw new Error("YUV_FIRST_FRAME_SIZE_INVALID");
@@ -89,7 +103,12 @@ export class YuvSpikeSession {
     this.blockFrames = chooseI420BlockFrames(this.layout.byteLength);
     this.colorSpace = colorSpaceFor(quickProbe);
     const policy = this.createPolicy(this.frameCount);
-    this.cache = new YuvBlockCache(policy.budgetBytes || 72 * 1024 * 1024);
+    this.cacheMode = policy.mode;
+    this.initialBudgetBytes = Math.max(
+      this.layout.byteLength * this.blockFrames,
+      policy.budgetBytes || 72 * 1024 * 1024,
+    );
+    this.cache = new YuvBlockCache(this.initialBudgetBytes);
     this.cache.insert({
       blockIndex: 0,
       startFrameIndex: 0,
@@ -105,17 +124,22 @@ export class YuvSpikeSession {
       blockFrames: this.blockFrames,
       timeoutMs: 180_000,
     });
-    this.fullProbe = new FfmpegCliProbeProvider({ ffprobePath: paths.ffprobePath, timeoutMs: 180_000 });
+    this.frameIndexProbe = new FfmpegFrameIndexProvider(paths.ffprobePath);
   }
 
-  static async open(paths: { ffmpegPath: string; ffprobePath: string }, sourcePath: string, signal?: AbortSignal) {
+  static async open(
+    paths: { ffmpegPath: string; ffprobePath: string },
+    sourcePath: string,
+    signal?: AbortSignal,
+    options: YuvSpikeSessionOptions = {},
+  ) {
     const startedAt = performance.now();
     const quickProvider = new FfmpegQuickProbeProvider(paths.ffprobePath);
     const [quickProbe, firstFrame] = await Promise.all([
       quickProvider.probe(sourcePath, signal),
       FfmpegYuvDecoder.decodeFirstRaw(paths.ffmpegPath, sourcePath, signal),
     ]);
-    return new YuvSpikeSession(paths, sourcePath, quickProbe, firstFrame, performance.now() - startedAt);
+    return new YuvSpikeSession(paths, sourcePath, quickProbe, firstFrame, performance.now() - startedAt, options);
   }
 
   metadata() {
@@ -132,6 +156,7 @@ export class YuvSpikeSession {
       spike22: true,
       blockFrames: this.blockFrames,
       colorSource: this.colorSpace.source,
+      cacheMode: this.cacheMode,
     };
   }
 
@@ -146,15 +171,28 @@ export class YuvSpikeSession {
     this.backgroundStarted = true;
     const runProbe = () => {
       const probeStartedAt = performance.now();
-      return this.fullProbe.probe({ filePath: this.sourcePath, signal: this.controller.signal }).then((probe) => {
+      return this.frameIndexProbe.probe(this.sourcePath, this.controller.signal).then((probe) => {
+      if (probe.issueCount > 0) throw new Error("FRAME_INDEX_VALIDATION_FAILED");
       this.frames = probe.frames;
       this.frameCount = probe.frames.length;
       this.analysisReady = true;
       this.fullProbeMs = performance.now() - probeStartedAt;
-      onMetadata(this.metadata());
       return probe;
       });
     };
+    if (this.cacheMode === "fallback") {
+      this.cachePromise = Promise.resolve();
+      this.backgroundPromise = runProbe().then((probe) => {
+        this.ensureRgbaProvider(probe.frames.length);
+        this.backgroundComplete = true;
+        onMetadata(this.metadata());
+      });
+      void this.backgroundPromise.catch((error) => this.recordBackgroundError(error, onMetadata));
+      return;
+    }
+    let startProbe: (() => void) | null = null;
+    const probeStart = new Promise<void>((resolve) => { startProbe = resolve; });
+    const probePromise = probeStart.then(runProbe);
     this.backgroundDecodeCount += 1;
     const cacheStartedAt = performance.now();
     const decodePromise = this.decoder.decodeSequential({
@@ -162,19 +200,25 @@ export class YuvSpikeSession {
       onBlock: (block) => {
         this.cache.insert(block);
         this.backgroundDecodedFrames += block.frameCount;
+        startProbe?.();
+        startProbe = null;
       },
     }).then((stats) => {
       this.backgroundDecodedFrames = stats.frameCount;
       this.backgroundComplete = true;
       this.backgroundCacheMs = performance.now() - cacheStartedAt;
+    }).finally(() => {
+      startProbe?.();
+      startProbe = null;
     });
     this.cachePromise = decodePromise;
-    this.backgroundPromise = decodePromise.then(runProbe).then((probe) => {
+    this.backgroundPromise = Promise.all([decodePromise, probePromise]).then(([, probe]) => {
       if (this.backgroundDecodedFrames !== probe.frames.length) {
         this.backgroundComplete = false;
       }
       onMetadata(this.metadata());
     });
+    void this.backgroundPromise.catch((error) => this.recordBackgroundError(error, onMetadata));
   }
 
   async waitForBackground(): Promise<void> {
@@ -192,13 +236,24 @@ export class YuvSpikeSession {
       throw new Error("FRAME_INDEX_OUT_OF_RANGE");
     }
     const startedAt = performance.now();
-    if (format === "rgba") return this.requestRgba(frameIndex, startedAt);
+    if (format === "rgba" || (this.cacheMode === "fallback" && this.analysisReady)) {
+      return this.requestRgba(frameIndex, startedAt);
+    }
     let pixels = this.cache.getFrame(frameIndex, this.blockFrames);
     let cache: "hit" | "miss" = "hit";
     if (!pixels) {
       if (!this.analysisReady) throw new Error("FRAME_NOT_READY");
       cache = "miss";
       const blockIndex = Math.floor(frameIndex / this.blockFrames);
+      const nextBackgroundBlock = Math.floor(this.backgroundDecodedFrames / this.blockFrames);
+      if (
+        this.backgroundStarted && !this.backgroundComplete &&
+        blockIndex >= nextBackgroundBlock && blockIndex <= nextBackgroundBlock + 1
+      ) {
+        await this.waitForNearbyBackgroundBlock(blockIndex);
+        pixels = this.cache.getFrame(frameIndex, this.blockFrames);
+      }
+      if (pixels) return this.serializeI420(frameIndex, pixels, cache, performance.now() - startedAt);
       const blockStart = blockIndex * this.blockFrames;
       const count = Math.min(this.blockFrames, this.frameCount - blockStart);
       const ptsSeconds = this.frames[blockStart]?.ptsSeconds;
@@ -224,19 +279,20 @@ export class YuvSpikeSession {
 
   status() {
     const cache = this.cache.status();
+    const rgbaCache = this.rgbaProvider?.getCacheStatus();
     return {
-      startFrameIndex: null,
-      endFrameIndex: null,
-      frameCount: cache.readyFrameCount,
-      byteLength: cache.byteLength,
-      hits: cache.hits,
-      misses: cache.misses,
-      direction: "balanced" as const,
-      budgetBytes: cache.budgetBytes,
-      bytesPerFrame: this.layout.byteLength,
-      frameCapacity: Math.floor(cache.budgetBytes / this.layout.byteLength),
-      reusedFrames: cache.hits,
-      decodedFrames: this.backgroundDecodedFrames,
+      startFrameIndex: rgbaCache?.startFrameIndex ?? null,
+      endFrameIndex: rgbaCache?.endFrameIndex ?? null,
+      frameCount: rgbaCache?.frameCount ?? cache.readyFrameCount,
+      byteLength: rgbaCache?.byteLength ?? cache.byteLength,
+      hits: rgbaCache?.hits ?? cache.hits,
+      misses: rgbaCache?.misses ?? cache.misses,
+      direction: rgbaCache?.direction ?? "balanced" as const,
+      budgetBytes: rgbaCache?.budgetBytes ?? cache.budgetBytes,
+      bytesPerFrame: rgbaCache?.bytesPerFrame ?? this.layout.byteLength,
+      frameCapacity: rgbaCache?.frameCapacity ?? Math.floor(cache.budgetBytes / this.layout.byteLength),
+      reusedFrames: rgbaCache?.reusedFrames ?? cache.hits,
+      decodedFrames: rgbaCache?.decodedFrames ?? this.backgroundDecodedFrames,
       blockCount: cache.blockCount,
       readyFrameCount: cache.readyFrameCount,
       evictions: cache.evictions,
@@ -247,19 +303,49 @@ export class YuvSpikeSession {
       analysisReady: this.analysisReady,
       backgroundCacheMs: this.backgroundCacheMs,
       fullProbeMs: this.fullProbeMs,
+      backgroundError: this.backgroundError,
+      cacheMode: this.cacheMode,
     };
+  }
+
+  applyMemoryPressure(availableMemoryBytes: number): void {
+    if (!Number.isFinite(availableMemoryBytes) || availableMemoryBytes < 0) {
+      throw new RangeError("INVALID_AVAILABLE_MEMORY");
+    }
+    const minimumBlockBytes = this.layout.byteLength * this.blockFrames;
+    const nextBudget = Math.max(
+      minimumBlockBytes,
+      Math.min(this.initialBudgetBytes, Math.floor(availableMemoryBytes * 0.25)),
+    );
+    if (nextBudget < this.cache.status().budgetBytes) {
+      this.cacheMode = "lru";
+      this.cache.setBudget(nextBudget);
+    }
   }
 
   close(): void {
     this.closed = true;
     this.controller.abort();
+    if (this.rgbaProvider) void this.rgbaProvider.closeSession(this.sessionId);
+    this.rgbaProvider = null;
     this.cache.clear();
   }
 
   private createPolicy(frameCount: number) {
+    if (this.options.cacheBudgetBytes !== undefined) {
+      if (!Number.isInteger(this.options.cacheBudgetBytes) || this.options.cacheBudgetBytes <= 0) {
+        throw new RangeError("INVALID_YUV_CACHE_BUDGET");
+      }
+      const estimatedPayloadBytes = this.layout.byteLength * frameCount;
+      return {
+        budgetBytes: this.options.cacheBudgetBytes,
+        enabled: true,
+        mode: estimatedPayloadBytes <= this.options.cacheBudgetBytes * 0.8 ? "full" as const : "lru" as const,
+      };
+    }
     return createYuvCachePolicy({
-      totalMemoryBytes: os.totalmem(),
-      availableMemoryBytes: os.freemem(),
+      totalMemoryBytes: this.options.totalMemoryBytes ?? os.totalmem(),
+      availableMemoryBytes: this.options.availableMemoryBytes ?? os.freemem(),
       estimatedPayloadBytes: this.layout.byteLength * frameCount,
       metadataBytes: frameCount * 48,
     });
@@ -285,6 +371,43 @@ export class YuvSpikeSession {
 
   private async requestRgba(frameIndex: number, startedAt: number): Promise<SpikeFrame> {
     if (!this.analysisReady) throw new Error("FRAME_NOT_READY");
+    this.ensureRgbaProvider(this.frames.length);
+    const decoded = await this.rgbaProvider!.requestFrame({
+      sessionId: this.sessionId,
+      requestId: ++this.rgbaRequestId,
+      frameIndex,
+    });
+    return {
+      frameIndex,
+      pts: decoded.descriptor.pts,
+      ptsSeconds: decoded.descriptor.ptsSeconds,
+      width: decoded.descriptor.width,
+      height: decoded.descriptor.height,
+      pixelFormat: "rgba",
+      pixels: decoded.payload,
+      fingerprint: decoded.descriptor.fingerprint,
+      cache: decoded.cache,
+      requestMs: performance.now() - startedAt,
+    };
+  }
+
+  private async waitForNearbyBackgroundBlock(blockIndex: number): Promise<void> {
+    while (!this.closed && !this.backgroundComplete && !this.backgroundError && !this.cache.hasBlock(blockIndex)) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+
+  private recordBackgroundError(
+    error: unknown,
+    onMetadata: (metadata: ReturnType<YuvSpikeSession["metadata"]>) => void,
+  ): void {
+    if (this.closed) return;
+    this.backgroundError = error instanceof Error ? error.message : "YUV_BACKGROUND_FAILED";
+    onMetadata(this.metadata());
+  }
+
+  private ensureRgbaProvider(frameCount: number): void {
+    if (this.rgbaProvider) return;
     const decoder = new FfmpegRawFrameDecoder({
       ffmpegPath: this.paths.ffmpegPath,
       sourcePath: this.sourcePath,
@@ -293,19 +416,12 @@ export class YuvSpikeSession {
       height: this.quickProbe.height,
       timeoutMs: 30_000,
     });
-    const decoded = await decoder.decodeRange(frameIndex, 1);
-    const descriptor = decoded.descriptors[0];
-    return {
-      frameIndex,
-      pts: descriptor.pts,
-      ptsSeconds: descriptor.ptsSeconds,
-      width: descriptor.width,
-      height: descriptor.height,
-      pixelFormat: "rgba",
-      pixels: decoded.pixelBuffers[0],
-      fingerprint: descriptor.fingerprint,
-      cache: "miss",
-      requestMs: performance.now() - startedAt,
-    };
+    this.rgbaProvider = new FfmpegSegmentFrameProvider({
+      sessionId: this.sessionId,
+      frameCount,
+      decoder,
+      cachePolicy: createFrameCachePolicy(this.quickProbe.width, this.quickProbe.height),
+      directional: true,
+    });
   }
 }

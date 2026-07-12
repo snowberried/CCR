@@ -17,10 +17,18 @@ import {
   navigationTargetForKey,
 } from "./ui/frameNavigation";
 import { releaseCanvas } from "./ui/viewerGeometry";
+import { I420WebglRenderer } from "./ui/I420WebglRenderer";
 
 type ViewerStatus = "idle" | "probing" | "ready" | "decoding" | "cancelled" | "error";
 
 type SessionMetadata = NonNullable<CcrOpenVideoResponse["metadata"]>;
+
+type KeyboardHoldIntent = {
+  direction: -1 | 1;
+  targetFrame: number;
+  startedAt: number;
+  holdDurationMs: number;
+};
 
 const STATUS_LABELS: Record<ViewerStatus, string> = {
   idle: "대기",
@@ -52,7 +60,9 @@ export function App() {
   const uiGenerationRef = useRef(0);
   const wheelRef = useRef(new WheelFrameAccumulator());
   const navigationFrameRef = useRef<number | null>(null);
+  const keyboardHoldRef = useRef<KeyboardHoldIntent | null>(null);
   const forceRgbaRef = useRef(false);
+  const i420RendererRef = useRef<I420WebglRenderer | null>(null);
   const [metadata, setMetadata] = useState<SessionMetadata | null>(null);
   const [frameIndex, setFrameIndex] = useState(0);
   const [frameInput, setFrameInput] = useState("1");
@@ -69,6 +79,7 @@ export function App() {
     sessionIdRef.current = null;
     desiredFrameRef.current = 0;
     displayedFrameRef.current = -1;
+    keyboardHoldRef.current = null;
     setMetadata(null);
     setFrameIndex(0);
     setFrameInput("1");
@@ -77,7 +88,13 @@ export function App() {
     setCacheResult("-");
     setRequestMs(null);
     setDiagnostics(null);
+    i420RendererRef.current?.dispose();
+    i420RendererRef.current = null;
     releaseCanvas(canvasRef.current);
+    if (window.ccr?.openQaVideo) {
+      delete document.documentElement.dataset.qaSampleIndex;
+      delete document.documentElement.dataset.qaPixelFormat;
+    }
   }, []);
 
   const renderFrame = useCallback(async (frame: CcrFrameResponse) => {
@@ -93,30 +110,36 @@ export function App() {
     canvas.width = frame.descriptor.width;
     canvas.height = frame.descriptor.height;
     if (frame.descriptor.pixelFormat === "i420" && frame.layout && frame.colorSpace) {
-      let videoFrame: VideoFrame | null = null;
       try {
-        videoFrame = new VideoFrame(frame.pixels, {
-          format: "I420",
-          codedWidth: frame.descriptor.width,
-          codedHeight: frame.descriptor.height,
-          timestamp: Math.max(0, Math.round((frame.descriptor.ptsSeconds ?? frame.descriptor.frameIndex) * 1_000_000)),
-          layout: [frame.layout.y, frame.layout.u, frame.layout.v],
-          colorSpace: {
-            fullRange: frame.colorSpace.fullRange,
-            matrix: frame.colorSpace.matrix,
-            primaries: frame.colorSpace.primaries,
-            transfer: frame.colorSpace.transfer,
-          },
+        i420RendererRef.current ??= new I420WebglRenderer();
+        const renderedCanvas = i420RendererRef.current.render({
+          pixels: frame.pixels,
+          width: frame.descriptor.width,
+          height: frame.descriptor.height,
+          layout: frame.layout,
+          colorSpace: frame.colorSpace,
         });
-        context.drawImage(videoFrame, 0, 0);
+        context.drawImage(renderedCanvas, 0, 0);
       } catch {
+        i420RendererRef.current?.dispose();
+        i420RendererRef.current = null;
         forceRgbaRef.current = true;
         const sessionId = sessionIdRef.current;
-        const fallback = sessionId
+        if (sessionId) await window.ccr?.ackFirstFrame?.(sessionId);
+        let fallback = sessionId
           ? await window.ccr?.getFrame?.(sessionId, frame.descriptor.frameIndex, "rgba")
           : null;
+        const fallbackDeadline = performance.now() + 5_000;
+        while (
+          fallback?.error === "FRAME_NOT_READY" &&
+          sessionId === sessionIdRef.current &&
+          performance.now() < fallbackDeadline
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 16));
+          fallback = await window.ccr?.getFrame?.(sessionId!, frame.descriptor.frameIndex, "rgba");
+        }
         if (!fallback?.accepted || !fallback.descriptor || !fallback.pixels) {
-          setError("VIDEOFRAME_RENDER_FAILED");
+          setError("I420_WEBGL_RENDER_FAILED");
           setStatus("error");
           return;
         }
@@ -126,8 +149,6 @@ export function App() {
           fallback.descriptor.width,
           fallback.descriptor.height,
         ), 0, 0);
-      } finally {
-        videoFrame?.close();
       }
     } else {
       context.putImageData(new ImageData(
@@ -138,6 +159,9 @@ export function App() {
     }
     if (!rendered.descriptor) return;
     displayedFrameRef.current = rendered.descriptor.frameIndex;
+    if (window.ccr?.openQaVideo) {
+      document.documentElement.dataset.qaPixelFormat = rendered.descriptor.pixelFormat;
+    }
     setFrameIndex(rendered.descriptor.frameIndex);
     setFrameInput(String(internalToDisplayFrame(rendered.descriptor.frameIndex)));
     setPtsSeconds(rendered.descriptor.ptsSeconds);
@@ -154,7 +178,10 @@ export function App() {
     const uiGeneration = uiGenerationRef.current;
     const sessionId = sessionIdRef.current;
     pumpingRef.current = true;
-    setStatus("decoding");
+    const loadingTimer = metadata.spike22
+      ? window.setTimeout(() => setStatus("decoding"), 100)
+      : null;
+    if (!metadata.spike22) setStatus("decoding");
     setError(null);
     let failed = false;
     try {
@@ -169,6 +196,10 @@ export function App() {
           return;
         }
         if (!response.accepted) {
+          if (response.error === "FRAME_NOT_READY" && target === desiredFrameRef.current) {
+            await new Promise((resolve) => setTimeout(resolve, 16));
+            continue;
+          }
           if (response.error && response.error !== "DECODE_CANCELLED") {
             setError(response.error);
             setStatus("error");
@@ -187,6 +218,7 @@ export function App() {
         setStatus("ready");
       }
     } finally {
+      if (loadingTimer !== null) window.clearTimeout(loadingTimer);
       pumpingRef.current = false;
     }
   }, [metadata, renderFrame]);
@@ -243,9 +275,26 @@ export function App() {
     wheelRef.current.reset();
     forceRgbaRef.current = false;
     await renderFrame(opened.frame);
+    if (opened.qaSampleIndex !== undefined && window.ccr?.openQaVideo) {
+      document.documentElement.dataset.qaSampleIndex = String(opened.qaSampleIndex);
+    }
     await window.ccr?.ackFirstFrame?.(opened.sessionId);
     setStatus("ready");
   }, [clearViewer, metadata, renderFrame]);
+
+  useEffect(() => {
+    if (!window.ccr?.openQaVideo) return;
+    const openQaSample = (sampleIndex: number) => {
+      clearViewer();
+      void acceptOpenedVideo(window.ccr!.openQaVideo!(sampleIndex));
+    };
+    const onQaOpen = (event: Event) => {
+      const sampleIndex = (event as CustomEvent<number>).detail;
+      if (Number.isInteger(sampleIndex)) openQaSample(sampleIndex);
+    };
+    window.addEventListener("ccr:qaOpen", onQaOpen);
+    return () => window.removeEventListener("ccr:qaOpen", onQaOpen);
+  }, [acceptOpenedVideo, clearViewer]);
 
   const openVideo = useCallback(() => {
     if (!window.ccr?.openVideo) {
@@ -326,15 +375,36 @@ export function App() {
       );
       if (target !== null) {
         event.preventDefault();
+        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+          const direction = event.key === "ArrowLeft" ? -1 : 1;
+          if (!event.repeat || keyboardHoldRef.current?.direction !== direction) {
+            keyboardHoldRef.current = {
+              direction,
+              targetFrame: target,
+              startedAt: performance.now(),
+              holdDurationMs: 0,
+            };
+          } else if (keyboardHoldRef.current) {
+            keyboardHoldRef.current.targetFrame = target;
+            keyboardHoldRef.current.holdDurationMs = performance.now() - keyboardHoldRef.current.startedAt;
+          }
+        }
         goToFrame(target, event.repeat);
       } else if (event.key === "Escape" && !isTextEntryElement(event.target)) {
         cancel();
       }
     };
     const onKeyUp = (event: KeyboardEvent) => {
-      if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && navigationFrameRef.current !== null) {
-        cancelAnimationFrame(navigationFrameRef.current);
-        navigationFrameRef.current = null;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        if (keyboardHoldRef.current) {
+          keyboardHoldRef.current.targetFrame = desiredFrameRef.current;
+          keyboardHoldRef.current.holdDurationMs = performance.now() - keyboardHoldRef.current.startedAt;
+        }
+        keyboardHoldRef.current = null;
+        if (navigationFrameRef.current !== null) {
+          cancelAnimationFrame(navigationFrameRef.current);
+          navigationFrameRef.current = null;
+        }
         void pump();
       }
     };
@@ -344,17 +414,29 @@ export function App() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [cancel, goToFrame, metadata, openVideo]);
+  }, [cancel, goToFrame, metadata, openVideo, pump]);
 
   useEffect(() => window.ccr?.onSpikeMetadata?.((update) => {
     if (update.sessionId !== sessionIdRef.current || !update.metadata) return;
     setMetadata((current) => current ? { ...current, ...update.metadata } : current);
     setCacheStatus(update.cacheStatus);
+    if (update.cacheStatus.backgroundError) {
+      setError(update.cacheStatus.backgroundError);
+      setStatus("error");
+    }
   }), []);
+
+  useEffect(() => {
+    if (!window.ccr?.openQaVideo) return;
+    document.documentElement.dataset.qaBackgroundComplete = String(cacheStatus?.backgroundComplete === true);
+    document.documentElement.dataset.qaSeekDecodeCount = String(cacheStatus?.seekDecodeCount ?? 0);
+  }, [cacheStatus]);
 
   useEffect(() => () => {
     uiGenerationRef.current += 1;
     void window.ccr?.closeVideo?.();
+    i420RendererRef.current?.dispose();
+    i420RendererRef.current = null;
     releaseCanvas(canvasRef.current);
   }, []);
 

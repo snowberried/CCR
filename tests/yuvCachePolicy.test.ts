@@ -26,6 +26,7 @@ test("selects full, LRU, and fallback cache modes", () => {
   assert.equal(createYuvCachePolicy({ ...base, estimatedPayloadBytes: 1024 ** 3 }).mode, "full");
   assert.equal(createYuvCachePolicy({ ...base, estimatedPayloadBytes: 1.8 * 1024 ** 3 }).mode, "lru");
   assert.equal(createYuvCachePolicy({ totalMemoryBytes: 1024 ** 3, availableMemoryBytes: 256 * 1024 ** 2, estimatedPayloadBytes: 1 }).mode, "fallback");
+  assert.throws(() => createYuvCachePolicy({ ...base, estimatedPayloadBytes: 1, metadataBytes: Number.NaN }), /INVALID/);
 });
 
 test("stores block slabs, deduplicates loads, and evicts least recently used blocks", async () => {
@@ -43,4 +44,21 @@ test("stores block slabs, deduplicates loads, and evicts least recently used blo
   assert.equal(cache.hasBlock(0), true);
   assert.equal(cache.hasBlock(1), false);
   assert.equal(cache.status().evictions, 1);
+});
+
+test("keeps a background block inserted while the same seek load is pending", async () => {
+  const cache = new YuvBlockCache(16);
+  let finishLoad!: (block: {
+    blockIndex: number;
+    startFrameIndex: number;
+    frameCount: number;
+    frameByteLength: number;
+    payload: Buffer;
+  }) => void;
+  const pending = cache.getOrLoad(0, () => new Promise((resolve) => { finishLoad = resolve; }));
+  cache.insert({ blockIndex: 0, startFrameIndex: 0, frameCount: 2, frameByteLength: 2, payload: Buffer.alloc(4, 9) });
+  finishLoad({ blockIndex: 0, startFrameIndex: 0, frameCount: 2, frameByteLength: 2, payload: Buffer.alloc(4, 1) });
+  const block = await pending;
+  assert.equal(block.payload[0], 9);
+  assert.equal(cache.status().byteLength, 4);
 });

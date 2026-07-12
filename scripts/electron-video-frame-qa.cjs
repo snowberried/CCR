@@ -14,6 +14,13 @@ const profiles = [
   { name: "bt601-full", fullRange: true, matrix: "smpte170m", primaries: "smpte170m", transfer: "smpte170m" },
   { name: "bt709-full", fullRange: true, matrix: "bt709", primaries: "bt709", transfer: "bt709" },
 ];
+const webglProfiles = [
+  { name: "webgl-nearest-minus-one", filter: "nearest", offsetX: 0, offsetY: 0, bias: -1 },
+  { name: "webgl-nearest-minus-half", filter: "nearest", offsetX: 0, offsetY: 0, bias: -0.5 },
+  { name: "webgl-nearest", filter: "nearest", offsetX: 0, offsetY: 0, bias: 0 },
+  { name: "webgl-nearest-plus-half", filter: "nearest", offsetX: 0, offsetY: 0, bias: 0.5 },
+  { name: "webgl-nearest-plus-one", filter: "nearest", offsetX: 0, offsetY: 0, bias: 1 },
+];
 
 function mediaFiles(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -93,7 +100,7 @@ async function compare(window, yuv, rgba, width, height, profile) {
   })()`);
 }
 
-async function compareWebgl(window, yuv, rgba, width, height) {
+async function compareWebgl(window, yuv, rgba, width, height, profile) {
   return window.webContents.executeJavaScript(`(() => {
     const fromBase64 = (value) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
     const source = fromBase64(${JSON.stringify(yuv.toString("base64"))});
@@ -112,10 +119,11 @@ async function compareWebgl(window, yuv, rgba, width, height) {
       precision highp float; in vec2 uv; out vec4 color;
       uniform sampler2D yTex; uniform sampler2D uTex; uniform sampler2D vTex;
       void main(){
+        vec2 chromaUv=uv+vec2(${profile.offsetX / width},${profile.offsetY / height});
         float y=(texture(yTex,uv).r*255.0-16.0)*1.16438356;
-        float u=texture(uTex,uv).r*255.0-128.0;
-        float v=texture(vTex,uv).r*255.0-128.0;
-        color=vec4(clamp(vec3(y+1.59602678*v,y-0.39176229*u-0.81296765*v,y+2.01723214*u)/255.0,0.0,1.0),1.0);
+        float u=texture(uTex,chromaUv).r*255.0-128.0;
+        float v=texture(vTex,chromaUv).r*255.0-128.0;
+        color=vec4(clamp((vec3(y+1.59602678*v,y-0.39176229*u-0.81296765*v,y+2.01723214*u)+vec3(${profile.bias}))/255.0,0.0,1.0),1.0);
       }\`);
     const program = gl.createProgram(); gl.attachShader(program, vertex); gl.attachShader(program, fragment); gl.linkProgram(program); gl.useProgram(program);
     const positions = new Float32Array([-1,-1,1,-1,-1,1,1,1]);
@@ -123,10 +131,11 @@ async function compareWebgl(window, yuv, rgba, width, height) {
     const attribute = (name, values) => { const buffer=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buffer); gl.bufferData(gl.ARRAY_BUFFER,values,gl.STATIC_DRAW); const location=gl.getAttribLocation(program,name); gl.enableVertexAttribArray(location); gl.vertexAttribPointer(location,2,gl.FLOAT,false,0,0); };
     attribute("position",positions); attribute("texCoord",coordinates);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
-    const plane = (unit, name, data, w, h) => { const texture=gl.createTexture(); gl.activeTexture(gl.TEXTURE0+unit); gl.bindTexture(gl.TEXTURE_2D,texture); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE); gl.texImage2D(gl.TEXTURE_2D,0,gl.R8,w,h,0,gl.RED,gl.UNSIGNED_BYTE,data); gl.uniform1i(gl.getUniformLocation(program,name),unit); };
-    plane(0,"yTex",source.subarray(0,yBytes),width,height);
-    plane(1,"uTex",source.subarray(yBytes,yBytes+cBytes),cw,ch);
-    plane(2,"vTex",source.subarray(yBytes+cBytes,yBytes+cBytes*2),cw,ch);
+    const plane = (unit, name, data, w, h, filter) => { const texture=gl.createTexture(); gl.activeTexture(gl.TEXTURE0+unit); gl.bindTexture(gl.TEXTURE_2D,texture); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,filter); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,filter); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE); gl.texImage2D(gl.TEXTURE_2D,0,gl.R8,w,h,0,gl.RED,gl.UNSIGNED_BYTE,data); gl.uniform1i(gl.getUniformLocation(program,name),unit); };
+    const chromaFilter=${profile.filter === "nearest" ? "gl.NEAREST" : "gl.LINEAR"};
+    plane(0,"yTex",source.subarray(0,yBytes),width,height,gl.NEAREST);
+    plane(1,"uTex",source.subarray(yBytes,yBytes+cBytes),cw,ch,chromaFilter);
+    plane(2,"vTex",source.subarray(yBytes+cBytes,yBytes+cBytes*2),cw,ch,chromaFilter);
     const startedAt=performance.now(); gl.viewport(0,0,width,height); gl.drawArrays(gl.TRIANGLE_STRIP,0,4); gl.finish(); const drawMs=performance.now()-startedAt;
     const actual=new Uint8Array(width*height*4); gl.readPixels(0,0,width,height,gl.RGBA,gl.UNSIGNED_BYTE,actual);
     const histogram=new Array(256).fill(0); let total=0,maximum=0,comparisons=0;
@@ -141,7 +150,7 @@ async function main() {
   const window = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
   await window.loadURL("data:text/html,<canvas></canvas>");
   const files = mediaFiles(root);
-  if (files.length !== 15) throw new Error(`PHASE22_EXPECTED_15_SAMPLES_GOT_${files.length}`);
+  if (files.length < 2) throw new Error(`PHASE22_NEEDS_MULTIPLE_SAMPLES_GOT_${files.length}`);
   const results = [];
   for (let sampleIndex = 0; sampleIndex < files.length; sampleIndex += 1) {
     const filePath = files[sampleIndex];
@@ -155,12 +164,14 @@ async function main() {
       for (const profile of profiles) {
         comparisons.push({ frame: frameIndex === 0 ? "first" : frameIndex === metadata.frames.length - 1 ? "last" : "middle", profile: profile.name, ...(await compare(window, yuv, rgba, metadata.width, metadata.height, profile)) });
       }
-      comparisons.push({ frame: frameIndex === 0 ? "first" : frameIndex === metadata.frames.length - 1 ? "last" : "middle", profile: "webgl-bt601-limited", ...(await compareWebgl(window, yuv, rgba, metadata.width, metadata.height)) });
+      for (const profile of webglProfiles) {
+        comparisons.push({ frame: frameIndex === 0 ? "first" : frameIndex === metadata.frames.length - 1 ? "last" : "middle", profile: profile.name, ...(await compareWebgl(window, yuv, rgba, metadata.width, metadata.height, profile)) });
+      }
     }
     results.push({ sample: `Sample ${String.fromCharCode(65 + sampleIndex)}`, comparisons });
     process.stdout.write(`Sample ${String.fromCharCode(65 + sampleIndex)} color complete\n`);
   }
-  const profileSummary = [...profiles.map((profile) => profile.name), "webgl-bt601-limited"].map((profileName) => {
+  const profileSummary = [...profiles.map((profile) => profile.name), ...webglProfiles.map((profile) => profile.name)].map((profileName) => {
     const values = results.flatMap((sample) => sample.comparisons.filter((value) => value.profile === profileName));
     return {
       profile: profileName,

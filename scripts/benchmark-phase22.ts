@@ -33,7 +33,7 @@ async function hashFile(filePath: string): Promise<string> {
 }
 
 const files = await mediaFiles(root);
-if (files.length !== 15) throw new Error(`PHASE22_EXPECTED_15_SAMPLES_GOT_${files.length}`);
+if (files.length < 2) throw new Error(`PHASE22_NEEDS_MULTIPLE_SAMPLES_GOT_${files.length}`);
 const hashes = await Promise.all(files.map(hashFile));
 const duplicateGroups = new Map<string, string>();
 let duplicateGroup = 1;
@@ -69,6 +69,8 @@ for (let sampleIndex = 0; sampleIndex < files.length; sampleIndex += 1) {
     blockComparisons.push({ blockFrames, blockCount, elapsedMs: stats.elapsedMs });
   }
 
+  global.gc?.();
+  const rssBeforeSession = process.memoryUsage().rss;
   const session = await YuvSpikeSession.open({ ffmpegPath, ffprobePath }, filePath);
   const backgroundStartedAt = performance.now();
   session.startBackground(() => undefined);
@@ -76,20 +78,36 @@ for (let sampleIndex = 0; sampleIndex < files.length; sampleIndex += 1) {
   const fullCacheMs = performance.now() - backgroundStartedAt;
   await session.waitForBackground();
   const frameCount = session.metadata().frameCount;
-  const latencies: number[] = [];
-  const checkpoints = Array.from({ length: Math.min(1000, frameCount) }, (_, index) =>
-    Math.floor(index * (frameCount - 1) / Math.max(1, Math.min(1000, frameCount) - 1)));
-  for (const frameIndex of checkpoints) {
+  const forwardLatencies: number[] = [];
+  const reverseLatencies: number[] = [];
+  const interestLatencies: number[] = [];
+  const homeEndLatencies: number[] = [];
+  for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
     const startedAt = performance.now();
     await session.requestFrame(frameIndex);
-    latencies.push(performance.now() - startedAt);
+    forwardLatencies.push(performance.now() - startedAt);
   }
-  for (const frameIndex of [...checkpoints].reverse()) {
+  for (let frameIndex = frameCount - 1; frameIndex >= 0; frameIndex -= 1) {
     const startedAt = performance.now();
     await session.requestFrame(frameIndex);
-    latencies.push(performance.now() - startedAt);
+    reverseLatencies.push(performance.now() - startedAt);
+  }
+  const interest = Math.floor(frameCount / 2);
+  for (let request = 0; request < 1000; request += 1) {
+    const delta = request % 41 - 20;
+    const frameIndex = Math.max(0, Math.min(frameCount - 1, interest + delta));
+    const startedAt = performance.now();
+    await session.requestFrame(frameIndex);
+    interestLatencies.push(performance.now() - startedAt);
+  }
+  for (const frameIndex of [0, frameCount - 1, 0]) {
+    const startedAt = performance.now();
+    await session.requestFrame(frameIndex);
+    homeEndLatencies.push(performance.now() - startedAt);
   }
   const status = session.status();
+  const rssAfterCache = process.memoryUsage().rss;
+  const allLatencies = [...forwardLatencies, ...reverseLatencies, ...interestLatencies, ...homeEndLatencies];
   results.push({
     sample: label,
     duplicate: duplicateGroups.get(hashes[sampleIndex]) ?? "Unique",
@@ -110,13 +128,23 @@ for (let sampleIndex = 0; sampleIndex < files.length; sampleIndex += 1) {
     blockComparisons,
     fullCacheMs,
     cachedNavigation: {
-      requests: latencies.length,
-      p50Ms: percentile(latencies, 0.5),
-      p95Ms: percentile(latencies, 0.95),
-      maxMs: Math.max(...latencies),
+      requests: allLatencies.length,
+      p50Ms: percentile(allLatencies, 0.5),
+      p95Ms: percentile(allLatencies, 0.95),
+      maxMs: Math.max(...allLatencies),
+      forwardP95Ms: percentile(forwardLatencies, 0.95),
+      reverseP95Ms: percentile(reverseLatencies, 0.95),
+      interestP95Ms: percentile(interestLatencies, 0.95),
+      homeEndMaxMs: Math.max(...homeEndLatencies),
     },
     cache: status,
-    rssBytes: process.memoryUsage().rss,
+    memory: {
+      rssBeforeSession,
+      rssAfterCache,
+      rssGrowthBytes: rssAfterCache - rssBeforeSession,
+      rssGrowthBeyondPayloadBytes: rssAfterCache - rssBeforeSession - status.byteLength,
+      payloadBytesPerBlockObject: status.blockCount > 0 ? status.byteLength / status.blockCount : 0,
+    },
   });
   session.close();
   global.gc?.();
@@ -129,6 +157,8 @@ const summary = {
   fullCacheP95Ms: percentile(results.map((result) => result.fullCacheMs), 0.95),
   cachedNavigationP95Ms: percentile(results.map((result) => result.cachedNavigation.p95Ms), 0.95),
   maxCacheBytes: Math.max(...results.map((result) => result.cache.byteLength)),
+  maxRssBytes: Math.max(...results.map((result) => result.memory.rssAfterCache)),
+  maxRssGrowthBeyondPayloadBytes: Math.max(...results.map((result) => result.memory.rssGrowthBeyondPayloadBytes)),
   totalSeekDecodes: results.reduce((total, result) => total + result.cache.seekDecodeCount, 0),
 };
 const output = { generatedAt: new Date().toISOString(), summary, results };

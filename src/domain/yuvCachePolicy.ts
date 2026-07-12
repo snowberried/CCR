@@ -16,7 +16,7 @@ export function createYuvCachePolicy(input: {
   estimatedPayloadBytes: number;
   metadataBytes?: number;
 }): YuvCachePolicy {
-  const values = [input.totalMemoryBytes, input.availableMemoryBytes, input.estimatedPayloadBytes];
+  const values = [input.totalMemoryBytes, input.availableMemoryBytes, input.estimatedPayloadBytes, input.metadataBytes ?? 0];
   if (values.some((value) => !Number.isFinite(value) || value < 0)) {
     throw new RangeError("INVALID_YUV_CACHE_POLICY");
   }

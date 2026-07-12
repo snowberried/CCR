@@ -36,6 +36,11 @@
 | 방향성 cache | 순방향 20/40, 역방향 40/20, 교대 30/30 | 최종 실측에서 역방향 탐색이 Sample A/B/C 기준 약 23~30% 개선됨 |
 | cache 재사용 | miss 때 겹치는 Buffer를 유지하고 누락 구간만 디코딩 | 방향 전환 때 전체 cache 폐기를 피하기 위해 |
 | UI frame 표기 | 내부는 0 기반, 사용자 UI는 1 기반 | 일반 사용자가 보는 프레임 번호의 직관성을 위해 |
+| Phase 2.2 격리 | 새 YUV 경로는 `CCR_PHASE22_SPIKE=1`에서만 활성화 | 검증 전 Phase 2.1 제품 기준선을 보존하기 위해 |
+| YUV cache 예산 | 16GB PC 기준 최대 2GiB soft cap, 80% 이내면 full, 초과면 block LRU | 실제 11개 최대 payload 1,203.9MiB와 전체 cache p95 1.244초를 검증함 |
+| YUV block | 약 32MiB slab 목표, 현재 406×720은 64프레임 | 32/64 평균이 각각 652.47/644.85ms이고 64가 block 객체 수를 절반으로 줄임 |
+| frame index | background decode와 병렬인 packet PTS index | 실제 11개와 B-frame/VFR 합성에서 full frame probe와 불일치 0건 |
+| YUV 표시 후보 | BT.601 limited WebGL2, 그 외 조건은 기존 RGBA fallback | VideoFrame은 색 기준 실패, WebGL은 평균 0.407·p99 1·최대 2로 통과 |
 
 ## 현재 제안
 
@@ -47,6 +52,7 @@
 | 프로젝트 형식 | versioned JSON 계열 | schema와 저장 안전성 검토 |
 | 좌표 | 원본 content 기준 0~1 normalized 좌표 | 렌더링/내보내기 왕복 검증 |
 | 이미지 기본 형식 | PNG, JPEG는 선택 | 공유 용량 요구 확인 |
+| Phase 2.2 제품 통합 | 전체 I420 cache + 제한 LRU + RGBA fallback을 기본 후보로 제안 | 30분 soak 완료와 사용자 승인 뒤 별도 통합 작업 |
 
 ## 중요한 미결정 사항
 
@@ -114,6 +120,25 @@
 
 - Phase 1 기준 데스크톱 구현은 Electron + React + TypeScript + FFmpeg CLI로 확정했다.
 - 향후 내보내기·고해상도·장시간 영상에서 측정된 병목이 생길 때만 Tauri, Qt, .NET 또는 native addon을 재평가한다.
+
+### 13. Phase 2.2 색 metadata 없는 영상
+
+- 현재 실제 11개는 range/matrix/primaries/transfer metadata가 모두 없다.
+- 독립 RGBA 기준과 일치한 `candidate-bt601-limited` WebGL2 경로는 기술적으로 통과했다.
+- 새 공급원에 같은 가정을 적용할지, metadata 없음은 항상 RGBA fallback할지는 제품 통합 전 사용자 결정이 필요하다.
+
+### 14. Phase 2.2 RAM 사용 허용
+
+- 최대 실제 영상 payload는 1,203.9MiB, Node peak RSS는 약 1.27GiB였다.
+- 16GB 기준 2GiB soft cap 안이지만, 제품 기본값으로 약 1.3GB main-process RSS를 허용할지는 사용자 승인이 필요하다.
+- 32GB용 4GiB 고성능 모드는 이번 단계에서 구현하지 않는다.
+
+## Phase 2.2 제품 통합 전 사용자 승인 체크리스트
+
+- [ ] 전체 I420 cache + 제한 LRU + RGBA fallback을 제품 기본 경로로 통합
+- [ ] 색 metadata 없음에 `candidate-bt601-limited`를 허용할지 결정
+- [ ] 16GB PC에서 2GiB soft cap과 약 1.3GB 관측 peak RSS 허용
+- [ ] 제품 통합 후 실제 표시 pilot과 GPU/context-loss QA 시행
 
 ## Phase 1 시작 전 사용자 승인 체크리스트
 

@@ -68,6 +68,8 @@ export class YuvBlockCache {
       return pending;
     }
     const promise = load().then((block) => {
+      const insertedWhileLoading = this.blocks.get(blockIndex);
+      if (insertedWhileLoading) return insertedWhileLoading;
       this.insert(block);
       return block;
     }).finally(() => this.inFlight.delete(blockIndex));
@@ -78,8 +80,12 @@ export class YuvBlockCache {
   insert(block: YuvCacheBlock): void {
     const previous = this.blocks.get(block.blockIndex);
     if (previous) {
-      this.byteLength -= previous.payload.byteLength;
       this.blocks.delete(block.blockIndex);
+      if (previous.frameCount >= block.frameCount) {
+        this.blocks.set(block.blockIndex, previous);
+        return;
+      }
+      this.byteLength -= previous.payload.byteLength;
     }
     this.blocks.set(block.blockIndex, block);
     this.byteLength += block.payload.byteLength;

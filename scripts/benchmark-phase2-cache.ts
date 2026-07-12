@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { FfmpegCliProbeProvider } from "../electron/adapters/FfmpegCliProbeProvider.js";
@@ -10,10 +10,25 @@ import { createFrameCachePolicy } from "../src/domain/frameCachePolicy.js";
 const ffmpegPath = path.resolve("tools/ffmpeg/bin/ffmpeg.exe");
 const ffprobePath = path.resolve("tools/ffmpeg/bin/ffprobe.exe");
 const outputPath = path.resolve("temp/phase2-directional-cache.json");
-const samples = ["Sample_A.mp4", "Sample_B.mp4", "Sample_C.mp4"]
-  .map((fileName, index) => ({ label: `Sample ${String.fromCharCode(65 + index)}`, filePath: path.resolve("local-samples", fileName) }));
+const sampleRoot = path.resolve("local-samples");
+const extensions = new Set([".mp4", ".mov", ".avi", ".mkv"]);
+
+async function mediaFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map(async (entry) => {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) return mediaFiles(fullPath);
+    return entry.isFile() && extensions.has(path.extname(entry.name).toLowerCase()) ? [fullPath] : [];
+  }));
+  return nested.flat().sort((left, right) => left.localeCompare(right));
+}
 
 type Pattern = { name: string; indexes: number[] };
+
+function percentile(values: number[], fraction: number): number {
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))] ?? 0;
+}
 
 function patterns(frameCount: number): Pattern[] {
   const forwardCount = Math.min(1000, frameCount - 1);
@@ -72,9 +87,16 @@ async function runPattern(
   };
 }
 
-if (!existsSync(ffmpegPath) || !existsSync(ffprobePath) || samples.some((sample) => !existsSync(sample.filePath))) {
+if (!existsSync(ffmpegPath) || !existsSync(ffprobePath)) {
   throw new Error("PHASE2_LOCAL_INPUTS_NOT_READY");
 }
+
+const sampleFiles = await mediaFiles(sampleRoot);
+if (sampleFiles.length < 2) throw new Error(`PHASE2_NEEDS_MULTIPLE_SAMPLES_GOT_${sampleFiles.length}`);
+const samples = sampleFiles.map((filePath, index) => ({
+  label: `Sample ${String.fromCharCode(65 + index)}`,
+  filePath,
+}));
 
 const probeProvider = new FfmpegCliProbeProvider({ ffprobePath, timeoutMs: 180_000 });
 const results = [];
@@ -91,7 +113,10 @@ for (const sample of samples) {
   const baselineDecoded = await decoder.decodeRange(0, probe.frames.length, { retainPixels: false });
   const baseline = baselineDecoded.descriptors.map((frame) => frame.fingerprint);
   const policy = createFrameCachePolicy(probe.stream.width, probe.stream.height);
-  const comparison: Record<string, unknown> = {};
+  const comparison: Record<string, {
+    fixed: Awaited<ReturnType<typeof runPattern>>;
+    directional: Awaited<ReturnType<typeof runPattern>>;
+  }> = {};
   for (const pattern of patterns(probe.frames.length)) {
     comparison[pattern.name] = {
       fixed: await runPattern("fixed", sample.label, probe.frames.length, decoder, policy, pattern, baseline),
@@ -111,7 +136,23 @@ for (const sample of samples) {
   });
 }
 
-const output = { generatedAt: new Date().toISOString(), results };
+const summary = {
+  sampleCount: results.length,
+  directionalForwardPatternP95Ms: percentile(results.map((result) =>
+    result.comparison.forward.directional.elapsedMs), 0.95),
+  directionalReversePatternP95Ms: percentile(results.map((result) =>
+    result.comparison.reverse.directional.elapsedMs), 0.95),
+  directionalAlternatingPatternP95Ms: percentile(results.map((result) =>
+    result.comparison.alternating.directional.elapsedMs), 0.95),
+  maximumPeakCacheBytes: Math.max(...results.flatMap((result) =>
+    Object.values(result.comparison).map((pattern) =>
+      pattern.directional.peakCacheBytes))),
+  totalAccuracyErrors: results.reduce((sampleTotal, result) =>
+    sampleTotal + Object.values(result.comparison).reduce((patternTotal, pattern) => {
+      return patternTotal + pattern.fixed.accuracyErrors + pattern.directional.accuracyErrors;
+    }, 0), 0),
+};
+const output = { generatedAt: new Date().toISOString(), summary, results };
 await mkdir(path.dirname(outputPath), { recursive: true });
 await writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
-process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
