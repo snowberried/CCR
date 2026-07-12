@@ -6,14 +6,16 @@ const path = require("node:path");
 const { promisify } = require("node:util");
 const { pathToFileURL } = require("node:url");
 
-process.env.CCR_PHASE22_QA = "1";
-process.env.CCR_PHASE22_SPIKE = "1";
+process.env.CCR_PHASE23_QA = "1";
 
 const root = process.cwd();
 app.setAppPath(root);
-const outputPath = path.join(root, "temp", "phase22-ui-qa.json");
+const outputPath = path.join(root, "temp", "phase23-product-ui-qa.json");
 const extensions = new Set([".mp4", ".mov", ".avi", ".mkv"]);
 const execFileAsync = promisify(execFile);
+const soakArgument = process.argv.find((value) => value.startsWith("--soak-minutes="));
+const soakMinutes = Number(soakArgument?.split("=")[1] ?? 0);
+process.stdout.write(`phase23 product QA start (soak ${soakMinutes}m)\n`);
 
 async function mediaFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -42,9 +44,25 @@ function sendQaOpen(window, sampleIndex) {
   );
 }
 
+function sendKey(window, keyCode) {
+  window.webContents.sendInputEvent({ type: "keyDown", keyCode });
+  window.webContents.sendInputEvent({ type: "keyUp", keyCode });
+}
+
+function memorySlope(samples) {
+  const relevant = samples.slice(Math.floor(samples.length / 2));
+  if (relevant.length < 2) return 0;
+  const meanX = relevant.reduce((sum, sample) => sum + sample.minutes, 0) / relevant.length;
+  const meanY = relevant.reduce((sum, sample) => sum + sample.browserMiB, 0) / relevant.length;
+  const numerator = relevant.reduce((sum, sample) => sum + (sample.minutes - meanX) * (sample.browserMiB - meanY), 0);
+  const denominator = relevant.reduce((sum, sample) => sum + (sample.minutes - meanX) ** 2, 0);
+  return denominator === 0 ? 0 : numerator / denominator;
+}
+
 (async () => {
+  await rm(path.join(root, "temp", "phase23-product-ui-qa-error.txt"), { force: true });
   const files = await mediaFiles(path.join(root, "local-samples"));
-  if (files.length < 3) throw new Error("PHASE22_UI_QA_NEEDS_THREE_SAMPLES");
+  if (files.length < 3) throw new Error("PHASE23_UI_QA_NEEDS_THREE_SAMPLES");
   const actualSampleCount = files.length;
   const syntheticDirectory = await mkdtemp(path.join(os.tmpdir(), "ccr-phase22-ui-"));
   const fallbackSource = path.join(syntheticDirectory, "bt709.mp4");
@@ -54,14 +72,14 @@ function sendQaOpen(window, sampleIndex) {
     "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-y", fallbackSource,
   ], { windowsHide: true });
   files.push(fallbackSource);
-  const spikeModule = await import(pathToFileURL(path.join(root, "dist-electron", "electron", "spike22", "spikeFrameIpc.js")).href);
-  spikeModule.registerSpikeFrameIpc();
+  const cacheModule = await import(pathToFileURL(path.join(root, "dist-electron", "electron", "cache", "cacheFrameIpc.js")).href);
+  cacheModule.registerCacheFrameIpc();
   ipcMain.handle("frame:openQa", async (event, input) => {
     const sampleIndex = input && Number.isInteger(input.sampleIndex) ? input.sampleIndex : -1;
     if (sampleIndex < 0 || sampleIndex >= files.length) {
       return { canceled: false, error: "QA_SAMPLE_INDEX_INVALID" };
     }
-    const opened = await spikeModule.openSpikePathForQa(files[sampleIndex], event.sender);
+    const opened = await cacheModule.openCachePathForQa(files[sampleIndex], event.sender);
     return { ...opened, qaSampleIndex: sampleIndex };
   });
 
@@ -102,20 +120,20 @@ function sendQaOpen(window, sampleIndex) {
     await waitFor(window, `document.documentElement.dataset.qaBackgroundComplete === "true"`, 10_000, "background-cache");
 
     const initial = await window.webContents.executeJavaScript(`(() => {
-      window.__phase22Qa = { loadingInsertions: 0, acceptedSamples: [] };
+      window.__phase23Qa = { loadingInsertions: 0, acceptedSamples: [] };
       const surface = document.querySelector(".viewer-surface");
       new MutationObserver((mutations) => {
         for (const mutation of mutations) {
           for (const node of mutation.addedNodes) {
             if (node.nodeType === Node.ELEMENT_NODE && (node.matches?.(".loading-label") || node.querySelector?.(".loading-label"))) {
-              window.__phase22Qa.loadingInsertions += 1;
+              window.__phase23Qa.loadingInsertions += 1;
             }
           }
         }
       }).observe(surface, { childList: true, subtree: true });
       new MutationObserver(() => {
         const value = document.documentElement.dataset.qaSampleIndex;
-        if (value !== undefined) window.__phase22Qa.acceptedSamples.push(Number(value));
+        if (value !== undefined) window.__phase23Qa.acceptedSamples.push(Number(value));
       }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-qa-sample-index"] });
       const text = document.querySelector(".primary-readout strong").textContent.replaceAll(",", "");
       const [displayed, frameCount] = text.split("/").map((part) => Number(part.trim()));
@@ -131,6 +149,7 @@ function sendQaOpen(window, sampleIndex) {
       await new Promise((resolve) => setTimeout(resolve, 30));
     }
     window.webContents.sendInputEvent({ type: "keyUp", keyCode: "RIGHT" });
+    const holdDurationMs = performance.now() - holdStartedAt;
     const expectedDisplayed = Math.min(initial.frameCount, initial.displayed + repeatCount + 1);
     await waitFor(window, `(() => {
       const text = document.querySelector(".primary-readout strong")?.textContent.replaceAll(",", "") ?? "";
@@ -140,13 +159,38 @@ function sendQaOpen(window, sampleIndex) {
       const text = document.querySelector(".primary-readout strong").textContent.replaceAll(",", "");
       return {
         finalDisplayed: Number(text.split("/")[0].trim()),
-        loadingInsertions: window.__phase22Qa.loadingInsertions,
+        loadingInsertions: window.__phase23Qa.loadingInsertions,
         seekDecodeCount: Number(document.documentElement.dataset.qaSeekDecodeCount),
         error: document.querySelector(".error-message")?.textContent ?? null,
       };
     })()`, true);
 
-    await window.webContents.executeJavaScript(`window.__phase22Qa.acceptedSamples = []`, true);
+    let reverseRepeatCount = 0;
+    window.webContents.sendInputEvent({ type: "keyDown", keyCode: "LEFT" });
+    const reverseHoldStartedAt = performance.now();
+    while (performance.now() - reverseHoldStartedAt < 30_000) {
+      window.webContents.sendInputEvent({ type: "keyDown", keyCode: "LEFT", isAutoRepeat: true });
+      reverseRepeatCount += 1;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    window.webContents.sendInputEvent({ type: "keyUp", keyCode: "LEFT" });
+    const reverseHoldDurationMs = performance.now() - reverseHoldStartedAt;
+    const reverseExpectedDisplayed = Math.max(1, hold.finalDisplayed - reverseRepeatCount - 1);
+    await waitFor(window, `(() => {
+      const text = document.querySelector(".primary-readout strong")?.textContent.replaceAll(",", "") ?? "";
+      return text.startsWith("${reverseExpectedDisplayed} /") && document.querySelector(".status-indicator")?.textContent === "준비";
+    })()`, 10_000, "reverse-hold-settle");
+    const reverseHold = await window.webContents.executeJavaScript(`(() => {
+      const text = document.querySelector(".primary-readout strong").textContent.replaceAll(",", "");
+      return {
+        finalDisplayed: Number(text.split("/")[0].trim()),
+        loadingInsertions: window.__phase23Qa.loadingInsertions,
+        seekDecodeCount: Number(document.documentElement.dataset.qaSeekDecodeCount),
+        error: document.querySelector(".error-message")?.textContent ?? null,
+      };
+    })()`, true);
+
+    await window.webContents.executeJavaScript(`window.__phase23Qa.acceptedSamples = []`, true);
     await window.webContents.executeJavaScript(`
       window.dispatchEvent(new CustomEvent("ccr:qaOpen", { detail: 0 }));
       window.dispatchEvent(new CustomEvent("ccr:qaOpen", { detail: 1 }));
@@ -154,8 +198,17 @@ function sendQaOpen(window, sampleIndex) {
     `, true);
     await waitFor(window, `document.documentElement.dataset.qaSampleIndex === "2" && document.querySelector(".status-indicator")?.textContent === "준비"`, 10_000, "switch-final");
     const switchResult = await window.webContents.executeJavaScript(`({
-      acceptedSamples: window.__phase22Qa.acceptedSamples,
+      acceptedSamples: window.__phase23Qa.acceptedSamples,
       finalSample: Number(document.documentElement.dataset.qaSampleIndex),
+      error: document.querySelector(".error-message")?.textContent ?? null,
+    })`, true);
+
+    await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent("ccr:qaLoseContext"))`, true);
+    window.webContents.sendInputEvent({ type: "keyDown", keyCode: "RIGHT" });
+    window.webContents.sendInputEvent({ type: "keyUp", keyCode: "RIGHT" });
+    await waitFor(window, `document.documentElement.dataset.qaPixelFormat === "rgba" && document.querySelector(".status-indicator")?.textContent === "준비"`, 10_000, "context-loss-fallback");
+    const contextLossResult = await window.webContents.executeJavaScript(`({
+      pixelFormat: document.documentElement.dataset.qaPixelFormat,
       error: document.querySelector(".error-message")?.textContent ?? null,
     })`, true);
 
@@ -177,45 +230,136 @@ function sendQaOpen(window, sampleIndex) {
       error: document.querySelector(".error-message")?.textContent ?? null,
     })`, true);
 
+    let soakResult = null;
+    if (soakMinutes > 0) {
+      const soakStartedAt = performance.now();
+      const soakDeadline = soakStartedAt + soakMinutes * 60_000;
+      const memorySamples = [];
+      let cycles = 0;
+      let navigationRequests = 0;
+      let fallbackCycles = 0;
+      let contextLossCycles = 0;
+      let errors = 0;
+      let maximumSeekDecodeCount = 0;
+      while (performance.now() < soakDeadline) {
+        const sampleIndex = cycles % actualSampleCount;
+        await sendQaOpen(window, sampleIndex);
+        await waitFor(window, `document.documentElement.dataset.qaSampleIndex === "${sampleIndex}"`, 10_000, "soak-open");
+        await waitFor(window, `document.documentElement.dataset.qaBackgroundComplete === "true"`, 10_000, "soak-cache");
+
+        const frameCount = await window.webContents.executeJavaScript(`Number(document.querySelector(".primary-readout strong").textContent.replaceAll(",", "").split("/")[1].trim())`, true);
+        sendKey(window, "END");
+        await waitFor(window, `document.querySelector(".primary-readout strong")?.textContent.replaceAll(",", "").startsWith("${frameCount} /")`, 10_000, "soak-end");
+        sendKey(window, "HOME");
+        await waitFor(window, `document.querySelector(".primary-readout strong")?.textContent.trim().startsWith("1 /")`, 10_000, "soak-home");
+        for (let index = 0; index < Math.min(20, frameCount - 1); index += 1) sendKey(window, "RIGHT");
+        await window.webContents.executeJavaScript(`document.querySelector(".viewer-surface").dispatchEvent(new WheelEvent("wheel", { deltaY: 120, bubbles: true, cancelable: true }))`, true);
+        navigationRequests += 22;
+
+        if (cycles % 10 === 0) {
+          await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent("ccr:qaLoseContext"))`, true);
+          sendKey(window, "RIGHT");
+          await waitFor(window, `document.documentElement.dataset.qaPixelFormat === "rgba"`, 10_000, "soak-context-loss");
+          contextLossCycles += 1;
+        }
+        if (cycles % 3 === 0) {
+          await sendQaOpen(window, actualSampleCount);
+          await waitFor(window, `document.documentElement.dataset.qaSampleIndex === "${actualSampleCount}" && document.documentElement.dataset.qaPixelFormat === "rgba"`, 10_000, "soak-fallback");
+          fallbackCycles += 1;
+        }
+
+        const state = await window.webContents.executeJavaScript(`({
+          error: document.querySelector(".error-message")?.textContent ?? null,
+          seekDecodeCount: Number(document.documentElement.dataset.qaSeekDecodeCount ?? 0),
+        })`, true);
+        if (state.error) errors += 1;
+        maximumSeekDecodeCount = Math.max(maximumSeekDecodeCount, state.seekDecodeCount);
+        const browser = app.getAppMetrics().find((metric) => metric.type === "Browser");
+        memorySamples.push({
+          minutes: (performance.now() - soakStartedAt) / 60_000,
+          browserMiB: (browser?.memory.workingSetSize ?? 0) / 1024,
+        });
+        cycles += 1;
+        if (cycles % 10 === 0) process.stdout.write(`soak ${memorySamples.at(-1).minutes.toFixed(1)}m: ${cycles} cycles\n`);
+      }
+      soakResult = {
+        durationMinutes: (performance.now() - soakStartedAt) / 60_000,
+        cycles,
+        navigationRequests,
+        fallbackCycles,
+        contextLossCycles,
+        errors,
+        maximumSeekDecodeCount,
+        secondHalfBrowserRssSlopeMiBPerMinute: memorySlope(memorySamples),
+      };
+    }
+
     const result = {
       sampleCount: actualSampleCount,
       firstCanvasPaintMs,
       firstPixelFormat: initial.pixelFormat,
       hold: {
-        durationMs: performance.now() - holdStartedAt,
+        durationMs: holdDurationMs,
         repeatCount,
         expectedDisplayed,
         ...hold,
       },
+      reverseHold: {
+        durationMs: reverseHoldDurationMs,
+        repeatCount: reverseRepeatCount,
+        expectedDisplayed: reverseExpectedDisplayed,
+        ...reverseHold,
+      },
       switchResult,
+      contextLossResult,
       cancelResult,
       fallbackResult,
+      soakResult,
       peakElectronRssMiB: peaks,
       passed: hold.finalDisplayed === expectedDisplayed
         && hold.loadingInsertions === 0
         && hold.seekDecodeCount === 0
         && hold.error === null
+        && reverseHold.finalDisplayed === reverseExpectedDisplayed
+        && reverseHold.loadingInsertions === 0
+        && reverseHold.seekDecodeCount === 0
+        && reverseHold.error === null
         && switchResult.finalSample === 2
         && switchResult.acceptedSamples.every((value) => value === 2)
         && switchResult.error === null
+        && contextLossResult.pixelFormat === "rgba"
+        && contextLossResult.error === null
         && cancelResult.status === "취소됨"
         && cancelResult.acceptedAfterCancel === null
         && fallbackResult.pixelFormat === "rgba"
-        && fallbackResult.error === null,
+        && fallbackResult.error === null
+        && (soakResult === null || (
+          soakResult.errors === 0
+          && soakResult.maximumSeekDecodeCount === 0
+          && soakResult.secondHalfBrowserRssSlopeMiBPerMinute <= 10
+        )),
     };
     await mkdir(path.dirname(outputPath), { recursive: true });
     await writeFile(outputPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     if (!result.passed) process.exitCode = 1;
+  } catch (error) {
+    const message = `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`;
+    process.stderr.write(message);
+    process.exitCode = 1;
+    await mkdir(path.join(root, "temp"), { recursive: true });
+    await writeFile(path.join(root, "temp", "phase23-product-ui-qa-error.txt"), message, "utf8");
   } finally {
     clearInterval(memoryTimer);
-    await spikeModule.shutdownSpikeFrameIpcResources();
+    await cacheModule.shutdownCacheFrameIpcResources();
     ipcMain.removeHandler("frame:openQa");
-    window.destroy();
     await rm(syntheticDirectory, { recursive: true, force: true });
   }
   app.exit(process.exitCode ?? 0);
 })().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  app.exit(1);
+  const message = `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`;
+  process.stderr.write(message);
+  process.exitCode = 1;
+  void writeFile(path.join(root, "temp", "phase23-product-ui-qa-error.txt"), message, "utf8")
+    .finally(() => setTimeout(() => app.exit(1), 50));
 });

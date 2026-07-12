@@ -1,7 +1,7 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { YuvSpikeSession } from "../electron/spike22/YuvSpikeSession.js";
+import { YuvCacheSession } from "../electron/cache/YuvCacheSession.js";
 
 const minutesArgument = process.argv.find((value) => value.startsWith("--minutes="));
 const durationMinutes = Number(minutesArgument?.split("=")[1] ?? 30);
@@ -49,7 +49,7 @@ let randomState = 0x22c0ffee;
 
 while (performance.now() < deadline) {
   const sampleIndex = sessions % files.length;
-  const session = await YuvSpikeSession.open({ ffmpegPath, ffprobePath }, files[sampleIndex]);
+  const session = await YuvCacheSession.open({ ffmpegPath, ffprobePath }, files[sampleIndex]);
   try {
     session.startBackground(() => undefined);
     await session.waitForBackground();

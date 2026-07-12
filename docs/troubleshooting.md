@@ -123,3 +123,36 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ffmpeg.p
 - `electron/main.ts`가 같은 출력 파일을 가리키게 한다.
 - `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`는 유지한다.
 - 실제 Electron 파일 대화상자로 synthetic 영상과 Sample A/B/C를 열어 bridge 동작을 검증한다.
+
+## 2026-07-12 강제 RGBA rollback이 `분석 중`에 머무는 경우
+
+상태: 검증 완료
+
+### 증상
+
+- `CCR_FORCE_RGBA=1` 설치 앱에서 첫 RGBA frame과 72MiB segment cache는 표시되지만 상태가 `준비`로 바뀌지 않는다.
+
+### 재현 조건
+
+- Phase 2.3 preload를 사용하면서 main process는 Phase 2.1 `frameIpc` rollback을 등록한 경우다.
+
+### 원인
+
+- UI가 모든 open 결과에 I420 제품 cache 전용 `frame:cacheAckFirst`를 호출했다.
+- Phase 2.1 `frameIpc`에는 이 handler가 없어 Promise가 거부됐고 뒤의 `setStatus("ready")`에 도달하지 못했다.
+
+### 해결 절차
+
+- open metadata의 `productCache`가 참일 때만 first-frame ack를 호출한다.
+- 기존 RGBA frame/session/cache 구현은 변경하지 않는다.
+
+### 검증 방법
+
+- `CCR_FORCE_RGBA=1` 최종 설치 앱에서 실제 영상을 연다.
+- 진단에 72MiB budget과 segment range가 표시되고 상태가 `준비`로 전환되는지 확인한다.
+- 환경변수 없는 기본 설치 앱에서 I420 `full` cache와 `candidate-bt601-limited`가 그대로 동작하는지 재확인한다.
+
+### 관련 변경
+
+- `src/App.tsx`
+- `docs/13_PHASE2_3_PRODUCT_CACHE_INTEGRATION.md`

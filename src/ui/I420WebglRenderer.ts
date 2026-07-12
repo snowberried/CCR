@@ -13,6 +13,7 @@ type FrameLayout = {
 type FrameColorSpace = {
   fullRange: boolean;
   matrix: string;
+  webglAllowed: boolean;
 };
 
 const VERTEX_SHADER = `#version 300 es
@@ -108,7 +109,7 @@ export class I420WebglRenderer {
     colorSpace: FrameColorSpace;
   }): HTMLCanvasElement {
     if (this.lost || this.gl.isContextLost()) throw new Error("I420_WEBGL_CONTEXT_LOST");
-    if (input.colorSpace.fullRange || input.colorSpace.matrix !== "smpte170m") {
+    if (!input.colorSpace.webglAllowed || input.colorSpace.fullRange || input.colorSpace.matrix !== "smpte170m") {
       throw new Error("I420_WEBGL_COLORSPACE_UNSUPPORTED");
     }
 
@@ -147,6 +148,10 @@ export class I420WebglRenderer {
     for (const texture of this.textures) this.gl.deleteTexture(texture);
     for (const buffer of this.buffers) this.gl.deleteBuffer(buffer);
     this.gl.deleteProgram(this.program);
+  }
+
+  loseContext(): void {
+    this.gl.getExtension("WEBGL_lose_context")?.loseContext();
   }
 
   private readonly onContextLost = (event: Event) => {

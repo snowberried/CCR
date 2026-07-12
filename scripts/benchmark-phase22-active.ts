@@ -1,7 +1,7 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { YuvSpikeSession } from "../electron/spike22/YuvSpikeSession.js";
+import { YuvCacheSession } from "../electron/cache/YuvCacheSession.js";
 
 const root = path.resolve("local-samples");
 const outputPath = path.resolve("temp/phase22-active-navigation.json");
@@ -25,7 +25,7 @@ if (files.length < 2) throw new Error(`PHASE22_NEEDS_MULTIPLE_SAMPLES_GOT_${file
 const results = [];
 for (let index = 0; index < files.length; index += 1) {
   const sample = `Sample ${String.fromCharCode(65 + index)}`;
-  const session = await YuvSpikeSession.open({ ffmpegPath, ffprobePath }, files[index]);
+  const session = await YuvCacheSession.open({ ffmpegPath, ffprobePath }, files[index]);
   const backgroundStartedAt = performance.now();
   session.startBackground(() => undefined);
   while (!session.status().analysisReady && !session.status().backgroundComplete) {

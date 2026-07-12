@@ -94,6 +94,8 @@ export function App() {
     if (window.ccr?.openQaVideo) {
       delete document.documentElement.dataset.qaSampleIndex;
       delete document.documentElement.dataset.qaPixelFormat;
+      document.documentElement.dataset.qaBackgroundComplete = "false";
+      document.documentElement.dataset.qaSeekDecodeCount = "0";
     }
   }, []);
 
@@ -178,10 +180,10 @@ export function App() {
     const uiGeneration = uiGenerationRef.current;
     const sessionId = sessionIdRef.current;
     pumpingRef.current = true;
-    const loadingTimer = metadata.spike22
+    const loadingTimer = metadata.productCache
       ? window.setTimeout(() => setStatus("decoding"), 100)
       : null;
-    if (!metadata.spike22) setStatus("decoding");
+    if (!metadata.productCache) setStatus("decoding");
     setError(null);
     let failed = false;
     try {
@@ -278,7 +280,9 @@ export function App() {
     if (opened.qaSampleIndex !== undefined && window.ccr?.openQaVideo) {
       document.documentElement.dataset.qaSampleIndex = String(opened.qaSampleIndex);
     }
-    await window.ccr?.ackFirstFrame?.(opened.sessionId);
+    if (opened.metadata.productCache) {
+      await window.ccr?.ackFirstFrame?.(opened.sessionId);
+    }
     setStatus("ready");
   }, [clearViewer, metadata, renderFrame]);
 
@@ -292,8 +296,13 @@ export function App() {
       const sampleIndex = (event as CustomEvent<number>).detail;
       if (Number.isInteger(sampleIndex)) openQaSample(sampleIndex);
     };
+    const onQaLoseContext = () => i420RendererRef.current?.loseContext();
     window.addEventListener("ccr:qaOpen", onQaOpen);
-    return () => window.removeEventListener("ccr:qaOpen", onQaOpen);
+    window.addEventListener("ccr:qaLoseContext", onQaLoseContext);
+    return () => {
+      window.removeEventListener("ccr:qaOpen", onQaOpen);
+      window.removeEventListener("ccr:qaLoseContext", onQaLoseContext);
+    };
   }, [acceptOpenedVideo, clearViewer]);
 
   const openVideo = useCallback(() => {
@@ -363,7 +372,7 @@ export function App() {
       if (!metadata) {
         return;
       }
-      if (metadata.spike22 && metadata.analysisReady === false && event.key === "End") {
+      if (metadata.productCache && metadata.analysisReady === false && event.key === "End") {
         event.preventDefault();
         return;
       }
@@ -416,7 +425,7 @@ export function App() {
     };
   }, [cancel, goToFrame, metadata, openVideo, pump]);
 
-  useEffect(() => window.ccr?.onSpikeMetadata?.((update) => {
+  useEffect(() => window.ccr?.onCacheMetadata?.((update) => {
     if (update.sessionId !== sessionIdRef.current || !update.metadata) return;
     setMetadata((current) => current ? { ...current, ...update.metadata } : current);
     setCacheStatus(update.cacheStatus);
@@ -495,6 +504,8 @@ export function App() {
               <div><dt>방향</dt><dd>{cacheStatus?.direction ?? "-"}</dd></div>
               <div><dt>Hit / Miss</dt><dd>{cacheStatus ? `${cacheStatus.hits} / ${cacheStatus.misses}` : "-"}</dd></div>
               <div><dt>메모리</dt><dd>{cacheStatus ? `${formatBytes(cacheStatus.byteLength)} / ${formatBytes(cacheStatus.budgetBytes)}` : "-"}</dd></div>
+              <div><dt>모드</dt><dd>{cacheStatus?.cacheMode ?? "-"}</dd></div>
+              <div><dt>색 정책</dt><dd>{metadata?.colorSource ?? "-"}</dd></div>
               <div><dt>재사용 / 디코드</dt><dd>{cacheStatus ? `${cacheStatus.reusedFrames} / ${cacheStatus.decodedFrames}` : "-"}</dd></div>
               <div><dt>결과</dt><dd>{cacheResult}</dd></div>
               <div><dt>요청</dt><dd>{requestMs === null ? "-" : `${requestMs.toFixed(1)} ms`}</dd></div>
@@ -517,7 +528,7 @@ export function App() {
             min={1}
             max={metadata?.frameCount ?? 1}
             value={frameInput}
-            disabled={!metadata || (metadata.spike22 === true && metadata.analysisReady === false)}
+            disabled={!metadata || (metadata.productCache === true && metadata.analysisReady === false)}
             onChange={(event) => setFrameInput(event.target.value)}
             onBlur={submitFrameInput}
             onKeyDown={onFrameInputKeyDown}
@@ -526,7 +537,7 @@ export function App() {
         </div>
         <button type="button" title="다음 프레임" onClick={() => goToFrame(desiredFrameRef.current + 1)} disabled={!metadata}>&gt;</button>
         <button type="button" title="5프레임 다음" onClick={() => goToFrame(desiredFrameRef.current + 5)} disabled={!metadata}>+5</button>
-        <button type="button" title="마지막 프레임" onClick={() => metadata && goToFrame(metadata.frameCount - 1)} disabled={!metadata || (metadata.spike22 === true && metadata.analysisReady === false)}>&gt;|</button>
+        <button type="button" title="마지막 프레임" onClick={() => metadata && goToFrame(metadata.frameCount - 1)} disabled={!metadata || (metadata.productCache === true && metadata.analysisReady === false)}>&gt;|</button>
         <button type="button" title="디코딩 취소" onClick={cancel} disabled={status !== "decoding" && status !== "probing"}>취소</button>
       </nav>
     </main>

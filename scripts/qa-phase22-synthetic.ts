@@ -4,9 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { FfmpegCliProbeProvider } from "../electron/adapters/FfmpegCliProbeProvider.js";
 import { FfmpegFrameIndexProvider } from "../electron/adapters/FfmpegFrameIndexProvider.js";
+import { FfmpegRawFrameDecoder } from "../electron/adapters/FfmpegRawFrameDecoder.js";
 import { FfmpegYuvDecoder } from "../electron/adapters/FfmpegYuvDecoder.js";
 import { runProcess } from "../electron/adapters/process/runProcess.js";
-import { YuvSpikeSession } from "../electron/spike22/YuvSpikeSession.js";
+import { YuvCacheSession } from "../electron/cache/YuvCacheSession.js";
 import { createI420Layout } from "../src/domain/i420.js";
 
 const ffmpegPath = path.resolve("tools/ffmpeg/bin/ffmpeg.exe");
@@ -58,20 +59,20 @@ try {
   await add("hevc", "mp4", [
     "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24", "-t", "1",
     "-an", "-c:v", "libkvazaar", "-pix_fmt", "yuv420p",
-  ], true);
+  ], false);
   await add("b-frame", "mp4", [
     "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "2",
     "-an", "-c:v", "mpeg4", "-bf", "2", "-g", "15", "-pix_fmt", "yuv420p",
-  ], true);
+  ], false);
   await add("vfr", "mp4", [
     "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "2",
     "-vf", "setpts='if(lt(N,30),N/(30*TB),1/TB+(N-30)/(15*TB))'", "-fps_mode", "vfr",
     "-an", "-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p",
-  ], true);
+  ], false);
   await add("odd-i420", "mkv", [
     "-v", "error", "-f", "lavfi", "-i", "testsrc=size=321x241:rate=12", "-t", "1",
     "-an", "-c:v", "ffv1", "-pix_fmt", "yuv420p",
-  ], true);
+  ], false);
   await add("bt601-full", "mp4", [
     "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24", "-t", "1",
     "-an", "-c:v", "libopenh264", "-pix_fmt", "yuv420p",
@@ -93,7 +94,7 @@ try {
   for (const item of cases) {
     const full = await fullProvider.probe({ filePath: item.filePath });
     const packetIndex = await frameIndexProvider.probe(item.filePath);
-    const session = await YuvSpikeSession.open({ ffmpegPath, ffprobePath }, item.filePath);
+    const session = await YuvCacheSession.open({ ffmpegPath, ffprobePath }, item.filePath);
     session.startBackground(() => undefined);
     await session.waitForBackground();
     const layout = createI420Layout(full.stream.width, full.stream.height);
@@ -105,22 +106,34 @@ try {
       blockFrames: 1,
       timeoutMs: 120_000,
     });
+    const rgbaDecoder = new FfmpegRawFrameDecoder({
+      ffmpegPath,
+      sourcePath: item.filePath,
+      frames: full.frames,
+      width: full.stream.width,
+      height: full.stream.height,
+      timeoutMs: 120_000,
+    });
     const checkpoints = [...new Set([0, Math.floor(full.frames.length / 2), full.frames.length - 1])];
     let fingerprintErrors = 0;
     for (const frameIndex of checkpoints) {
       const cached = await session.requestFrame(frameIndex);
       let independent: Buffer | null = null;
-      await decoder.decodeSequential({
-        startFrameIndex: frameIndex,
-        startPtsSeconds: frameIndex === 0 ? undefined : full.frames[frameIndex].ptsSeconds ?? undefined,
-        frameCount: 1,
-        onBlock: (block) => { independent = block.payload; },
-      });
+      if (cached.pixelFormat === "i420") {
+        await decoder.decodeSequential({
+          startFrameIndex: frameIndex,
+          startPtsSeconds: frameIndex === 0 ? undefined : full.frames[frameIndex].ptsSeconds ?? undefined,
+          frameCount: 1,
+          onBlock: (block) => { independent = block.payload; },
+        });
+      } else {
+        independent = (await rgbaDecoder.decodeRange(frameIndex, 1)).pixelBuffers[0] ?? null;
+      }
       const independentHash = independent ? createHash("sha256").update(independent).digest("hex") : null;
       if (cached.fingerprint !== independentHash) fingerprintErrors += 1;
     }
     const color = session.colorSpace;
-    const webglSupported = !color.fullRange && color.matrix === "smpte170m";
+    const webglSupported = color.webglAllowed && !color.fullRange && color.matrix === "smpte170m";
     results.push({
       case: item.name,
       codec: full.stream.codecName,
@@ -158,6 +171,7 @@ try {
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, `${JSON.stringify({ summary, results }, null, 2)}\n`, "utf8");
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
+  if (Object.values(summary).slice(1).some((value) => value !== 0)) process.exitCode = 1;
 } finally {
   await rm(directory, { recursive: true, force: true });
 }

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { createI420Layout, chooseI420BlockFrames } from "../../src/domain/i420.js";
 import { createFrameCachePolicy } from "../../src/domain/frameCachePolicy.js";
 import { createYuvCachePolicy } from "../../src/domain/yuvCachePolicy.js";
+import { selectYuvDisplayPolicy, type YuvDisplayPolicy } from "../../src/domain/yuvDisplayPolicy.js";
 import type { FramePoint } from "../../src/domain/frameSequence.js";
 import { FfmpegFrameIndexProvider } from "../adapters/FfmpegFrameIndexProvider.js";
 import { FfmpegQuickProbeProvider, type QuickVideoProbe } from "../adapters/FfmpegQuickProbeProvider.js";
@@ -13,21 +14,22 @@ import { FfmpegYuvDecoder } from "../adapters/FfmpegYuvDecoder.js";
 import { FfmpegSegmentFrameProvider } from "../adapters/FfmpegSegmentFrameProvider.js";
 import { YuvBlockCache, type YuvCacheBlock } from "../adapters/YuvBlockCache.js";
 
-export type YuvSpikeSessionOptions = {
+export type YuvCacheSessionOptions = {
   totalMemoryBytes?: number;
   availableMemoryBytes?: number;
   cacheBudgetBytes?: number;
 };
 
-export type SpikeColorSpace = {
+export type CacheColorSpace = {
   fullRange: boolean;
   matrix: "bt709" | "smpte170m";
   primaries: "bt709" | "smpte170m";
   transfer: "bt709" | "smpte170m";
-  source: "metadata" | "candidate-bt601-limited";
+  source: "metadata-bt601-limited" | "candidate-bt601-limited" | "rgba-fallback";
+  webglAllowed: boolean;
 };
 
-export type SpikeFrame = {
+export type CachedFrame = {
   frameIndex: number;
   pts: string | null;
   ptsSeconds: number | null;
@@ -36,7 +38,7 @@ export type SpikeFrame = {
   pixelFormat: "i420" | "rgba";
   pixels: Buffer;
   layout?: ReturnType<typeof createI420Layout>;
-  colorSpace?: SpikeColorSpace;
+  colorSpace?: CacheColorSpace;
   fingerprint: string;
   cache: "hit" | "miss";
   requestMs: number;
@@ -48,24 +50,25 @@ function rationalValue(value: string | null): number | null {
   return Number(match[1]) / Number(match[2]);
 }
 
-function colorSpaceFor(probe: QuickVideoProbe): SpikeColorSpace {
+function colorSpaceFor(probe: QuickVideoProbe, policy: YuvDisplayPolicy): CacheColorSpace {
   const fullRange = probe.colorRange === "pc" || probe.colorRange === "jpeg";
   const is709 = probe.colorSpace === "bt709" || probe.colorPrimaries === "bt709";
-  const hasMetadata = Boolean(probe.colorRange || probe.colorSpace || probe.colorPrimaries || probe.colorTransfer);
   return {
     fullRange,
     matrix: is709 ? "bt709" : "smpte170m",
     primaries: is709 ? "bt709" : "smpte170m",
     transfer: is709 ? "bt709" : "smpte170m",
-    source: hasMetadata ? "metadata" : "candidate-bt601-limited",
+    source: policy.mode === "bt601-limited" ? "metadata-bt601-limited" : policy.mode,
+    webglAllowed: policy.mode !== "rgba-fallback",
   };
 }
 
-export class YuvSpikeSession {
+export class YuvCacheSession {
   readonly sessionId = randomUUID();
   readonly layout: ReturnType<typeof createI420Layout>;
   readonly blockFrames: number;
-  readonly colorSpace: SpikeColorSpace;
+  readonly displayPolicy: YuvDisplayPolicy;
+  readonly colorSpace: CacheColorSpace;
   readonly cache: YuvBlockCache;
   private readonly controller = new AbortController();
   private readonly decoder: FfmpegYuvDecoder;
@@ -95,13 +98,14 @@ export class YuvSpikeSession {
     readonly quickProbe: QuickVideoProbe,
     firstFrame: Buffer,
     readonly firstFrameMs: number,
-    private readonly options: YuvSpikeSessionOptions,
+    private readonly options: YuvCacheSessionOptions,
   ) {
     this.layout = createI420Layout(quickProbe.width, quickProbe.height);
     if (firstFrame.byteLength !== this.layout.byteLength) throw new Error("YUV_FIRST_FRAME_SIZE_INVALID");
     this.frameCount = quickProbe.reportedFrameCount ?? 1;
     this.blockFrames = chooseI420BlockFrames(this.layout.byteLength);
-    this.colorSpace = colorSpaceFor(quickProbe);
+    this.displayPolicy = selectYuvDisplayPolicy(quickProbe);
+    this.colorSpace = colorSpaceFor(quickProbe, this.displayPolicy);
     const policy = this.createPolicy(this.frameCount);
     this.cacheMode = policy.mode;
     this.initialBudgetBytes = Math.max(
@@ -131,7 +135,7 @@ export class YuvSpikeSession {
     paths: { ffmpegPath: string; ffprobePath: string },
     sourcePath: string,
     signal?: AbortSignal,
-    options: YuvSpikeSessionOptions = {},
+    options: YuvCacheSessionOptions = {},
   ) {
     const startedAt = performance.now();
     const quickProvider = new FfmpegQuickProbeProvider(paths.ffprobePath);
@@ -139,7 +143,7 @@ export class YuvSpikeSession {
       quickProvider.probe(sourcePath, signal),
       FfmpegYuvDecoder.decodeFirstRaw(paths.ffmpegPath, sourcePath, signal),
     ]);
-    return new YuvSpikeSession(paths, sourcePath, quickProbe, firstFrame, performance.now() - startedAt, options);
+    return new YuvCacheSession(paths, sourcePath, quickProbe, firstFrame, performance.now() - startedAt, options);
   }
 
   metadata() {
@@ -153,20 +157,21 @@ export class YuvSpikeSession {
       rotationDegrees: this.quickProbe.rotationDegrees,
       probeMs: this.firstFrameMs,
       analysisReady: this.analysisReady,
-      spike22: true,
+      productCache: true,
       blockFrames: this.blockFrames,
       colorSource: this.colorSpace.source,
+      colorReason: this.displayPolicy.reason,
       cacheMode: this.cacheMode,
     };
   }
 
-  firstFrame(): SpikeFrame {
+  firstFrame(): CachedFrame {
     const pixels = this.cache.getFrame(0, this.blockFrames);
     if (!pixels) throw new Error("YUV_FIRST_FRAME_MISSING");
     return this.serializeI420(0, pixels, "hit", this.firstFrameMs);
   }
 
-  startBackground(onMetadata: (metadata: ReturnType<YuvSpikeSession["metadata"]>) => void): void {
+  startBackground(onMetadata: (metadata: ReturnType<YuvCacheSession["metadata"]>) => void): void {
     if (this.backgroundStarted || this.closed) return;
     this.backgroundStarted = true;
     const runProbe = () => {
@@ -231,7 +236,7 @@ export class YuvSpikeSession {
     await this.cachePromise;
   }
 
-  async requestFrame(frameIndex: number, format: "i420" | "rgba" = "i420"): Promise<SpikeFrame> {
+  async requestFrame(frameIndex: number, format: "i420" | "rgba" = "i420"): Promise<CachedFrame> {
     if (this.closed || !Number.isInteger(frameIndex) || frameIndex < 0 || frameIndex >= this.frameCount) {
       throw new Error("FRAME_INDEX_OUT_OF_RANGE");
     }
@@ -332,6 +337,9 @@ export class YuvSpikeSession {
   }
 
   private createPolicy(frameCount: number) {
+    if (this.displayPolicy.mode === "rgba-fallback") {
+      return { budgetBytes: 0, enabled: false, mode: "fallback" as const };
+    }
     if (this.options.cacheBudgetBytes !== undefined) {
       if (!Number.isInteger(this.options.cacheBudgetBytes) || this.options.cacheBudgetBytes <= 0) {
         throw new RangeError("INVALID_YUV_CACHE_BUDGET");
@@ -351,7 +359,7 @@ export class YuvSpikeSession {
     });
   }
 
-  private serializeI420(frameIndex: number, pixels: Buffer, cache: "hit" | "miss", requestMs: number): SpikeFrame {
+  private serializeI420(frameIndex: number, pixels: Buffer, cache: "hit" | "miss", requestMs: number): CachedFrame {
     const frame = this.frames[frameIndex];
     return {
       frameIndex,
@@ -369,7 +377,7 @@ export class YuvSpikeSession {
     };
   }
 
-  private async requestRgba(frameIndex: number, startedAt: number): Promise<SpikeFrame> {
+  private async requestRgba(frameIndex: number, startedAt: number): Promise<CachedFrame> {
     if (!this.analysisReady) throw new Error("FRAME_NOT_READY");
     this.ensureRgbaProvider(this.frames.length);
     const decoded = await this.rgbaProvider!.requestFrame({
@@ -399,7 +407,7 @@ export class YuvSpikeSession {
 
   private recordBackgroundError(
     error: unknown,
-    onMetadata: (metadata: ReturnType<YuvSpikeSession["metadata"]>) => void,
+    onMetadata: (metadata: ReturnType<YuvCacheSession["metadata"]>) => void,
   ): void {
     if (this.closed) return;
     this.backgroundError = error instanceof Error ? error.message : "YUV_BACKGROUND_FAILED";

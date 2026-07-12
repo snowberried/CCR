@@ -41,6 +41,9 @@
 | YUV block | 약 32MiB slab 목표, 현재 406×720은 64프레임 | 32/64 평균이 각각 652.47/644.85ms이고 64가 block 객체 수를 절반으로 줄임 |
 | frame index | background decode와 병렬인 packet PTS index | 실제 11개와 B-frame/VFR 합성에서 full frame probe와 불일치 0건 |
 | YUV 표시 후보 | BT.601 limited WebGL2, 그 외 조건은 기존 RGBA fallback | VideoFrame은 색 기준 실패, WebGL은 평균 0.407·p99 1·최대 2로 통과 |
+| Phase 2.3 제품 기본 mode | 전체 I420 cache 또는 제한 LRU를 기본 사용 | Phase 2.2 승인과 실제 11개 제품 재측정 통과 |
+| Phase 2.3 색 fallback | 명시적 BT.601 limited와 승인된 metadata 없는 H.264/yuv420p만 WebGL2 | 새 공급원 profile을 임의 BT.601로 일반화하지 않기 위해 |
+| 긴급 rollback | `CCR_FORCE_RGBA=1`에서 Phase 2.1 RGBA IPC 전체 사용 | 제품 통합 뒤에도 즉시 복구 가능하게 유지 |
 
 ## 현재 제안
 
@@ -52,7 +55,7 @@
 | 프로젝트 형식 | versioned JSON 계열 | schema와 저장 안전성 검토 |
 | 좌표 | 원본 content 기준 0~1 normalized 좌표 | 렌더링/내보내기 왕복 검증 |
 | 이미지 기본 형식 | PNG, JPEG는 선택 | 공유 용량 요구 확인 |
-| Phase 2.2 제품 통합 | 전체 I420 cache + 제한 LRU + RGBA fallback을 기본 후보로 제안 | 30분 soak 완료와 사용자 승인 뒤 별도 통합 작업 |
+| Phase 2.3 파일럿 | 새 설치본으로 아내분 실제 사용 피드백 수집 | 설치·기능 통합 QA 완료 후 |
 
 ## 중요한 미결정 사항
 
@@ -121,24 +124,24 @@
 - Phase 1 기준 데스크톱 구현은 Electron + React + TypeScript + FFmpeg CLI로 확정했다.
 - 향후 내보내기·고해상도·장시간 영상에서 측정된 병목이 생길 때만 Tauri, Qt, .NET 또는 native addon을 재평가한다.
 
-### 13. Phase 2.2 색 metadata 없는 영상
+### 13. Phase 2.3 색 metadata 없는 영상
 
 - 현재 실제 11개는 range/matrix/primaries/transfer metadata가 모두 없다.
 - 독립 RGBA 기준과 일치한 `candidate-bt601-limited` WebGL2 경로는 기술적으로 통과했다.
-- 새 공급원에 같은 가정을 적용할지, metadata 없음은 항상 RGBA fallback할지는 제품 통합 전 사용자 결정이 필요하다.
+- 현재 공급원의 H.264/yuv420p만 candidate로 허용하고, 새 공급원 profile과 다른 codec은 RGBA fallback하기로 승인했다.
 
-### 14. Phase 2.2 RAM 사용 허용
+### 14. Phase 2.3 RAM 사용 허용
 
 - 최대 실제 영상 payload는 1,203.9MiB, Node peak RSS는 약 1.27GiB였다.
-- 16GB 기준 2GiB soft cap 안이지만, 제품 기본값으로 약 1.3GB main-process RSS를 허용할지는 사용자 승인이 필요하다.
+- 16GB 기준 최대 2GiB dynamic soft cap과 실제 약 1.3GB payload를 제품 기본값으로 승인했다.
 - 32GB용 4GiB 고성능 모드는 이번 단계에서 구현하지 않는다.
 
-## Phase 2.2 제품 통합 전 사용자 승인 체크리스트
+## Phase 2.2 제품 통합 승인 체크리스트
 
-- [ ] 전체 I420 cache + 제한 LRU + RGBA fallback을 제품 기본 경로로 통합
-- [ ] 색 metadata 없음에 `candidate-bt601-limited`를 허용할지 결정
-- [ ] 16GB PC에서 2GiB soft cap과 약 1.3GB 관측 peak RSS 허용
-- [ ] 제품 통합 후 실제 표시 pilot과 GPU/context-loss QA 시행
+- [x] 전체 I420 cache + 제한 LRU + RGBA fallback을 제품 기본 경로로 통합
+- [x] 현재 공급원 metadata 없는 H.264/yuv420p에 `candidate-bt601-limited` 허용
+- [x] 16GB PC에서 최대 2GiB dynamic soft cap 허용
+- [x] 제품 통합 후 실제 표시와 GPU context-loss QA 시행
 
 ## Phase 1 시작 전 사용자 승인 체크리스트
 

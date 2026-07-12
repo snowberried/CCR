@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runProcess } from "../electron/adapters/process/runProcess";
-import { YuvSpikeSession } from "../electron/spike22/YuvSpikeSession";
+import { YuvCacheSession } from "../electron/cache/YuvCacheSession";
 
 const ffmpegPath = path.resolve("tools/ffmpeg/bin/ffmpeg.exe");
 const ffprobePath = path.resolve("tools/ffmpeg/bin/ffprobe.exe");
@@ -26,7 +26,10 @@ test("opens first I420 frame before filling a full cache session", async () => {
   const sourcePath = path.join(directory, "synthetic.mp4");
   try {
     await createSynthetic(sourcePath, 1);
-    const session = await YuvSpikeSession.open({ ffmpegPath, ffprobePath }, sourcePath);
+    const session = await YuvCacheSession.open({ ffmpegPath, ffprobePath }, sourcePath);
+    assert.equal(session.metadata().productCache, true);
+    assert.equal(session.metadata().colorSource, "candidate-bt601-limited");
+    assert.equal(session.metadata().cacheMode, "full");
     assert.equal(session.firstFrame().pixelFormat, "i420");
     session.startBackground(() => undefined);
     await session.waitForBackground();
@@ -34,6 +37,7 @@ test("opens first I420 frame before filling a full cache session", async () => {
     assert.equal((await session.requestFrame(11)).cache, "hit");
     assert.equal(session.status().seekDecodeCount, 0);
     session.close();
+    assert.equal(session.status().byteLength, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -44,7 +48,7 @@ test("uses the existing RGBA segment cache when the YUV policy falls back", asyn
   const sourcePath = path.join(directory, "synthetic.mp4");
   try {
     await createSynthetic(sourcePath, 1);
-    const session = await YuvSpikeSession.open(
+    const session = await YuvCacheSession.open(
       { ffmpegPath, ffprobePath },
       sourcePath,
       undefined,
@@ -61,6 +65,7 @@ test("uses the existing RGBA segment cache when the YUV policy falls back", asyn
     assert.equal(second.cache, "hit");
     assert.equal(session.status().backgroundDecodeCount, 0);
     session.close();
+    assert.equal(session.status().byteLength, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -71,7 +76,7 @@ test("evicts and reloads blocks under a forced LRU budget", async () => {
   const sourcePath = path.join(directory, "synthetic.mp4");
   try {
     await createSynthetic(sourcePath, 10);
-    const session = await YuvSpikeSession.open(
+    const session = await YuvCacheSession.open(
       { ffmpegPath, ffprobePath },
       sourcePath,
       undefined,
@@ -88,6 +93,7 @@ test("evicts and reloads blocks under a forced LRU budget", async () => {
     session.applyMemoryPressure(1024 ** 2);
     assert.equal(session.status().cacheMode, "lru");
     session.close();
+    assert.equal(session.status().byteLength, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

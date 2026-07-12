@@ -50,7 +50,8 @@ type CcrVideoColorSpace = {
   matrix: "bt709" | "smpte170m";
   primaries: "bt709" | "smpte170m";
   transfer: "bt709" | "smpte170m";
-  source: "metadata" | "candidate-bt601-limited";
+  source: "metadata-bt601-limited" | "candidate-bt601-limited" | "rgba-fallback";
+  webglAllowed: boolean;
 };
 
 type CcrFrameDiagnostics = {
@@ -95,9 +96,10 @@ type CcrOpenVideoResponse = {
       belowMinimumTarget: boolean;
     };
     analysisReady?: boolean;
-    spike22?: boolean;
+    productCache?: boolean;
     blockFrames?: number;
     colorSource?: string;
+    colorReason?: string;
     cacheMode?: "full" | "lru" | "fallback";
   };
   frame?: CcrFrameResponse;
@@ -108,6 +110,7 @@ interface Window {
   ccr?: {
     getRuntimeStatus: () => Promise<{
       phase: string;
+      decoderMode: "i420-cache" | "rgba-rollback";
       ffmpegConfigured: boolean;
     }>;
     openVideo: () => Promise<CcrOpenVideoResponse>;
@@ -115,7 +118,7 @@ interface Window {
     openQaVideo?: (sampleIndex: number) => Promise<CcrOpenVideoResponse>;
     getFrame: (sessionId: string, frameIndex: number, displayFormat?: "i420" | "rgba") => Promise<CcrFrameResponse>;
     ackFirstFrame?: (sessionId: string) => Promise<void>;
-    onSpikeMetadata?: (callback: (value: {
+    onCacheMetadata?: (callback: (value: {
       sessionId: string;
       metadata: CcrOpenVideoResponse["metadata"];
       cacheStatus: CcrCacheStatus;

@@ -2,10 +2,10 @@ import { app, dialog, ipcMain, type WebContents } from "electron";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { resolveFfmpegRuntimePaths } from "../runtimePaths.js";
-import { YuvSpikeSession, type SpikeFrame } from "./YuvSpikeSession.js";
+import { YuvCacheSession, type CachedFrame } from "./YuvCacheSession.js";
 
 const SUPPORTED_EXTENSIONS = new Set([".mp4", ".mov", ".avi", ".mkv"]);
-let activeSession: YuvSpikeSession | null = null;
+let activeSession: YuvCacheSession | null = null;
 let openingController: AbortController | null = null;
 let activeGeneration = 0;
 
@@ -13,7 +13,7 @@ function validVideoPath(filePath: unknown): filePath is string {
   return typeof filePath === "string" && path.isAbsolute(filePath) && SUPPORTED_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
-function serializeFrame(frame: SpikeFrame, session: YuvSpikeSession, generation: number) {
+function serializeFrame(frame: CachedFrame, session: YuvCacheSession, generation: number) {
   return {
     accepted: true as const,
     descriptor: {
@@ -49,7 +49,7 @@ async function openPath(filePath: string, sender: WebContents) {
     resourcesPath: process.resourcesPath,
   });
   try {
-    const session = await YuvSpikeSession.open(runtimePaths, filePath, controller.signal);
+    const session = await YuvCacheSession.open(runtimePaths, filePath, controller.signal);
     if (generation !== activeGeneration) {
       session.close();
       return { canceled: false as const, error: "OPEN_SUPERSEDED" };
@@ -63,20 +63,20 @@ async function openPath(filePath: string, sender: WebContents) {
       frame: serializeFrame(session.firstFrame(), session, generation),
     };
   } catch (error) {
-    return { canceled: false as const, error: error instanceof Error ? error.message : "SPIKE_OPEN_FAILED" };
+    return { canceled: false as const, error: error instanceof Error ? error.message : "CACHE_OPEN_FAILED" };
   } finally {
     if (openingController === controller) openingController = null;
   }
 }
 
-export function openSpikePathForQa(filePath: string, sender: WebContents) {
-  if (process.env.CCR_PHASE22_QA !== "1" || !validVideoPath(filePath)) {
+export function openCachePathForQa(filePath: string, sender: WebContents) {
+  if (process.env.CCR_PHASE23_QA !== "1" || !validVideoPath(filePath)) {
     return Promise.resolve({ canceled: false as const, error: "QA_VIDEO_SOURCE_DISABLED" });
   }
   return openPath(filePath, sender);
 }
 
-export function registerSpikeFrameIpc(): void {
+export function registerCacheFrameIpc(): void {
   ipcMain.handle("frame:open", async (event) => {
     const selection = await dialog.showOpenDialog({ properties: ["openFile"], filters: [{ name: "Video", extensions: ["mp4", "mov", "avi", "mkv"] }] });
     if (selection.canceled || selection.filePaths.length !== 1) return { canceled: true as const };
@@ -87,13 +87,13 @@ export function registerSpikeFrameIpc(): void {
     if (!validVideoPath(filePath)) return { canceled: false as const, error: "INVALID_VIDEO_SOURCE" };
     return openPath(filePath, event.sender);
   });
-  ipcMain.handle("frame:spikeAckFirst", (event, input: unknown) => {
+  ipcMain.handle("frame:cacheAckFirst", (event, input: unknown) => {
     const session = activeSession;
     if (!session || typeof input !== "object" || input === null || (input as { sessionId?: unknown }).sessionId !== session.sessionId) return;
     const generation = activeGeneration;
     session.startBackground((metadata) => {
       if (activeSession === session && activeGeneration === generation) {
-        event.sender.send("frame:spikeMetadata", { sessionId: session.sessionId, metadata, cacheStatus: session.status() });
+        event.sender.send("frame:cacheMetadata", { sessionId: session.sessionId, metadata, cacheStatus: session.status() });
       }
     });
   });
@@ -127,7 +127,7 @@ export function registerSpikeFrameIpc(): void {
   });
 }
 
-export async function shutdownSpikeFrameIpcResources(): Promise<void> {
+export async function shutdownCacheFrameIpcResources(): Promise<void> {
   activeGeneration += 1;
   openingController?.abort();
   activeSession?.close();

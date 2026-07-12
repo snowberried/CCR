@@ -1,6 +1,6 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { YuvSpikeSession } from "../electron/spike22/YuvSpikeSession.js";
+import { YuvCacheSession } from "../electron/cache/YuvCacheSession.js";
 
 const root = path.resolve("local-samples");
 const outputPath = path.resolve("temp/phase22-lru-benchmark.json");
@@ -23,7 +23,7 @@ const files = await mediaFiles(root);
 if (files.length < 3) throw new Error("PHASE22_LRU_NEEDS_THREE_SAMPLES");
 const results = [];
 for (let index = 0; index < files.length; index += 1) {
-  const session = await YuvSpikeSession.open(
+  const session = await YuvCacheSession.open(
     { ffmpegPath, ffprobePath },
     files[index],
     undefined,

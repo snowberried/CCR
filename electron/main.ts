@@ -2,13 +2,15 @@ import { app, BrowserWindow, ipcMain } from "electron";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { selectProductDecoderMode } from "../src/application/productDecoderMode.js";
 import { registerFrameIpc, shutdownFrameIpcResources } from "./frameIpc.js";
-import { registerSpikeFrameIpc, shutdownSpikeFrameIpcResources } from "./spike22/spikeFrameIpc.js";
+import { registerCacheFrameIpc, shutdownCacheFrameIpcResources } from "./cache/cacheFrameIpc.js";
 import { resolveFfmpegRuntimePaths } from "./runtimePaths.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
-const spike22 = process.env.CCR_PHASE22_SPIKE === "1";
+const decoderMode = selectProductDecoderMode(process.env.CCR_FORCE_RGBA);
+const forceRgba = decoderMode === "rgba-rollback";
 
 function createWindow() {
   const window = new BrowserWindow({
@@ -41,13 +43,14 @@ ipcMain.handle("runtime:getStatus", () => {
     resourcesPath: process.resourcesPath,
   });
   return {
-    phase: spike22 ? "phase2.2-cache-spike" : "phase2.1-windows-pilot",
+    phase: "phase2.3-product-cache",
+    decoderMode,
     ffmpegConfigured: existsSync(ffmpegPath) && existsSync(ffprobePath),
   };
 });
 
-if (spike22) registerSpikeFrameIpc();
-else registerFrameIpc();
+if (forceRgba) registerFrameIpc();
+else registerCacheFrameIpc();
 
 app.whenReady().then(() => {
   createWindow();
@@ -72,5 +75,5 @@ app.on("before-quit", (event) => {
   }
   event.preventDefault();
   shutdownStarted = true;
-  void (spike22 ? shutdownSpikeFrameIpcResources() : shutdownFrameIpcResources()).finally(() => app.quit());
+  void (forceRgba ? shutdownFrameIpcResources() : shutdownCacheFrameIpcResources()).finally(() => app.quit());
 });

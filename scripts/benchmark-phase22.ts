@@ -4,7 +4,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { FfmpegQuickProbeProvider } from "../electron/adapters/FfmpegQuickProbeProvider.js";
 import { FfmpegYuvDecoder } from "../electron/adapters/FfmpegYuvDecoder.js";
-import { YuvSpikeSession } from "../electron/spike22/YuvSpikeSession.js";
+import { YuvCacheSession } from "../electron/cache/YuvCacheSession.js";
 
 const root = path.resolve("local-samples");
 const outputPath = path.resolve("temp/phase22-cache-benchmark.json");
@@ -49,7 +49,7 @@ for (let sampleIndex = 0; sampleIndex < files.length; sampleIndex += 1) {
   const quick = await quickProvider.probe(filePath);
   const firstFrameRuns: number[] = [];
   for (let run = 0; run < 5; run += 1) {
-    const firstSession = await YuvSpikeSession.open({ ffmpegPath, ffprobePath }, filePath);
+    const firstSession = await YuvCacheSession.open({ ffmpegPath, ffprobePath }, filePath);
     firstFrameRuns.push(firstSession.firstFrameMs);
     firstSession.close();
   }
@@ -71,7 +71,7 @@ for (let sampleIndex = 0; sampleIndex < files.length; sampleIndex += 1) {
 
   global.gc?.();
   const rssBeforeSession = process.memoryUsage().rss;
-  const session = await YuvSpikeSession.open({ ffmpegPath, ffprobePath }, filePath);
+  const session = await YuvCacheSession.open({ ffmpegPath, ffprobePath }, filePath);
   const backgroundStartedAt = performance.now();
   session.startBackground(() => undefined);
   await session.waitForCache();
