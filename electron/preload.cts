@@ -2,6 +2,14 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 contextBridge.exposeInMainWorld("ccr", {
   getRuntimeStatus: () => ipcRenderer.invoke("runtime:getStatus"),
+  getFullscreen: () => ipcRenderer.invoke("window:getFullscreen"),
+  setFullscreen: (value: boolean) => ipcRenderer.invoke("window:setFullscreen", value),
+  toggleFullscreen: () => ipcRenderer.invoke("window:toggleFullscreen"),
+  onFullscreenChanged: (callback: (value: boolean) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: boolean) => callback(value);
+    ipcRenderer.on("window:fullscreenChanged", listener);
+    return () => ipcRenderer.removeListener("window:fullscreenChanged", listener);
+  },
   openVideo: () => ipcRenderer.invoke("frame:open"),
   openDroppedVideo: (file: File) =>
     ipcRenderer.invoke("frame:openDropped", { filePath: webUtils.getPathForFile(file) }),

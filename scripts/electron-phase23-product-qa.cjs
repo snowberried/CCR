@@ -73,7 +73,9 @@ function memorySlope(samples) {
   ], { windowsHide: true });
   files.push(fallbackSource);
   const cacheModule = await import(pathToFileURL(path.join(root, "dist-electron", "electron", "cache", "cacheFrameIpc.js")).href);
+  const fullscreenModule = await import(pathToFileURL(path.join(root, "dist-electron", "electron", "fullscreenIpc.js")).href);
   cacheModule.registerCacheFrameIpc();
+  fullscreenModule.registerFullscreenIpc();
   ipcMain.handle("frame:openQa", async (event, input) => {
     const sampleIndex = input && Number.isInteger(input.sampleIndex) ? input.sampleIndex : -1;
     if (sampleIndex < 0 || sampleIndex >= files.length) {
@@ -96,6 +98,7 @@ function memorySlope(samples) {
       backgroundThrottling: false,
     },
   });
+  fullscreenModule.attachFullscreenEvents(window);
 
   const peaks = { browserMiB: 0, rendererMiB: 0, gpuMiB: 0 };
   const memoryTimer = setInterval(() => {
@@ -139,6 +142,11 @@ function memorySlope(samples) {
       const [displayed, frameCount] = text.split("/").map((part) => Number(part.trim()));
       return { displayed, frameCount, pixelFormat: document.documentElement.dataset.qaPixelFormat };
     })()`, true);
+    await window.webContents.executeJavaScript(`document.querySelector('button[title="확대 (+)"]')?.click()`, true);
+    const holdTransformBefore = await window.webContents.executeJavaScript(`[
+      document.documentElement.dataset.qaViewZoom,
+      document.documentElement.dataset.qaViewCenter,
+    ]`, true);
 
     let repeatCount = 0;
     window.webContents.sendInputEvent({ type: "keyDown", keyCode: "RIGHT" });
@@ -189,6 +197,10 @@ function memorySlope(samples) {
         error: document.querySelector(".error-message")?.textContent ?? null,
       };
     })()`, true);
+    const holdTransformAfter = await window.webContents.executeJavaScript(`[
+      document.documentElement.dataset.qaViewZoom,
+      document.documentElement.dataset.qaViewCenter,
+    ]`, true);
 
     await window.webContents.executeJavaScript(`window.__phase23Qa.acceptedSamples = []`, true);
     await window.webContents.executeJavaScript(`
@@ -310,6 +322,7 @@ function memorySlope(samples) {
         expectedDisplayed: reverseExpectedDisplayed,
         ...reverseHold,
       },
+      holdTransformPreserved: JSON.stringify(holdTransformBefore) === JSON.stringify(holdTransformAfter),
       switchResult,
       contextLossResult,
       cancelResult,
@@ -324,6 +337,7 @@ function memorySlope(samples) {
         && reverseHold.loadingInsertions === 0
         && reverseHold.seekDecodeCount === 0
         && reverseHold.error === null
+        && JSON.stringify(holdTransformBefore) === JSON.stringify(holdTransformAfter)
         && switchResult.finalSample === 2
         && switchResult.acceptedSamples.every((value) => value === 2)
         && switchResult.error === null
@@ -353,6 +367,7 @@ function memorySlope(samples) {
     clearInterval(memoryTimer);
     await cacheModule.shutdownCacheFrameIpcResources();
     ipcMain.removeHandler("frame:openQa");
+    fullscreenModule.unregisterFullscreenIpc();
     await rm(syntheticDirectory, { recursive: true, force: true });
   }
   app.exit(process.exitCode ?? 0);

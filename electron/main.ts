@@ -6,6 +6,7 @@ import { selectProductDecoderMode } from "../src/application/productDecoderMode.
 import { registerFrameIpc, shutdownFrameIpcResources } from "./frameIpc.js";
 import { registerCacheFrameIpc, shutdownCacheFrameIpcResources } from "./cache/cacheFrameIpc.js";
 import { resolveFfmpegRuntimePaths } from "./runtimePaths.js";
+import { attachFullscreenEvents, registerFullscreenIpc } from "./fullscreenIpc.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -27,6 +28,8 @@ function createWindow() {
     },
   });
 
+  attachFullscreenEvents(window);
+
   if (isDev) {
     void window.loadURL(process.env.VITE_DEV_SERVER_URL as string);
     return;
@@ -43,11 +46,13 @@ ipcMain.handle("runtime:getStatus", () => {
     resourcesPath: process.resourcesPath,
   });
   return {
-    phase: "phase2.3-product-cache",
+    phase: "phase3a-view-transform",
     decoderMode,
     ffmpegConfigured: existsSync(ffmpegPath) && existsSync(ffprobePath),
   };
 });
+
+registerFullscreenIpc();
 
 if (forceRgba) registerFrameIpc();
 else registerCacheFrameIpc();

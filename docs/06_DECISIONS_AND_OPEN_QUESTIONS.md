@@ -44,12 +44,17 @@
 | Phase 2.3 제품 기본 mode | 전체 I420 cache 또는 제한 LRU를 기본 사용 | Phase 2.2 승인과 실제 11개 제품 재측정 통과 |
 | Phase 2.3 색 fallback | 명시적 BT.601 limited와 승인된 metadata 없는 H.264/yuv420p만 WebGL2 | 새 공급원 profile을 임의 BT.601로 일반화하지 않기 위해 |
 | 긴급 rollback | `CCR_FORCE_RGBA=1`에서 Phase 2.1 RGBA IPC 전체 사용 | 제품 통합 뒤에도 즉시 복구 가능하게 유지 |
+| Phase 3A 좌표 | 원본 image pixel과 viewport 중심의 image-space center | 향후 normalized 주석 좌표와 정확히 왕복하기 위해 |
+| Phase 3A Zoom | contain Fit을 1×, 최대 10×로 제한 | 검은 영역에서 영상이 불필요하게 작아지거나 zoom이 폭주하지 않게 하기 위해 |
+| Phase 3A 작은 축 | viewport보다 작은 영상 축은 cursor anchor보다 중앙 정렬 clamp 우선 | 확대되지 않은 축에서 영상이 떠다니지 않게 하기 위해 |
+| Phase 3A filtering | 공통 canvas 합성에서 linear | 색 shader를 변경하지 않고 CT 영상 확대를 부드럽게 유지하기 위해 |
+| Phase 3A fullscreen | 제한된 Electron BrowserWindow fullscreen IPC | Windows 설치 앱 전체화면과 resize를 안정적으로 연결하기 위해 |
 
 ## 현재 제안
 
 | 항목 | 1순위 제안 | 확정 조건 |
 | --- | --- | --- |
-| 다음 단계 | 실제 Phase 2 사용 피드백 수집 | Phase 3 범위에 대한 별도 사용자 승인 |
+| 다음 단계 | Phase 3A 설치본 Zoom/Pan 파일럿 | Phase 3B 표시 보정 범위 별도 승인 |
 | FFmpeg 연동 | 먼저 CLI process로 검증, native addon은 근거가 생길 때만 검토 | 성능·배포 측정 |
 | 초기 배포 | 포터블 Windows 앱 | 실제 사용 및 보안 정책 확인 |
 | 프로젝트 형식 | versioned JSON 계열 | schema와 저장 안전성 검토 |
@@ -161,8 +166,7 @@
 
 ## Phase 3 시작 전 사용자 승인 체크리스트
 
-- [ ] 아내의 Phase 2 실제 사용 피드백 확인
-- [ ] Zoom/Pan과 표시 보정 중 우선순위 결정
-- [ ] 자동 재생을 Phase 3에 포함할지 결정
-- [ ] 주석·이미지 저장은 별도 후속 Phase로 유지할지 결정
-- [ ] DICOM/PACS는 계속 제외
+- [x] Phase 2.3 제품 기준선 위에서 Zoom/Pan을 Phase 3A로 우선 진행
+- [x] 자동 재생과 표시 보정은 Phase 3A에서 제외
+- [x] 주석·이미지 저장은 별도 후속 Phase로 유지
+- [x] DICOM/PACS는 계속 제외

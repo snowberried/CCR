@@ -5,8 +5,27 @@ import {
   useState,
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type WheelEvent,
 } from "react";
+import {
+  createViewTransform,
+  fitViewTransform,
+  panByViewportDelta,
+  resizeViewTransform,
+  viewPlacement,
+  zoomAtViewportPoint,
+  type ViewTransform,
+} from "./domain/viewTransform";
+import {
+  beginPan,
+  endsPan,
+  fullscreenShortcut,
+  movePan,
+  viewWheelIntent,
+  zoomShortcut,
+  type PanGesture,
+} from "./domain/viewInteraction";
 import {
   WheelFrameAccumulator,
   clampFrameIndex,
@@ -53,6 +72,7 @@ function formatBytes(bytes: number): string {
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const viewerSurfaceRef = useRef<HTMLElement>(null);
   const sessionIdRef = useRef<string | null>(null);
   const desiredFrameRef = useRef(0);
   const displayedFrameRef = useRef(-1);
@@ -63,6 +83,7 @@ export function App() {
   const keyboardHoldRef = useRef<KeyboardHoldIntent | null>(null);
   const forceRgbaRef = useRef(false);
   const i420RendererRef = useRef<I420WebglRenderer | null>(null);
+  const panGestureRef = useRef<PanGesture | null>(null);
   const [metadata, setMetadata] = useState<SessionMetadata | null>(null);
   const [frameIndex, setFrameIndex] = useState(0);
   const [frameInput, setFrameInput] = useState("1");
@@ -74,6 +95,9 @@ export function App() {
   const [status, setStatus] = useState<ViewerStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [viewTransform, setViewTransform] = useState<ViewTransform | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const clearViewer = useCallback(() => {
     sessionIdRef.current = null;
@@ -88,12 +112,18 @@ export function App() {
     setCacheResult("-");
     setRequestMs(null);
     setDiagnostics(null);
+    panGestureRef.current = null;
+    setIsPanning(false);
+    setViewTransform(null);
     i420RendererRef.current?.dispose();
     i420RendererRef.current = null;
     releaseCanvas(canvasRef.current);
     if (window.ccr?.openQaVideo) {
       delete document.documentElement.dataset.qaSampleIndex;
       delete document.documentElement.dataset.qaPixelFormat;
+      delete document.documentElement.dataset.qaViewZoom;
+      delete document.documentElement.dataset.qaViewCenter;
+      delete document.documentElement.dataset.qaViewRevision;
       document.documentElement.dataset.qaBackgroundComplete = "false";
       document.documentElement.dataset.qaSeekDecodeCount = "0";
     }
@@ -272,6 +302,11 @@ export function App() {
     }
     sessionIdRef.current = opened.sessionId;
     setMetadata(opened.metadata);
+    const viewport = viewerSurfaceRef.current?.getBoundingClientRect();
+    setViewTransform(createViewTransform(
+      { width: opened.metadata.width, height: opened.metadata.height },
+      { width: viewport?.width ?? 1, height: viewport?.height ?? 1 },
+    ));
     desiredFrameRef.current = 0;
     displayedFrameRef.current = -1;
     wheelRef.current.reset();
@@ -343,10 +378,70 @@ export function App() {
 
   const onWheel = (event: WheelEvent<HTMLElement>) => {
     event.preventDefault();
+    const intent = viewWheelIntent(event);
+    if (intent.type === "zoom") {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const anchor = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+      setViewTransform((current) => current
+        ? zoomAtViewportPoint(current, current.zoom * intent.factor, anchor)
+        : current);
+      return;
+    }
+    if (panGestureRef.current) return;
     const direction = wheelRef.current.consume(event.deltaY, event.deltaMode);
     if (direction !== 0) {
       goToFrame(desiredFrameRef.current + direction);
     }
+  };
+
+  const zoomBy = useCallback((factor: number) => {
+    setViewTransform((current) => current
+      ? zoomAtViewportPoint(current, current.zoom * factor, {
+        x: current.viewportSize.width / 2,
+        y: current.viewportSize.height / 2,
+      })
+      : current);
+  }, []);
+
+  const fitView = useCallback(() => {
+    setViewTransform((current) => current ? fitViewTransform(current) : current);
+  }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    void window.ccr?.toggleFullscreen?.().then(setIsFullscreen);
+  }, []);
+
+  const exitFullscreen = useCallback(() => {
+    void window.ccr?.setFullscreen?.(false).then(setIsFullscreen);
+  }, []);
+
+  const endPan = useCallback((element?: HTMLElement, pointerId?: number) => {
+    if (element && pointerId !== undefined && element.hasPointerCapture(pointerId)) {
+      element.releasePointerCapture(pointerId);
+    }
+    panGestureRef.current = null;
+    setIsPanning(false);
+  }, []);
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!metadata || event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    panGestureRef.current = beginPan(event.pointerId, event.clientX, event.clientY);
+    setIsPanning(true);
+  };
+
+  const onPointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+    const gesture = panGestureRef.current;
+    if (!gesture) return;
+    const moved = movePan(gesture, event.pointerId, event.clientX, event.clientY);
+    if (!moved.delta) return;
+    panGestureRef.current = moved.gesture;
+    setViewTransform((current) => current ? panByViewportDelta(current, moved.delta!) : current);
+  };
+
+  const onPointerEnd = (event: ReactPointerEvent<HTMLElement>) => {
+    if (endsPan(panGestureRef.current, event.pointerId)) endPan(event.currentTarget, event.pointerId);
   };
 
   const onDrop = (event: DragEvent<HTMLElement>) => {
@@ -369,7 +464,32 @@ export function App() {
         openVideo();
         return;
       }
+      const editing = isTextEntryElement(event.target);
+      if (event.key === "Escape" && !editing) {
+        if (panGestureRef.current) {
+          event.preventDefault();
+          endPan(viewerSurfaceRef.current ?? undefined, panGestureRef.current.pointerId);
+        } else if (isFullscreen) {
+          event.preventDefault();
+          exitFullscreen();
+        } else if (metadata) {
+          cancel();
+        }
+        return;
+      }
+      if (fullscreenShortcut({ key: event.key, editing })) {
+        event.preventDefault();
+        toggleFullscreen();
+        return;
+      }
       if (!metadata) {
+        return;
+      }
+      const viewShortcut = zoomShortcut({ key: event.key, editing });
+      if (viewShortcut !== 0) {
+        event.preventDefault();
+        if (viewShortcut === "fit") fitView();
+        else zoomBy(viewShortcut > 0 ? 1.25 : 0.8);
         return;
       }
       if (metadata.productCache && metadata.analysisReady === false && event.key === "End") {
@@ -380,7 +500,7 @@ export function App() {
         event,
         desiredFrameRef.current,
         metadata.frameCount,
-        isTextEntryElement(event.target),
+        editing,
       );
       if (target !== null) {
         event.preventDefault();
@@ -399,8 +519,6 @@ export function App() {
           }
         }
         goToFrame(target, event.repeat);
-      } else if (event.key === "Escape" && !isTextEntryElement(event.target)) {
-        cancel();
       }
     };
     const onKeyUp = (event: KeyboardEvent) => {
@@ -423,7 +541,25 @@ export function App() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [cancel, goToFrame, metadata, openVideo, pump]);
+  }, [cancel, endPan, exitFullscreen, fitView, goToFrame, isFullscreen, metadata, openVideo, pump, toggleFullscreen, zoomBy]);
+
+  useEffect(() => {
+    const surface = viewerSurfaceRef.current;
+    if (!surface) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setViewTransform((current) => current
+        ? resizeViewTransform(current, { width, height })
+        : current);
+    });
+    observer.observe(surface);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    void window.ccr?.getFullscreen?.().then(setIsFullscreen);
+    return window.ccr?.onFullscreenChanged?.(setIsFullscreen);
+  }, []);
 
   useEffect(() => window.ccr?.onCacheMetadata?.((update) => {
     if (update.sessionId !== sessionIdRef.current || !update.metadata) return;
@@ -441,6 +577,13 @@ export function App() {
     document.documentElement.dataset.qaSeekDecodeCount = String(cacheStatus?.seekDecodeCount ?? 0);
   }, [cacheStatus]);
 
+  useEffect(() => {
+    if (!window.ccr?.openQaVideo || !viewTransform) return;
+    document.documentElement.dataset.qaViewZoom = String(viewTransform.zoom);
+    document.documentElement.dataset.qaViewCenter = `${viewTransform.center.x},${viewTransform.center.y}`;
+    document.documentElement.dataset.qaViewRevision = String(viewTransform.revision);
+  }, [viewTransform]);
+
   useEffect(() => () => {
     uiGenerationRef.current += 1;
     void window.ccr?.closeVideo?.();
@@ -452,6 +595,12 @@ export function App() {
   const frameDisplay = metadata
     ? `${internalToDisplayFrame(frameIndex).toLocaleString()} / ${metadata.frameCount.toLocaleString()}`
     : "-";
+  const placement = viewTransform ? viewPlacement(viewTransform) : null;
+  const canvasStyle = placement ? {
+    width: `${placement.width}px`,
+    height: `${placement.height}px`,
+    transform: `translate3d(${placement.left}px, ${placement.top}px, 0)`,
+  } : undefined;
 
   return (
     <main
@@ -473,12 +622,32 @@ export function App() {
             ? `${metadata.width} x ${metadata.height}  |  ${metadata.fps?.toFixed(2) ?? "-"} fps  |  ${metadata.codecName?.toUpperCase() ?? "-"}`
             : "영상 없음"}
         </div>
-        <button className="primary-button" type="button" onClick={openVideo}>열기</button>
+        <div className="topbar-actions">
+          <div className="view-toolbar" aria-label="화면 조작">
+            <button type="button" title="축소 (-)" onClick={() => zoomBy(0.8)} disabled={!metadata}>−</button>
+            <output aria-label="현재 확대율">{Math.round((viewTransform?.zoom ?? 1) * 100)}%</output>
+            <button type="button" title="확대 (+)" onClick={() => zoomBy(1.25)} disabled={!metadata}>+</button>
+            <button type="button" title="화면 맞춤 (0)" onClick={fitView} disabled={!metadata}>Fit</button>
+            <button type="button" title="전체화면 (F)" onClick={toggleFullscreen}>{isFullscreen ? "창" : "전체"}</button>
+          </div>
+          <button className="primary-button" type="button" onClick={openVideo}>열기</button>
+        </div>
       </header>
 
       <section className="viewer-layout">
-        <section className="viewer-surface" onWheel={onWheel} aria-label="CT cine frame">
-          <canvas ref={canvasRef} className={metadata ? "frame-canvas" : "frame-canvas empty"} />
+        <section
+          ref={viewerSurfaceRef}
+          className={`viewer-surface${isPanning ? " is-panning" : ""}`}
+          onWheel={onWheel}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerEnd}
+          onPointerCancel={onPointerEnd}
+          onLostPointerCapture={() => endPan()}
+          onDoubleClick={fitView}
+          aria-label="CT cine frame"
+        >
+          <canvas ref={canvasRef} className={metadata ? "frame-canvas" : "frame-canvas empty"} style={canvasStyle} draggable={false} />
           {!metadata && <span className="empty-label">CT Cine Reviewer</span>}
           {status === "decoding" && <span className="loading-label">디코딩 중</span>}
           {dragging && <div className="drop-overlay">동영상 놓기</div>}
@@ -511,6 +680,9 @@ export function App() {
               <div><dt>요청</dt><dd>{requestMs === null ? "-" : `${requestMs.toFixed(1)} ms`}</dd></div>
               <div><dt>Probe</dt><dd>{metadata ? `${metadata.probeMs.toFixed(1)} ms` : "-"}</dd></div>
               <div><dt>세션 / 세대</dt><dd>{diagnostics ? `${diagnostics.session} / ${diagnostics.generation}` : "-"}</dd></div>
+              <div><dt>Zoom</dt><dd>{viewTransform ? `${(viewTransform.zoom * 100).toFixed(0)}%` : "-"}</dd></div>
+              <div><dt>View center</dt><dd>{viewTransform ? `${viewTransform.center.x.toFixed(1)}, ${viewTransform.center.y.toFixed(1)}` : "-"}</dd></div>
+              <div><dt>View revision</dt><dd>{viewTransform?.revision ?? "-"}</dd></div>
             </dl>
           </details>
           {error && <p className="error-message">{error}</p>}

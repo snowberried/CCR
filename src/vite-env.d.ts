@@ -113,6 +113,10 @@ interface Window {
       decoderMode: "i420-cache" | "rgba-rollback";
       ffmpegConfigured: boolean;
     }>;
+    getFullscreen: () => Promise<boolean>;
+    setFullscreen: (value: boolean) => Promise<boolean>;
+    toggleFullscreen: () => Promise<boolean>;
+    onFullscreenChanged: (callback: (value: boolean) => void) => () => void;
     openVideo: () => Promise<CcrOpenVideoResponse>;
     openDroppedVideo: (file: File) => Promise<CcrOpenVideoResponse>;
     openQaVideo?: (sampleIndex: number) => Promise<CcrOpenVideoResponse>;
