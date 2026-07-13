@@ -60,6 +60,29 @@ button:disabled { opacity: 0.38; cursor: default; }
   gap: 8px;
 }
 
+.viewer-workspace {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 4px;
+}
+
+.viewer-tool-rail {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 2px;
+  border: 1px solid #2a323b;
+  background: #15191f;
+}
+.viewer-tool-rail button { width: 34px; min-width: 0; height: 34px; padding: 0 2px; font-size: 11px; }
+.viewer-tool-rail button:nth-child(-n+2) { font-size: 18px; }
+.viewer-tool-rail button:last-child { font-size: 9px; }
+.viewer-tool-rail button.is-active { color: #c7eefb; border-color: #4a9fbd; background: #183744; }
+
 .viewer-surface {
   position: relative;
   min-width: 0;
@@ -69,10 +92,11 @@ button:disabled { opacity: 0.38; cursor: default; }
   place-items: center;
   background: #000;
   border: 1px solid #252c34;
-  cursor: grab;
   touch-action: none;
   user-select: none;
 }
+.viewer-surface.tool-pan { cursor: grab; }
+.viewer-surface.tool-zoom, .viewer-surface.is-zooming { cursor: ns-resize; }
 .viewer-surface.is-panning { cursor: grabbing; }
 .viewer-surface.is-display-dragging { cursor: ew-resize; }
 

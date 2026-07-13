@@ -186,6 +186,12 @@ async function openVideoPath(filePath: string, existingGeneration?: number) {
   }
 }
 
+export function openFramePathForQa(filePath: string) {
+  return validVideoPath(filePath)
+    ? openVideoPath(filePath)
+    : Promise.resolve({ canceled: false as const, error: "INVALID_VIDEO_SOURCE" });
+}
+
 export function registerFrameIpc(): void {
   ipcMain.handle("frame:open", async () => {
     const generation = beginOpenGeneration();

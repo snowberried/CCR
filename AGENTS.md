@@ -37,6 +37,7 @@
 - `CCR_FORCE_RGBA=1` 긴급 rollback과 기존 Phase 2.1 RGBA segment cache를 삭제하지 않는다.
 - Phase 3A View Transform은 image pixel center와 Fit 대비 1~10배 zoom을 공통 의미로 사용하며 decoder/cache와 결합하지 않는다.
 - Phase 3B preset은 화면 픽셀 기반 candidate이며 실제 HU 값이나 진단 보장을 뜻하지 않는다.
+- Phase 3B 승인 후 Ctrl+wheel 10%p step과 Pan/Zoom/Fit/100% 세로 도구 막대를 추가했다. 좌클릭 tool과 우클릭 Level/Width는 단일 pointer 소유권으로 분리한다.
 - 자동 재생, 주석과 저장은 Phase 3B에 포함하지 않는다.
 - 실제 사용 피드백과 별도 사용자 승인 전 Phase 4로 넘어가지 않는다.
 - Phase 2.3 NSIS 패키징, unpacked/privacy/checksum 검증, 실제 설치와 재설치를 완료했다.

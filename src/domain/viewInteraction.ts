@@ -1,5 +1,5 @@
 export type ViewWheelIntent =
-  | { type: "zoom"; factor: number }
+  | { type: "zoom" }
   | { type: "frame" };
 
 export type PanGesture = {
@@ -8,11 +8,39 @@ export type PanGesture = {
   lastY: number;
 };
 
+export type ZoomDragGesture = {
+  pointerId: number;
+  startY: number;
+  startZoom: number;
+  anchor: { x: number; y: number };
+};
+
 export function viewWheelIntent(input: { ctrlKey: boolean; deltaY: number; deltaMode: number }): ViewWheelIntent {
   if (!input.ctrlKey) return { type: "frame" };
-  const pixelDelta = input.deltaMode === 1 ? input.deltaY * 16 : input.deltaY;
-  const boundedDelta = Math.max(-240, Math.min(240, pixelDelta));
-  return { type: "zoom", factor: Math.exp(-boundedDelta * 0.0025) };
+  return { type: "zoom" };
+}
+
+export class WheelZoomAccumulator {
+  private accumulatedDelta = 0;
+
+  constructor(private readonly threshold = 50) {}
+
+  consume(deltaY: number, deltaMode: number): -1 | 0 | 1 {
+    const normalizedDelta = deltaMode === 1 ? deltaY * 16 : deltaY;
+    if (Math.abs(normalizedDelta) >= this.threshold) {
+      this.accumulatedDelta = 0;
+      return Math.sign(normalizedDelta) as -1 | 1;
+    }
+    this.accumulatedDelta += normalizedDelta;
+    if (Math.abs(this.accumulatedDelta) < this.threshold) return 0;
+    const direction = Math.sign(this.accumulatedDelta) as -1 | 1;
+    this.accumulatedDelta -= direction * this.threshold;
+    return direction;
+  }
+
+  reset(): void {
+    this.accumulatedDelta = 0;
+  }
 }
 
 export function zoomShortcut(input: { key: string; editing: boolean }): -1 | 0 | 1 | "fit" {
@@ -37,6 +65,21 @@ export function movePan(gesture: PanGesture, pointerId: number, x: number, y: nu
 
 export function endsPan(gesture: PanGesture | null, pointerId: number): boolean {
   return gesture?.pointerId === pointerId;
+}
+
+export function beginZoomDrag(
+  pointerId: number,
+  y: number,
+  startZoom: number,
+  anchor: { x: number; y: number },
+): ZoomDragGesture {
+  return { pointerId, startY: y, startZoom, anchor };
+}
+
+export function zoomForVerticalDrag(gesture: ZoomDragGesture, pointerId: number, y: number): number | null {
+  return gesture.pointerId === pointerId
+    ? gesture.startZoom * Math.exp(-(y - gesture.startY) * 0.003)
+    : null;
 }
 
 export function fullscreenShortcut(input: { key: string; editing: boolean }): "toggle" | null {

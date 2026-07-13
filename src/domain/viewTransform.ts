@@ -14,6 +14,7 @@ export type ViewTransform = {
 
 export const VIEW_ZOOM_MIN = 1;
 export const VIEW_ZOOM_MAX = 10;
+export const VIEW_ZOOM_STEP = 0.1;
 
 function validSize(size: Size): boolean {
   return Number.isFinite(size.width) && Number.isFinite(size.height) && size.width > 0 && size.height > 0;
@@ -91,6 +92,20 @@ export function zoomAtViewportPoint(transform: ViewTransform, nextZoom: number, 
     y: anchoredImagePoint.y - (anchor.y - next.viewportSize.height / 2) / scale,
   };
   return { ...next, center: clampCenter(next, center) };
+}
+
+export function stepViewZoom(transform: ViewTransform, direction: -1 | 1, anchor: Point): ViewTransform {
+  const nextZoom = Math.round((transform.zoom + direction * VIEW_ZOOM_STEP) * 1_000_000) / 1_000_000;
+  return zoomAtViewportPoint(transform, nextZoom, anchor);
+}
+
+export function actualSizeViewTransform(transform: ViewTransform): ViewTransform {
+  const scale = fitScale(transform.imageSize, transform.viewportSize);
+  if (scale <= 0) return transform;
+  return zoomAtViewportPoint(transform, 1 / scale, {
+    x: transform.viewportSize.width / 2,
+    y: transform.viewportSize.height / 2,
+  });
 }
 
 export function panByViewportDelta(transform: ViewTransform, delta: Point): ViewTransform {

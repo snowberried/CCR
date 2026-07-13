@@ -14,6 +14,12 @@ const outputPath = path.join(root, "temp", "phase3a-view-qa.json");
 const minutesArgument = process.argv.find((value) => value.startsWith("--minutes="));
 const minutes = Number(minutesArgument?.split("=")[1] ?? 0);
 const extensions = new Set([".mp4", ".mov", ".avi", ".mkv"]);
+const forceRgba = process.env.CCR_FORCE_RGBA === "1";
+
+function openReadyExpression(sampleIndex) {
+  const opened = `document.documentElement.dataset.qaSampleIndex === "${sampleIndex}"`;
+  return forceRgba ? `${opened} && Boolean(document.querySelector(".status-ready"))` : `${opened} && document.documentElement.dataset.qaBackgroundComplete === "true"`;
+}
 
 async function mediaFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -88,14 +94,19 @@ function slope(samples) {
     files.push(target);
   }
 
-  const cacheModule = await import(pathToFileURL(path.join(root, "dist-electron", "electron", "cache", "cacheFrameIpc.js")).href);
+  const frameModule = forceRgba
+    ? await import(pathToFileURL(path.join(root, "dist-electron", "electron", "frameIpc.js")).href)
+    : await import(pathToFileURL(path.join(root, "dist-electron", "electron", "cache", "cacheFrameIpc.js")).href);
   const fullscreenModule = await import(pathToFileURL(path.join(root, "dist-electron", "electron", "fullscreenIpc.js")).href);
-  cacheModule.registerCacheFrameIpc();
+  if (forceRgba) frameModule.registerFrameIpc();
+  else frameModule.registerCacheFrameIpc();
   fullscreenModule.registerFullscreenIpc();
   ipcMain.handle("frame:openQa", async (event, input) => {
     const sampleIndex = input && Number.isInteger(input.sampleIndex) ? input.sampleIndex : -1;
     if (sampleIndex < 0 || sampleIndex >= files.length) return { canceled: false, error: "QA_SAMPLE_INDEX_INVALID" };
-    const opened = await cacheModule.openCachePathForQa(files[sampleIndex], event.sender);
+    const opened = forceRgba
+      ? await frameModule.openFramePathForQa(files[sampleIndex])
+      : await frameModule.openCachePathForQa(files[sampleIndex], event.sender);
     return { ...opened, qaSampleIndex: sampleIndex };
   });
 
@@ -119,7 +130,7 @@ function slope(samples) {
     window.focus();
     await waitFor(window, `Boolean(window.ccr?.openQaVideo) && Boolean(document.querySelector(".app-shell"))`, 10_000, "bridge");
     await sendQaOpen(window, 0);
-    await waitFor(window, `document.documentElement.dataset.qaSampleIndex === "0" && document.documentElement.dataset.qaBackgroundComplete === "true"`, 15_000, "first-open");
+    await waitFor(window, openReadyExpression(0), 20_000, "first-open");
 
     const initial = await window.webContents.executeJavaScript(`(() => {
       const canvas = document.querySelector("canvas");
@@ -128,6 +139,10 @@ function slope(samples) {
       return {
         zoom: Number(document.documentElement.dataset.qaViewZoom),
         center: document.documentElement.dataset.qaViewCenter.split(",").map(Number),
+        tool: document.documentElement.dataset.qaViewTool,
+        gesture: document.documentElement.dataset.qaPointerGesture,
+        uploads: Number(document.documentElement.dataset.qaTextureUploads),
+        seek: Number(document.documentElement.dataset.qaSeekDecodeCount),
         anchor,
         anchorImage: [(anchor.x - rect.left) / rect.width * canvas.width, (anchor.y - rect.top) / rect.height * canvas.height],
         aspectError: Math.abs(rect.width / rect.height - canvas.width / canvas.height),
@@ -144,6 +159,11 @@ function slope(samples) {
       document.querySelector("canvas").getBoundingClientRect();
       return performance.now() - startedAt;
     })()`, true);
+    const wheelUpOne = Number(await window.webContents.executeJavaScript(`document.documentElement.dataset.qaViewZoom`, true));
+    await window.webContents.executeJavaScript(`document.querySelector(".viewer-surface").dispatchEvent(new WheelEvent("wheel", { deltaY:-120, ctrlKey:true, clientX:${initial.anchor.x}, clientY:${initial.anchor.y}, bubbles:true, cancelable:true }))`, true);
+    const wheelUpTwo = Number(await window.webContents.executeJavaScript(`document.documentElement.dataset.qaViewZoom`, true));
+    await window.webContents.executeJavaScript(`document.querySelector(".viewer-surface").dispatchEvent(new WheelEvent("wheel", { deltaY:120, ctrlKey:true, clientX:${initial.anchor.x}, clientY:${initial.anchor.y}, bubbles:true, cancelable:true }))`, true);
+    const wheelDownOne = Number(await window.webContents.executeJavaScript(`document.documentElement.dataset.qaViewZoom`, true));
     const zoomed = await window.webContents.executeJavaScript(`(() => {
       const canvas = document.querySelector("canvas");
       const rect = canvas.getBoundingClientRect();
@@ -161,7 +181,7 @@ function slope(samples) {
 
     const surface = await window.webContents.executeJavaScript(`(() => {
       const rect = document.querySelector(".viewer-surface").getBoundingClientRect();
-      return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+      return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), left:Math.round(rect.left), top:Math.round(rect.top), right:Math.round(rect.right), bottom:Math.round(rect.bottom) };
     })()`, true);
     window.webContents.sendInputEvent({ type: "mouseDown", x: surface.x, y: surface.y, button: "left", clickCount: 1 });
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -175,14 +195,60 @@ function slope(samples) {
       revision: Number(document.documentElement.dataset.qaViewRevision),
     })`, true);
 
+    await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="Zoom 도구"]').click()`, true);
+    await waitFor(window, `document.documentElement.dataset.qaViewTool === "zoom"`, 5_000, "zoom-tool");
+    const zoomToolStart = Number(await window.webContents.executeJavaScript(`document.documentElement.dataset.qaViewZoom`, true));
+    window.webContents.sendInputEvent({ type: "mouseDown", x: surface.x, y: surface.y, button: "left", clickCount: 1 });
+    window.webContents.sendInputEvent({ type: "mouseMove", x: surface.x + 120, y: surface.y - 100 });
+    window.webContents.sendInputEvent({ type: "mouseUp", x: surface.x + 120, y: surface.y - 100, button: "left", clickCount: 1 });
+    const zoomToolUp = await waitFor(window, `Number(document.documentElement.dataset.qaViewZoom) > ${zoomToolStart} && document.documentElement.dataset.qaPointerGesture === "none" ? Number(document.documentElement.dataset.qaViewZoom) : 0`, 5_000, "zoom-drag-up");
+    window.webContents.sendInputEvent({ type: "mouseDown", x: surface.x, y: surface.y, button: "left", clickCount: 1 });
+    window.webContents.sendInputEvent({ type: "mouseMove", x: surface.x - 120, y: surface.y + 100 });
+    window.webContents.sendInputEvent({ type: "mouseUp", x: surface.x - 120, y: surface.y + 100, button: "left", clickCount: 1 });
+    const zoomToolDown = await waitFor(window, `Number(document.documentElement.dataset.qaViewZoom) < ${zoomToolUp} && document.documentElement.dataset.qaPointerGesture === "none" ? Number(document.documentElement.dataset.qaViewZoom) : 0`, 5_000, "zoom-drag-down");
+
+    const displayBeforeZoomRight = await window.webContents.executeJavaScript(`document.documentElement.dataset.qaDisplayState`, true);
+    window.webContents.sendInputEvent({ type: "mouseDown", x: surface.x, y: surface.y, button: "right", clickCount: 1 });
+    window.webContents.sendInputEvent({ type: "mouseMove", x: surface.x + 60, y: surface.y - 30 });
+    window.webContents.sendInputEvent({ type: "mouseUp", x: surface.x + 60, y: surface.y - 30, button: "right", clickCount: 1 });
+    const displayAfterZoomRight = await waitFor(window, `document.documentElement.dataset.qaDisplayState !== ${JSON.stringify(displayBeforeZoomRight)} ? document.documentElement.dataset.qaDisplayState : ""`, 5_000, "zoom-right-display");
+    await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="Pan 도구"]').click()`, true);
+    await waitFor(window, `document.documentElement.dataset.qaViewTool === "pan"`, 5_000, "pan-tool");
+    window.webContents.sendInputEvent({ type: "mouseDown", x: surface.x, y: surface.y, button: "right", clickCount: 1 });
+    window.webContents.sendInputEvent({ type: "mouseMove", x: surface.x - 40, y: surface.y + 20 });
+    window.webContents.sendInputEvent({ type: "mouseUp", x: surface.x - 40, y: surface.y + 20, button: "right", clickCount: 1 });
+    const displayAfterPanRight = await waitFor(window, `document.documentElement.dataset.qaDisplayState !== ${JSON.stringify(displayAfterZoomRight)} ? document.documentElement.dataset.qaDisplayState : ""`, 5_000, "pan-right-display");
+
+    await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="Zoom 도구"]').click()`, true);
+    window.webContents.sendInputEvent({ type: "mouseDown", x: surface.x, y: surface.y, button: "left", clickCount: 1 });
+    window.webContents.sendInputEvent({ type: "mouseMove", x: surface.x, y: surface.y - 40 });
+    window.webContents.sendInputEvent({ type: "mouseUp", x: surface.left - 2, y: surface.top - 2, button: "left", clickCount: 1 });
+    await waitFor(window, `document.documentElement.dataset.qaPointerGesture === "none"`, 5_000, "outside-release");
+
+    await window.webContents.executeJavaScript(`document.querySelector('.viewer-tool-rail button[aria-label="화면 맞춤"]').click()`, true);
+    const fitCommand = await window.webContents.executeJavaScript(`({ zoom:Number(document.documentElement.dataset.qaViewZoom), tool:document.documentElement.dataset.qaViewTool })`, true);
+    await window.webContents.executeJavaScript(`document.querySelector('.viewer-tool-rail button[aria-label="원본 픽셀 100%"]').click()`, true);
+    const actualCommand = await window.webContents.executeJavaScript(`(() => { const canvas=document.querySelector("canvas"); const rect=canvas.getBoundingClientRect(); return { zoom:Number(document.documentElement.dataset.qaViewZoom), tool:document.documentElement.dataset.qaViewTool, effectiveScale:rect.width/canvas.width }; })()`, true);
+    await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="Pan 도구"]').click()`, true);
+    const toolPanBefore = await window.webContents.executeJavaScript(`document.documentElement.dataset.qaViewCenter`, true);
+    window.webContents.sendInputEvent({ type: "mouseDown", x: surface.x, y: surface.y, button: "left", clickCount: 1 });
+    await waitFor(window, `document.documentElement.dataset.qaPointerGesture === "pan"`, 5_000, "pan-owned");
+    window.webContents.sendInputEvent({ type: "mouseMove", x: surface.x + 30, y: surface.y + 50 });
+    await waitFor(window, `document.documentElement.dataset.qaViewCenter !== ${JSON.stringify(toolPanBefore)}`, 5_000, "pan-transform");
+    window.webContents.sendInputEvent({ type: "mouseUp", x: surface.x + 30, y: surface.y + 50, button: "left", clickCount: 1 });
+    await waitFor(window, `document.documentElement.dataset.qaPointerGesture === "none"`, 5_000, "pan-released");
+    const toolPanAfter = await window.webContents.executeJavaScript(`document.documentElement.dataset.qaViewCenter`, true);
+    await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="Zoom 도구"]').click()`, true);
+
+    const inputMetrics = await window.webContents.executeJavaScript(`({ uploads:Number(document.documentElement.dataset.qaTextureUploads), seek:Number(document.documentElement.dataset.qaSeekDecodeCount) })`, true);
     const beforeFrame = await window.webContents.executeJavaScript(`({
-      transform: [document.documentElement.dataset.qaViewZoom, document.documentElement.dataset.qaViewCenter],
+      transform: [document.documentElement.dataset.qaViewZoom, document.documentElement.dataset.qaViewCenter, document.documentElement.dataset.qaViewTool, document.documentElement.dataset.qaDisplayState],
       frame: Number(document.querySelector(".primary-readout strong").textContent.replaceAll(",", "").split("/")[0]),
     })`, true);
     await window.webContents.executeJavaScript(`document.querySelector(".viewer-surface").dispatchEvent(new WheelEvent("wheel", { deltaY: 120, bubbles: true, cancelable: true }))`, true);
     await waitFor(window, `Number(document.querySelector(".primary-readout strong").textContent.replaceAll(",", "").split("/")[0]) === ${beforeFrame.frame + 1}`, 5_000, "ordinary-wheel");
     await new Promise((resolve) => setTimeout(resolve, 50));
-    const afterFrameTransform = await window.webContents.executeJavaScript(`[document.documentElement.dataset.qaViewZoom, document.documentElement.dataset.qaViewCenter]`, true);
+    const afterFrameTransform = await window.webContents.executeJavaScript(`[document.documentElement.dataset.qaViewZoom, document.documentElement.dataset.qaViewCenter, document.documentElement.dataset.qaViewTool, document.documentElement.dataset.qaDisplayState]`, true);
 
     const beforeFallback = await window.webContents.executeJavaScript(`[document.documentElement.dataset.qaViewZoom, document.documentElement.dataset.qaViewCenter]`, true);
     await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent("ccr:qaLoseContext"))`, true);
@@ -190,10 +256,9 @@ function slope(samples) {
     await waitFor(window, `document.documentElement.dataset.qaPixelFormat === "rgba"`, 10_000, "context-fallback");
     const afterFallback = await window.webContents.executeJavaScript(`[document.documentElement.dataset.qaViewZoom, document.documentElement.dataset.qaViewCenter]`, true);
 
-    const beforeResize = panned.center;
-    const beforeResizeRevision = panned.revision;
+    const beforeResize = await window.webContents.executeJavaScript(`({ center:document.documentElement.dataset.qaViewCenter.split(",").map(Number), revision:Number(document.documentElement.dataset.qaViewRevision) })`, true);
     window.setSize(940, 660);
-    await waitFor(window, `Number(document.documentElement.dataset.qaViewRevision) > ${beforeResizeRevision}`, 5_000, "resize-revision");
+    await waitFor(window, `Number(document.documentElement.dataset.qaViewRevision) > ${beforeResize.revision}`, 5_000, "resize-revision");
     const afterResize = await window.webContents.executeJavaScript(`document.documentElement.dataset.qaViewCenter.split(",").map(Number)`, true);
 
     await window.webContents.executeJavaScript(`document.querySelector('button[title="전체화면 (F)"]').click()`, true);
@@ -201,18 +266,15 @@ function slope(samples) {
     sendKey(window, "F");
     await waitForMain(() => !window.isFullScreen(), 5_000, "fullscreen-exit");
 
-    await window.webContents.executeJavaScript(`document.querySelector('button[title="화면 맞춤 (0)"]').click()`, true);
-    const fit = await window.webContents.executeJavaScript(`({ zoom: Number(document.documentElement.dataset.qaViewZoom), center: document.documentElement.dataset.qaViewCenter.split(",").map(Number) })`, true);
-
-    await window.webContents.executeJavaScript(`document.querySelector('button[title="확대 (+)"]').click()`, true);
+    await window.webContents.executeJavaScript(`document.querySelector('button[title="10%p 확대 (+)"]').click()`, true);
     await sendQaOpen(window, 1);
-    await waitFor(window, `document.documentElement.dataset.qaSampleIndex === "1" && document.documentElement.dataset.qaBackgroundComplete === "true"`, 15_000, "new-session");
-    const reset = await window.webContents.executeJavaScript(`({ zoom: Number(document.documentElement.dataset.qaViewZoom), center: document.documentElement.dataset.qaViewCenter.split(",").map(Number) })`, true);
+    await waitFor(window, openReadyExpression(1), 20_000, "new-session");
+    const reset = await window.webContents.executeJavaScript(`({ zoom: Number(document.documentElement.dataset.qaViewZoom), center: document.documentElement.dataset.qaViewCenter.split(",").map(Number), tool:document.documentElement.dataset.qaViewTool })`, true);
 
     const synthetic = [];
     for (const sampleIndex of [actualSampleCount, actualSampleCount + 1]) {
       await sendQaOpen(window, sampleIndex);
-      await waitFor(window, `document.documentElement.dataset.qaSampleIndex === "${sampleIndex}" && document.documentElement.dataset.qaBackgroundComplete === "true"`, 20_000, "synthetic");
+      await waitFor(window, openReadyExpression(sampleIndex), 20_000, "synthetic");
       synthetic.push(await window.webContents.executeJavaScript(`(() => {
         const canvas = document.querySelector("canvas");
         const rect = canvas.getBoundingClientRect();
@@ -230,7 +292,7 @@ function slope(samples) {
     while (performance.now() < soakDeadline) {
       const sampleIndex = cycles % 3;
       await sendQaOpen(window, sampleIndex);
-      await waitFor(window, `document.documentElement.dataset.qaSampleIndex === "${sampleIndex}" && document.documentElement.dataset.qaBackgroundComplete === "true"`, 15_000, "soak-open");
+      await waitFor(window, openReadyExpression(sampleIndex), 20_000, "soak-open");
       drawSamples.push(await window.webContents.executeJavaScript(`(async () => {
         const startedAt = performance.now();
         document.querySelector('button[title="확대 (+)"]').click();
@@ -262,13 +324,20 @@ function slope(samples) {
 
     const result = {
       initial,
-      zoom: { zoom: zoomed.zoom, anchorErrorImagePixels: anchorError, drawMs: zoomDrawMs },
-      pan: { centerBefore: zoomed.center, centerAfter: panned.center, changed: String(zoomed.center) !== String(panned.center) },
+      zoom: { steps: [wheelUpOne, wheelUpTwo, wheelDownOne], zoom: zoomed.zoom, anchorErrorImagePixels: anchorError, drawMs: zoomDrawMs },
+      pan: { centerBefore: toolPanBefore, centerAfter: toolPanAfter, changed: toolPanBefore !== toolPanAfter },
+      tools: {
+        zoomDrag: { start: zoomToolStart, up: zoomToolUp, down: zoomToolDown },
+        rightDisplayChanged: displayBeforeZoomRight !== displayAfterZoomRight && displayAfterZoomRight !== displayAfterPanRight,
+        outsideRelease: true,
+        fitCommand,
+        actualCommand,
+      },
+      inputMetrics: { before: { uploads: initial.uploads, seek: initial.seek }, after: inputMetrics },
       frameTransform: { before: beforeFrame.transform, after: afterFrameTransform },
       frameTransformPreserved: JSON.stringify(beforeFrame.transform) === JSON.stringify(afterFrameTransform),
       fallbackTransformPreserved: String(beforeFallback) === String(afterFallback),
-      resizeCenterError: Math.hypot(afterResize[0] - beforeResize[0], afterResize[1] - beforeResize[1]),
-      fit,
+      resizeCenterError: Math.hypot(afterResize[0] - beforeResize.center[0], afterResize[1] - beforeResize.center[1]),
       newSessionReset: reset,
       synthetic,
       fullscreenPassed: true,
@@ -282,15 +351,28 @@ function slope(samples) {
       },
     };
     result.passed = initial.zoom === 1
+      && initial.tool === "pan"
+      && initial.gesture === "none"
       && initial.aspectError < 1e-4
-      && zoomed.zoom > 1
+      && wheelUpOne === 1.1
+      && wheelUpTwo === 1.2
+      && wheelDownOne === 1.1
       && anchorError <= 0.5
       && result.pan.changed
+      && zoomToolUp > zoomToolStart
+      && zoomToolDown < zoomToolUp
+      && result.tools.rightDisplayChanged
+      && fitCommand.zoom === 1
+      && fitCommand.tool === "zoom"
+      && Math.abs(actualCommand.effectiveScale - 1) <= 1e-4
+      && actualCommand.tool === "zoom"
+      && inputMetrics.seek === initial.seek
+      && inputMetrics.uploads === initial.uploads
       && result.frameTransformPreserved
       && result.fallbackTransformPreserved
       && result.resizeCenterError <= 0.5
-      && fit.zoom === 1
       && reset.zoom === 1
+      && reset.tool === "pan"
       && synthetic.every((value) => value.aspectError < 1e-4)
       && result.soak.errors === 0
       && result.soak.maxSeekDecodeCount === 0
@@ -306,7 +388,8 @@ function slope(samples) {
     process.exitCode = 1;
   } finally {
     if (window.isFullScreen()) window.setFullScreen(false);
-    await cacheModule.shutdownCacheFrameIpcResources();
+    if (forceRgba) await frameModule.shutdownFrameIpcResources();
+    else await frameModule.shutdownCacheFrameIpcResources();
     ipcMain.removeHandler("frame:openQa");
     fullscreenModule.unregisterFullscreenIpc();
     await rm(syntheticDirectory, { recursive: true, force: true });

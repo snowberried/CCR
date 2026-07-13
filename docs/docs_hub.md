@@ -31,6 +31,7 @@
 | Phase 2.3 Product Cache Integration | `13_PHASE2_3_PRODUCT_CACHE_INTEGRATION.md` | 제품 mode, 색·fallback, 설치본과 내구 검증 |
 | Phase 3A View Transform Foundation | `14_PHASE3A_VIEW_TRANSFORM.md` | 좌표계, Zoom/Pan/Fit, fullscreen과 renderer 공통 transform |
 | Phase 3B Video Display Adjustment | `15_PHASE3B_VIDEO_DISPLAY.md` | MP4 Level/Width, Gamma, Inverse, Sharp, preset과 Original 비교 |
+| Post-Phase 3B Viewer Controls | `16_POST_PHASE3B_VIEWER_CONTROLS.md` | 고정 10%p zoom, PACS식 Pan/Zoom 도구와 입력 충돌 검증 |
 | Phase 2.2 Handoff | `../HANDOFF_PHASE2_2.md` | 최종 검증 상태와 제품 통합 전 승인 사항 |
 | Phase 2.3 Handoff | `../HANDOFF_PHASE2_3.md` | 제품 통합 최종 상태와 Phase 3 진입 조건 |
 | Phase 3A Handoff | `../HANDOFF_PHASE3A.md` | View Transform 최종 상태와 Phase 3B 진입 조건 |
@@ -46,7 +47,8 @@
 - 실제 Explorer drag/drop, Windows 제거 등록 확인과 사용자 파일럿 피드백은 남아 있다.
 - Phase 2.2 연속 탐색·대용량 RAM cache 기술 스파이크의 구현·실샘플·30분 내구 검증과 문서화를 완료했다.
 - Phase 2.3에서 검증된 I420 cache를 제품 기본 경로로 통합하고 NSIS·실제 설치 앱 검증을 완료했다.
-- Phase 3A View Transform과 Phase 3B 플랫폼 중립 Video Display를 통합하고 설치 검증을 진행 중이다.
+- Phase 3A View Transform과 Phase 3B 플랫폼 중립 Video Display를 통합하고 설치 검증을 완료했다.
+- Phase 3B 승인 후 고정 10%p zoom과 PACS식 Pan/Zoom 도구 막대를 추가하고 WebGL/RGBA 회귀를 완료했다.
 - 2GiB dynamic soft cap의 I420 full/LRU를 기본 사용하며 72MiB 방향성 cache는 RGBA rollback으로 유지한다.
 - 사용자 승인 전 Phase 4 주석, 자동 재생, 이미지·프로젝트 저장을 시작하지 않는다.
 

@@ -16,8 +16,9 @@ Phase 3A 기준선 `795ee14` 위에 플랫폼 중립 Video Display와 WebGL/RGBA
 - 10분 내구: 38,187회, 오류·seek·parameter texture upload 0, draw p95 0.1ms, RSS 기울기 0.40MiB/분으로 통과
 - NSIS·설치 앱 WebGL/RGBA 실사용: 통과. SHA-256 `7a31a58be3bf595cefb160f4977ccaa2e14512b1d8193f29325821bd57aeaf61`
 - 설치 앱을 `CCR_FORCE_RGBA=1`로 실행해 72MiB segment cache(대표 영상에서 1-41), preset 적용, frame 이동 시 상태 유지와 Original 복귀를 확인했다.
+- 승인 후 고정 10%p zoom과 Pan/Zoom/Fit/100% 세로 도구 막대를 추가했다. WebGL/RGBA에서 tool 입력에 따른 seek·texture upload 증가 0, cursor anchor 오차 0.076 image pixel을 확인했다.
 
-세부 수식·후보값·실측은 `docs/15_PHASE3B_VIDEO_DISPLAY.md`를 확인한다.
+표시 보정은 `docs/15_PHASE3B_VIDEO_DISPLAY.md`, 후속 조작 개선은 `docs/16_POST_PHASE3B_VIEWER_CONTROLS.md`를 확인한다.
 
 ## 다음 작업
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  actualSizeViewTransform,
   createViewTransform,
   effectiveScale,
   fitScale,
@@ -8,6 +9,7 @@ import {
   imageToViewport,
   panByViewportDelta,
   resizeViewTransform,
+  stepViewZoom,
   viewportToImage,
   zoomAtViewportPoint,
 } from "../src/domain/viewTransform";
@@ -73,4 +75,44 @@ test("repeated inverse zooms do not drift at the viewport center", () => {
   close(transform.center.x, 500);
   close(transform.center.y, 400);
   assert.equal(transform.zoom, 1);
+});
+
+test("steps zoom by fixed ten percentage points instead of multiplying", () => {
+  const anchor = { x: 400, y: 300 };
+  let transform = createViewTransform({ width: 1000, height: 800 }, { width: 800, height: 600 });
+  transform = stepViewZoom(transform, 1, anchor);
+  assert.equal(transform.zoom, 1.1);
+  transform = stepViewZoom(transform, 1, anchor);
+  assert.equal(transform.zoom, 1.2);
+  transform = stepViewZoom(transform, -1, anchor);
+  assert.equal(transform.zoom, 1.1);
+  transform = stepViewZoom(fitViewTransform(transform), -1, anchor);
+  assert.equal(transform.zoom, 1);
+  const maximum = zoomAtViewportPoint(transform, 10, anchor);
+  assert.equal(stepViewZoom(maximum, 1, anchor), maximum);
+});
+
+test("keeps fixed-step cursor anchor stable without round-trip drift", () => {
+  const anchor = { x: 400, y: 300 };
+  let transform = createViewTransform({ width: 1000, height: 800 }, { width: 800, height: 600 });
+  const before = viewportToImage(transform, anchor);
+  for (let index = 0; index < 100; index += 1) {
+    transform = stepViewZoom(transform, 1, anchor);
+    transform = stepViewZoom(transform, -1, anchor);
+  }
+  const after = viewportToImage(transform, anchor);
+  close(after.x, before.x);
+  close(after.y, before.y);
+  assert.equal(transform.zoom, 1);
+});
+
+test("sets original pixel size while preserving the viewed center", () => {
+  const transform = panByViewportDelta(
+    zoomAtViewportPoint(createViewTransform({ width: 1000, height: 800 }, { width: 800, height: 600 }), 2, { x: 400, y: 300 }),
+    { x: -50, y: 25 },
+  );
+  const actual = actualSizeViewTransform(transform);
+  close(effectiveScale(actual), 1);
+  close(actual.center.x, transform.center.x);
+  close(actual.center.y, transform.center.y);
 });

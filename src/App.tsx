@@ -9,22 +9,27 @@ import {
   type WheelEvent,
 } from "react";
 import {
+  actualSizeViewTransform,
   createViewTransform,
   fitViewTransform,
   panByViewportDelta,
   resizeViewTransform,
+  stepViewZoom,
   viewPlacement,
   zoomAtViewportPoint,
   type ViewTransform,
 } from "./domain/viewTransform";
 import {
   beginPan,
-  endsPan,
+  beginZoomDrag,
   fullscreenShortcut,
   movePan,
   viewWheelIntent,
+  WheelZoomAccumulator,
+  zoomForVerticalDrag,
   zoomShortcut,
   type PanGesture,
+  type ZoomDragGesture,
 } from "./domain/viewInteraction";
 import {
   VIDEO_DISPLAY_PRESETS,
@@ -65,6 +70,13 @@ type KeyboardHoldIntent = {
   holdDurationMs: number;
 };
 
+type ViewTool = "pan" | "zoom";
+
+type ActivePointerGesture =
+  | { kind: "pan"; gesture: PanGesture }
+  | { kind: "zoom"; gesture: ZoomDragGesture }
+  | { kind: "display"; gesture: DisplayDragGesture };
+
 const STATUS_LABELS: Record<ViewerStatus, string> = {
   idle: "대기",
   probing: "분석 중",
@@ -86,6 +98,10 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
+function formatZoomPercent(zoom: number): string {
+  return `${Number((zoom * 100).toFixed(2))}%`;
+}
+
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewerSurfaceRef = useRef<HTMLElement>(null);
@@ -95,12 +111,12 @@ export function App() {
   const pumpingRef = useRef(false);
   const uiGenerationRef = useRef(0);
   const wheelRef = useRef(new WheelFrameAccumulator());
+  const zoomWheelRef = useRef(new WheelZoomAccumulator());
   const navigationFrameRef = useRef<number | null>(null);
   const keyboardHoldRef = useRef<KeyboardHoldIntent | null>(null);
   const forceRgbaRef = useRef(false);
   const i420RendererRef = useRef<I420WebglRenderer | null>(null);
-  const panGestureRef = useRef<PanGesture | null>(null);
-  const displayDragRef = useRef<DisplayDragGesture | null>(null);
+  const activePointerRef = useRef<ActivePointerGesture | null>(null);
   const lastFrameRef = useRef<CcrFrameResponse | null>(null);
   const displayStateRef = useRef<VideoDisplayState>(originalVideoDisplay());
   const comparingOriginalRef = useRef(false);
@@ -116,11 +132,11 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [viewTransform, setViewTransform] = useState<ViewTransform | null>(null);
-  const [isPanning, setIsPanning] = useState(false);
+  const [viewTool, setViewTool] = useState<ViewTool>("pan");
+  const [activePointerKind, setActivePointerKind] = useState<ActivePointerGesture["kind"] | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [displayState, setDisplayState] = useState<VideoDisplayState>(originalVideoDisplay);
   const [comparingOriginal, setComparingOriginal] = useState(false);
-  const [isDisplayDragging, setIsDisplayDragging] = useState(false);
 
   const clearViewer = useCallback(() => {
     sessionIdRef.current = null;
@@ -135,16 +151,20 @@ export function App() {
     setCacheResult("-");
     setRequestMs(null);
     setDiagnostics(null);
-    panGestureRef.current = null;
-    displayDragRef.current = null;
+    activePointerRef.current = null;
     lastFrameRef.current = null;
-    setIsPanning(false);
-    setIsDisplayDragging(false);
+    setActivePointerKind(null);
+    setViewTool("pan");
     setViewTransform(null);
+    wheelRef.current.reset();
+    zoomWheelRef.current.reset();
     displayStateRef.current = originalVideoDisplay();
     comparingOriginalRef.current = false;
     setDisplayState(displayStateRef.current);
     setComparingOriginal(false);
+    activePointerRef.current = null;
+    setActivePointerKind(null);
+    setViewTool("pan");
     i420RendererRef.current?.dispose();
     i420RendererRef.current = null;
     releaseCanvas(canvasRef.current);
@@ -154,6 +174,8 @@ export function App() {
       delete document.documentElement.dataset.qaViewZoom;
       delete document.documentElement.dataset.qaViewCenter;
       delete document.documentElement.dataset.qaViewRevision;
+      document.documentElement.dataset.qaViewTool = "pan";
+      document.documentElement.dataset.qaPointerGesture = "none";
       delete document.documentElement.dataset.qaDisplayState;
       delete document.documentElement.dataset.qaDisplayDrawMs;
       delete document.documentElement.dataset.qaTextureUploads;
@@ -394,6 +416,7 @@ export function App() {
     desiredFrameRef.current = 0;
     displayedFrameRef.current = -1;
     wheelRef.current.reset();
+    zoomWheelRef.current.reset();
     forceRgbaRef.current = false;
     await renderFrame(opened.frame);
     if (opened.qaSampleIndex !== undefined && window.ccr?.openQaVideo) {
@@ -464,23 +487,26 @@ export function App() {
     event.preventDefault();
     const intent = viewWheelIntent(event);
     if (intent.type === "zoom") {
+      const wheelDirection = zoomWheelRef.current.consume(event.deltaY, event.deltaMode);
+      if (wheelDirection === 0) return;
       const bounds = event.currentTarget.getBoundingClientRect();
       const anchor = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
       setViewTransform((current) => current
-        ? zoomAtViewportPoint(current, current.zoom * intent.factor, anchor)
+        ? stepViewZoom(current, wheelDirection < 0 ? 1 : -1, anchor)
         : current);
       return;
     }
-    if (panGestureRef.current || displayDragRef.current) return;
+    zoomWheelRef.current.reset();
+    if (activePointerRef.current) return;
     const direction = wheelRef.current.consume(event.deltaY, event.deltaMode);
     if (direction !== 0) {
       goToFrame(desiredFrameRef.current + direction);
     }
   };
 
-  const zoomBy = useCallback((factor: number) => {
+  const zoomByStep = useCallback((direction: -1 | 1) => {
     setViewTransform((current) => current
-      ? zoomAtViewportPoint(current, current.zoom * factor, {
+      ? stepViewZoom(current, direction, {
         x: current.viewportSize.width / 2,
         y: current.viewportSize.height / 2,
       })
@@ -491,6 +517,10 @@ export function App() {
     setViewTransform((current) => current ? fitViewTransform(current) : current);
   }, []);
 
+  const actualSizeView = useCallback(() => {
+    setViewTransform((current) => current ? actualSizeViewTransform(current) : current);
+  }, []);
+
   const toggleFullscreen = useCallback(() => {
     void window.ccr?.toggleFullscreen?.().then(setIsFullscreen);
   }, []);
@@ -499,53 +529,70 @@ export function App() {
     void window.ccr?.setFullscreen?.(false).then(setIsFullscreen);
   }, []);
 
-  const endPan = useCallback((element?: HTMLElement, pointerId?: number) => {
+  const endPointerGesture = useCallback((element?: HTMLElement, pointerId?: number) => {
     if (element && pointerId !== undefined && element.hasPointerCapture(pointerId)) {
       element.releasePointerCapture(pointerId);
     }
-    panGestureRef.current = null;
-    setIsPanning(false);
-  }, []);
-
-  const endDisplayDrag = useCallback((element?: HTMLElement, pointerId?: number) => {
-    if (element && pointerId !== undefined && element.hasPointerCapture(pointerId)) {
-      element.releasePointerCapture(pointerId);
-    }
-    displayDragRef.current = null;
-    setIsDisplayDragging(false);
+    activePointerRef.current = null;
+    setActivePointerKind(null);
   }, []);
 
   const onPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
-    if (!metadata || (event.button !== 0 && event.button !== 2)) return;
+    if (!metadata || activePointerRef.current || (event.button !== 0 && event.button !== 2)) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     if (event.button === 2) {
-      displayDragRef.current = beginDisplayDrag(event.pointerId, event.clientX, event.clientY, displayStateRef.current);
-      setIsDisplayDragging(true);
+      activePointerRef.current = {
+        kind: "display",
+        gesture: beginDisplayDrag(event.pointerId, event.clientX, event.clientY, displayStateRef.current),
+      };
+      setActivePointerKind("display");
       return;
     }
-    panGestureRef.current = beginPan(event.pointerId, event.clientX, event.clientY);
-    setIsPanning(true);
+    if (viewTool === "zoom" && viewTransform) {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      activePointerRef.current = {
+        kind: "zoom",
+        gesture: beginZoomDrag(event.pointerId, event.clientY, viewTransform.zoom, {
+          x: event.clientX - bounds.left,
+          y: event.clientY - bounds.top,
+        }),
+      };
+      setActivePointerKind("zoom");
+      return;
+    }
+    activePointerRef.current = { kind: "pan", gesture: beginPan(event.pointerId, event.clientX, event.clientY) };
+    setActivePointerKind("pan");
   };
 
   const onPointerMove = (event: ReactPointerEvent<HTMLElement>) => {
-    const displayGesture = displayDragRef.current;
-    if (displayGesture) {
-      const next = moveDisplayDrag(displayGesture, event.pointerId, event.clientX, event.clientY);
+    const active = activePointerRef.current;
+    if (!active) return;
+    if (active.kind === "display") {
+      const next = moveDisplayDrag(active.gesture, event.pointerId, event.clientX, event.clientY);
       if (next) setDisplayState(next);
       return;
     }
-    const gesture = panGestureRef.current;
-    if (!gesture) return;
-    const moved = movePan(gesture, event.pointerId, event.clientX, event.clientY);
-    if (!moved.delta) return;
-    panGestureRef.current = moved.gesture;
-    setViewTransform((current) => current ? panByViewportDelta(current, moved.delta!) : current);
+    if (active.kind === "zoom") {
+      const nextZoom = zoomForVerticalDrag(active.gesture, event.pointerId, event.clientY);
+      if (nextZoom !== null) {
+        setViewTransform((current) => current
+          ? zoomAtViewportPoint(current, nextZoom, active.gesture.anchor)
+          : current);
+      }
+      return;
+    }
+    const moved = movePan(active.gesture, event.pointerId, event.clientX, event.clientY);
+    if (moved.delta) {
+      activePointerRef.current = { kind: "pan", gesture: moved.gesture };
+      setViewTransform((current) => current ? panByViewportDelta(current, moved.delta!) : current);
+    }
   };
 
   const onPointerEnd = (event: ReactPointerEvent<HTMLElement>) => {
-    if (displayDragRef.current?.pointerId === event.pointerId) endDisplayDrag(event.currentTarget, event.pointerId);
-    if (endsPan(panGestureRef.current, event.pointerId)) endPan(event.currentTarget, event.pointerId);
+    if (activePointerRef.current?.gesture.pointerId === event.pointerId) {
+      endPointerGesture(event.currentTarget, event.pointerId);
+    }
   };
 
   const onDrop = (event: DragEvent<HTMLElement>) => {
@@ -573,12 +620,9 @@ export function App() {
         if (comparingOriginalRef.current) {
           event.preventDefault();
           setComparingOriginal(false);
-        } else if (displayDragRef.current) {
+        } else if (activePointerRef.current) {
           event.preventDefault();
-          endDisplayDrag(viewerSurfaceRef.current ?? undefined, displayDragRef.current.pointerId);
-        } else if (panGestureRef.current) {
-          event.preventDefault();
-          endPan(viewerSurfaceRef.current ?? undefined, panGestureRef.current.pointerId);
+          endPointerGesture(viewerSurfaceRef.current ?? undefined, activePointerRef.current.gesture.pointerId);
         } else if (isFullscreen) {
           event.preventDefault();
           exitFullscreen();
@@ -611,7 +655,7 @@ export function App() {
       if (viewShortcut !== 0) {
         event.preventDefault();
         if (viewShortcut === "fit") fitView();
-        else zoomBy(viewShortcut > 0 ? 1.25 : 0.8);
+        else zoomByStep(viewShortcut);
         return;
       }
       if (metadata.productCache && metadata.analysisReady === false && event.key === "End") {
@@ -658,22 +702,26 @@ export function App() {
         void pump();
       }
     };
-    const releaseTemporaryInput = () => {
+    const releaseTemporaryInput = (event?: PointerEvent) => {
       setComparingOriginal(false);
-      const gesture = displayDragRef.current;
-      endDisplayDrag(viewerSurfaceRef.current ?? undefined, gesture?.pointerId);
+      const active = activePointerRef.current;
+      if (active && (!event || active.gesture.pointerId === event.pointerId)) {
+        endPointerGesture(viewerSurfaceRef.current ?? undefined, active.gesture.pointerId);
+      }
     };
+    const onWindowPointerUp = (event: PointerEvent) => releaseTemporaryInput(event);
+    const onWindowBlur = () => releaseTemporaryInput();
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
-    window.addEventListener("blur", releaseTemporaryInput);
-    window.addEventListener("pointerup", releaseTemporaryInput);
+    window.addEventListener("blur", onWindowBlur);
+    window.addEventListener("pointerup", onWindowPointerUp);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
-      window.removeEventListener("blur", releaseTemporaryInput);
-      window.removeEventListener("pointerup", releaseTemporaryInput);
+      window.removeEventListener("blur", onWindowBlur);
+      window.removeEventListener("pointerup", onWindowPointerUp);
     };
-  }, [cancel, endDisplayDrag, endPan, exitFullscreen, fitView, goToFrame, isFullscreen, metadata, openVideo, pump, toggleFullscreen, zoomBy]);
+  }, [cancel, endPointerGesture, exitFullscreen, fitView, goToFrame, isFullscreen, metadata, openVideo, pump, toggleFullscreen, zoomByStep]);
 
   useEffect(() => {
     const surface = viewerSurfaceRef.current;
@@ -715,6 +763,11 @@ export function App() {
     document.documentElement.dataset.qaViewCenter = `${viewTransform.center.x},${viewTransform.center.y}`;
     document.documentElement.dataset.qaViewRevision = String(viewTransform.revision);
   }, [viewTransform]);
+
+  useEffect(() => {
+    document.documentElement.dataset.qaViewTool = viewTool;
+    document.documentElement.dataset.qaPointerGesture = activePointerKind ?? "none";
+  }, [activePointerKind, viewTool]);
 
   useEffect(() => {
     displayStateRef.current = displayState;
@@ -769,9 +822,9 @@ export function App() {
         </div>
         <div className="topbar-actions">
           <div className="view-toolbar" aria-label="화면 조작">
-            <button type="button" title="축소 (-)" onClick={() => zoomBy(0.8)} disabled={!metadata}>−</button>
-            <output aria-label="현재 확대율">{Math.round((viewTransform?.zoom ?? 1) * 100)}%</output>
-            <button type="button" title="확대 (+)" onClick={() => zoomBy(1.25)} disabled={!metadata}>+</button>
+            <button type="button" title="10%p 축소 (-)" onClick={() => zoomByStep(-1)} disabled={!metadata}>−</button>
+            <output aria-label="현재 확대율">{formatZoomPercent(viewTransform?.zoom ?? 1)}</output>
+            <button type="button" title="10%p 확대 (+)" onClick={() => zoomByStep(1)} disabled={!metadata}>+</button>
             <button type="button" title="화면 맞춤 (0)" onClick={fitView} disabled={!metadata}>Fit</button>
             <button type="button" title="전체화면 (F)" onClick={toggleFullscreen}>{isFullscreen ? "창" : "전체"}</button>
           </div>
@@ -780,23 +833,47 @@ export function App() {
       </header>
 
       <section className="viewer-layout">
-        <section
-          ref={viewerSurfaceRef}
-          className={`viewer-surface${isPanning ? " is-panning" : ""}${isDisplayDragging ? " is-display-dragging" : ""}`}
-          onWheel={onWheel}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerEnd}
-          onPointerCancel={onPointerEnd}
-          onLostPointerCapture={() => { endPan(); endDisplayDrag(); }}
-          onDoubleClick={fitView}
-          onContextMenu={(event) => event.preventDefault()}
-          aria-label="CT cine frame"
-        >
-          <canvas ref={canvasRef} className={metadata ? "frame-canvas" : "frame-canvas empty"} style={canvasStyle} draggable={false} />
-          {!metadata && <span className="empty-label">CT Cine Reviewer</span>}
-          {status === "decoding" && <span className="loading-label">디코딩 중</span>}
-          {dragging && <div className="drop-overlay">동영상 놓기</div>}
+        <section className="viewer-workspace">
+          <div className="viewer-tool-rail" role="toolbar" aria-label="뷰어 도구" aria-orientation="vertical">
+            <button
+              type="button"
+              className={viewTool === "pan" ? "is-active" : ""}
+              aria-label="Pan 도구"
+              aria-pressed={viewTool === "pan"}
+              title="Pan: 좌클릭 드래그로 영상 이동"
+              onClick={() => setViewTool("pan")}
+              disabled={!metadata}
+            ><span aria-hidden="true">✥</span></button>
+            <button
+              type="button"
+              className={viewTool === "zoom" ? "is-active" : ""}
+              aria-label="Zoom 도구"
+              aria-pressed={viewTool === "zoom"}
+              title="Zoom: 좌클릭 후 위/아래 드래그"
+              onClick={() => setViewTool("zoom")}
+              disabled={!metadata}
+            ><span aria-hidden="true">⌕</span></button>
+            <button type="button" aria-label="화면 맞춤" title="Fit: 화면 맞춤" onClick={fitView} disabled={!metadata}>Fit</button>
+            <button type="button" aria-label="원본 픽셀 100%" title="100%: 원본 픽셀 1:1" onClick={actualSizeView} disabled={!metadata}>100%</button>
+          </div>
+          <section
+            ref={viewerSurfaceRef}
+            className={`viewer-surface tool-${viewTool}${activePointerKind === "pan" ? " is-panning" : ""}${activePointerKind === "zoom" ? " is-zooming" : ""}${activePointerKind === "display" ? " is-display-dragging" : ""}`}
+            onWheel={onWheel}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerEnd}
+            onPointerCancel={onPointerEnd}
+            onLostPointerCapture={() => endPointerGesture()}
+            onDoubleClick={fitView}
+            onContextMenu={(event) => event.preventDefault()}
+            aria-label="CT cine frame"
+          >
+            <canvas ref={canvasRef} className={metadata ? "frame-canvas" : "frame-canvas empty"} style={canvasStyle} draggable={false} />
+            {!metadata && <span className="empty-label">CT Cine Reviewer</span>}
+            {status === "decoding" && <span className="loading-label">디코딩 중</span>}
+            {dragging && <div className="drop-overlay">동영상 놓기</div>}
+          </section>
         </section>
 
         <aside className="inspection-panel">
