@@ -7,6 +7,7 @@ import { registerFrameIpc, shutdownFrameIpcResources } from "./frameIpc.js";
 import { registerCacheFrameIpc, shutdownCacheFrameIpcResources } from "./cache/cacheFrameIpc.js";
 import { resolveFfmpegRuntimePaths } from "./runtimePaths.js";
 import { attachFullscreenEvents, registerFullscreenIpc } from "./fullscreenIpc.js";
+import { registerExportIpc } from "./exportIpc.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -17,8 +18,8 @@ function createWindow() {
   const window = new BrowserWindow({
     width: 1120,
     height: 760,
-    minWidth: 900,
-    minHeight: 620,
+    minWidth: 720,
+    minHeight: 600,
     title: "CT Cine Reviewer",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -46,13 +47,14 @@ ipcMain.handle("runtime:getStatus", () => {
     resourcesPath: process.resourcesPath,
   });
   return {
-    phase: "phase3b-video-display",
+    phase: "phase4b1-frame-export",
     decoderMode,
     ffmpegConfigured: existsSync(ffmpegPath) && existsSync(ffprobePath),
   };
 });
 
 registerFullscreenIpc();
+registerExportIpc();
 
 if (forceRgba) registerFrameIpc();
 else registerCacheFrameIpc();

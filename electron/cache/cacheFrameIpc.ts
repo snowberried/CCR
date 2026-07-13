@@ -57,6 +57,7 @@ async function openPath(filePath: string, sender: WebContents) {
     activeSession = session;
     return {
       canceled: false as const,
+      sourceBaseName: path.basename(filePath, path.extname(filePath)),
       sessionId: session.sessionId,
       generation,
       metadata: session.metadata(),

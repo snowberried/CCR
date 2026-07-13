@@ -148,6 +148,7 @@ Phase 4A의 주석은 세션 RAM에만 있으며 PTS, opacity, 숨김, mask, 자
 | ffprobe 분석 결과 | 세션, 필요 시 일부만 프로젝트 | 선별 |
 | 표시 설정 | 프로젝트 | 예 |
 | Phase 4A 주석 | 세션 RAM | 아니오 |
+| Phase 4B-1 export snapshot/PNG buffer | 한 export 작업의 RAM | 아니오 |
 | 향후 마스크·북마크 | 미결정 | 별도 승인 |
 | 최근 파일·썸네일 | 미결정, 기본 최소화 | 별도 앱 설정 |
 | 사용자 preset | 미결정 | 프로젝트 또는 로컬 설정 |
@@ -159,3 +160,7 @@ Phase 4A의 주석은 세션 RAM에만 있으며 PTS, opacity, 숨김, mask, 자
 - 원본 변경을 탐지하고 사용자 승인 없이 주석을 재연결하지 않는다.
 - 프로젝트 저장이나 캐시 정리가 원본 파일을 변경하지 않는다.
 - 이전 schema를 읽을 때 명시적 migration 또는 이해 가능한 오류를 제공한다.
+
+## Phase 4B-1 export snapshot
+
+export snapshot은 영구 프로젝트 상태가 아니다. 실제 displayed frame의 `frameIndex`, `fingerprint`, 크기와 pixels, 확정 Video Display, View Transform, 같은 프레임의 annotation 복사본만 한 작업 동안 RAM에 둔다. Save dialog와 PNG encode 이후 폐기하며 source path, preview 또는 intermediate PNG를 별도 저장하지 않는다.

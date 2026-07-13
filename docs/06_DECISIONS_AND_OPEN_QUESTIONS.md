@@ -57,17 +57,21 @@
 | Phase 4A geometry | 원본 image pixel 좌표, viewport/normalized screen 좌표 제외 | Phase 3A transform을 재사용하고 프레임 데이터와 분리하기 위해 |
 | Phase 4A 수명 | 새 파일에서 지워지는 세션 RAM 상태 | 프로젝트 저장을 승인 범위 밖으로 유지하기 위해 |
 | Phase 4A overlay | WebGL/RGBA와 분리한 SVG | 표시 보정과 texture upload에 영향을 주지 않기 위해 |
+| Phase 4B-1 snapshot | requested frame이 아닌 실제 displayed frame을 Save dialog 전에 RAM 동결 | 비동기 탐색·파일 전환 중에도 출력 일관성을 보장하기 위해 |
+| Phase 4B-1 전체 출력 | 원본 pixel 크기, 확정 Display, 선택적 주석 | Zoom/Pan/UI 없이 공유 가능한 frame을 만들기 위해 |
+| Phase 4B-1 현재 보기 | viewport CSS size × DPR, View Transform과 letterbox 포함 | 사용자가 보고 있는 구도를 재현하기 위해 |
+| Phase 4B-1 저장 경계 | Canvas PNG RAM buffer를 최종 선택 경로 또는 native clipboard에 직접 전달 | 원본·환자 영상의 임시 파일 노출을 피하기 위해 |
 
 ## 현재 제안
 
 | 항목 | 1순위 제안 | 확정 조건 |
 | --- | --- | --- |
-| 다음 단계 | Phase 4A 주석·timeline 실제 사용자 파일럿 | 프로젝트 저장·mask·내보내기 범위 별도 승인 |
+| 다음 단계 | Phase 4B-1 PNG·clipboard 실제 사용자 파일럿 | 프로젝트 저장·mask·추가 포맷 범위 별도 승인 |
 | FFmpeg 연동 | 먼저 CLI process로 검증, native addon은 근거가 생길 때만 검토 | 성능·배포 측정 |
 | 초기 배포 | 포터블 Windows 앱 | 실제 사용 및 보안 정책 확인 |
 | 프로젝트 형식 | versioned JSON 계열 | schema와 저장 안전성 검토 |
 | 프로젝트 좌표 직렬화 | Phase 4A image pixel geometry 기반 schema | 프로젝트 저장 단계 별도 승인 |
-| 이미지 기본 형식 | PNG, JPEG는 선택 | 공유 용량 요구 확인 |
+| 이미지 기본 형식 | PNG 확정, JPEG는 별도 선택 | 공유 용량 요구 확인 |
 | Phase 2.3 파일럿 | 새 설치본으로 아내분 실제 사용 피드백 수집 | 설치·기능 통합 QA 완료 후 |
 
 ## 중요한 미결정 사항

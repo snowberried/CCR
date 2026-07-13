@@ -7,7 +7,7 @@
 | 문서 | 위치 | 용도 |
 | --- | --- | --- |
 | 프로젝트 개요 | `../README.md` | CT Cine Reviewer 명칭, 현재 단계, v0.1 범위와 제외 범위 |
-| Latest Project Handoff | `../HANDOFF_PHASE4A.md` | Phase 4A 프레임 주석, annotated timeline과 설치본 상태 |
+| Latest Project Handoff | `../HANDOFF_PHASE4B1.md` | Phase 4B-1 deterministic PNG/clipboard와 설치본 상태 |
 | Phase 1 Handoff | `../HANDOFF_PHASE1.md` | Phase 1~2 구현 과정과 이전 기준선 |
 | 프로젝트 작업 지침 | `../AGENTS.md` | 중요한 결정 전 사용자 확인, 의료·보안 경계, 단계별 검증 원칙 |
 
@@ -33,11 +33,13 @@
 | Phase 3B Video Display Adjustment | `15_PHASE3B_VIDEO_DISPLAY.md` | MP4 Level/Width, Gamma, Inverse, Sharp, preset과 Original 비교 |
 | Post-Phase 3B Viewer Controls | `16_POST_PHASE3B_VIEWER_CONTROLS.md` | 고정 10%p zoom, PACS식 Pan/Zoom 도구와 입력 충돌 검증 |
 | Phase 4A Frame Annotation MVP | `17_PHASE4A_FRAME_ANNOTATION.md` | image pixel 주석, Undo/Redo, annotated timeline과 렌더링 회귀 |
+| Phase 4B-1 Frame Export & Clipboard | `18_PHASE4B1_FRAME_EXPORT.md` | displayed-frame snapshot, 전체/현재 보기 PNG와 OS clipboard |
 | Phase 2.2 Handoff | `../HANDOFF_PHASE2_2.md` | 최종 검증 상태와 제품 통합 전 승인 사항 |
 | Phase 2.3 Handoff | `../HANDOFF_PHASE2_3.md` | 제품 통합 최종 상태와 Phase 3 진입 조건 |
 | Phase 3A Handoff | `../HANDOFF_PHASE3A.md` | View Transform 최종 상태와 Phase 3B 진입 조건 |
 | Phase 3B Handoff | `../HANDOFF_PHASE3B.md` | Video Display 최종 상태와 preset 파일럿 조건 |
 | Phase 4A Handoff | `../HANDOFF_PHASE4A.md` | 주석 MVP 최종 상태와 후속 승인 범위 |
+| Phase 4B-1 Handoff | `../HANDOFF_PHASE4B1.md` | deterministic export 최종 상태와 후속 승인 범위 |
 | Project Troubleshooting | `troubleshooting.md` | CT Cine Reviewer에서만 발생하는 문제와 검증된 해결 방법 |
 | Docs Hub | `docs_hub.md` | 프로젝트 문서 목록과 위치 안내 |
 
@@ -53,7 +55,8 @@
 - Phase 3B 승인 후 고정 10%p zoom과 PACS식 Pan/Zoom 도구 막대를 추가하고 WebGL/RGBA 회귀를 완료했다.
 - 2GiB dynamic soft cap의 I420 full/LRU를 기본 사용하며 72MiB 방향성 cache는 RGBA rollback으로 유지한다.
 - Phase 4A 세션 전용 주석과 annotated timeline을 구현하고 WebGL/RGBA·cached navigation 회귀를 완료했다.
-- 사용자 승인 전 자동 재생, 이미지·프로젝트 저장, 마스크와 DICOM/PACS를 시작하지 않는다.
+- Phase 4B-1 displayed-frame PNG 저장과 clipboard 복사를 구현하고 양 renderer·privacy 회귀를 완료했다.
+- 사용자 승인 전 자동 재생, 프로젝트 저장, 마스크와 DICOM/PACS를 시작하지 않는다.
 
 ## 갱신 규칙
 

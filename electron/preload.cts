@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld("ccr", {
     return () => ipcRenderer.removeListener("window:fullscreenChanged", listener);
   },
   openVideo: () => ipcRenderer.invoke("frame:open"),
+  savePng: (bytes: Uint8Array, defaultFileName: string) =>
+    ipcRenderer.invoke("export:savePng", { bytes, defaultFileName }),
+  copyPng: (bytes: Uint8Array) => ipcRenderer.invoke("export:copyPng", { bytes }),
   openDroppedVideo: (file: File) =>
     ipcRenderer.invoke("frame:openDropped", { filePath: webUtils.getPathForFile(file) }),
   ...(process.env.CCR_PHASE23_QA === "1" ? {

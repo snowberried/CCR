@@ -75,6 +75,7 @@ type CcrFrameResponse = {
 
 type CcrOpenVideoResponse = {
   canceled: boolean;
+  sourceBaseName?: string;
   qaSampleIndex?: number;
   sessionId?: string;
   generation?: number;
@@ -118,6 +119,20 @@ interface Window {
     toggleFullscreen: () => Promise<boolean>;
     onFullscreenChanged: (callback: (value: boolean) => void) => () => void;
     openVideo: () => Promise<CcrOpenVideoResponse>;
+    savePng: (bytes: Uint8Array, defaultFileName: string) => Promise<{
+      canceled: boolean;
+      saved: boolean;
+      fileName?: string;
+      byteLength?: number;
+      error?: string;
+    }>;
+    copyPng: (bytes: Uint8Array) => Promise<{
+      copied: boolean;
+      width?: number;
+      height?: number;
+      byteLength?: number;
+      error?: string;
+    }>;
     openDroppedVideo: (file: File) => Promise<CcrOpenVideoResponse>;
     openQaVideo?: (sampleIndex: number) => Promise<CcrOpenVideoResponse>;
     getFrame: (sessionId: string, frameIndex: number, displayFormat?: "i420" | "rgba") => Promise<CcrFrameResponse>;

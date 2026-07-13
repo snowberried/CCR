@@ -83,6 +83,8 @@ import { releaseCanvas } from "./ui/viewerGeometry";
 import { I420WebglRenderer } from "./ui/I420WebglRenderer";
 import { AnnotationOverlay, type TextEditorState } from "./ui/AnnotationOverlay";
 import { AnnotatedTimeline } from "./ui/AnnotatedTimeline";
+import { defaultPngFileName, isStableExportFrame, type FrameExportMode } from "./domain/frameExport";
+import { canvasToPngBytes, captureDisplayedFrameCanvas, renderFrameExport } from "./ui/frameExport";
 
 type ViewerStatus = "idle" | "probing" | "ready" | "decoding" | "cancelled" | "error";
 
@@ -148,11 +150,19 @@ function formatZoomPercent(zoom: number): string {
   return `${Number((zoom * 100).toFixed(2))}%`;
 }
 
+function exportFailureMessage(error: unknown, action: "save" | "copy"): string {
+  const code = error instanceof Error ? error.message : "";
+  if (code === "EXPORT_PNG_ENCODE_FAILED") return "PNG 인코딩에 실패했습니다.";
+  if (action === "save") return "파일을 저장하지 못했습니다. 권한과 여유 공간을 확인하세요.";
+  return "시스템 클립보드에 이미지를 복사하지 못했습니다.";
+}
+
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewerSurfaceRef = useRef<HTMLElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const sourceBaseNameRef = useRef<string | undefined>(undefined);
   const desiredFrameRef = useRef(0);
   const displayedFrameRef = useRef(-1);
   const pumpingRef = useRef(false);
@@ -187,6 +197,10 @@ export function App() {
   const [comparingOriginal, setComparingOriginal] = useState(false);
   const [annotationSession, setAnnotationSessionState] = useState<AnnotationSession>(annotationSessionRef.current);
   const [textEditor, setTextEditor] = useState<TextEditorState | null>(null);
+  const [exportMode, setExportMode] = useState<FrameExportMode>("full-frame");
+  const [includeExportAnnotations, setIncludeExportAnnotations] = useState(true);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportMessage, setExportMessage] = useState<string | null>(null);
 
   const setAnnotationSession = useCallback((next: AnnotationSession) => {
     annotationSessionRef.current = next;
@@ -195,6 +209,7 @@ export function App() {
 
   const clearViewer = useCallback(() => {
     sessionIdRef.current = null;
+    sourceBaseNameRef.current = undefined;
     desiredFrameRef.current = 0;
     displayedFrameRef.current = -1;
     keyboardHoldRef.current = null;
@@ -212,6 +227,8 @@ export function App() {
     setViewTool("pan");
     setViewTransform(null);
     setTextEditor(null);
+    setExportBusy(false);
+    setExportMessage(null);
     setAnnotationSession(createAnnotationSession());
     wheelRef.current.reset();
     zoomWheelRef.current.reset();
@@ -464,10 +481,12 @@ export function App() {
       return;
     }
     sessionIdRef.current = opened.sessionId;
+    sourceBaseNameRef.current = opened.sourceBaseName;
     setMetadata(opened.metadata);
     setTextEditor(null);
     setAnnotationSession(createAnnotationSession());
     setViewTool("pan");
+    setExportMessage(null);
     displayStateRef.current = originalVideoDisplay();
     comparingOriginalRef.current = false;
     setDisplayState(displayStateRef.current);
@@ -1133,6 +1152,85 @@ export function App() {
     releaseCanvas(canvasRef.current);
   }, []);
 
+  const exportFrame = useCallback(async (action: "save" | "copy") => {
+    if (exportBusy || !metadata || !viewTransform) return;
+    const frame = lastFrameRef.current;
+    const descriptor = frame?.descriptor;
+    const stable = Boolean(frame && descriptor) && isStableExportFrame({
+      accepted: frame!.accepted,
+      hasPixels: Boolean(frame!.pixels),
+      identity: descriptor ? {
+        frameIndex: descriptor.frameIndex,
+        fingerprint: descriptor.fingerprint,
+        width: descriptor.width,
+        height: descriptor.height,
+      } : undefined,
+      displayedFrameIndex: displayedFrameRef.current,
+      viewerStatus: status,
+      pumping: pumpingRef.current,
+    });
+    if (!stable || !frame || !descriptor) {
+      setExportMessage("표시 프레임이 안정된 뒤 다시 시도하세요.");
+      return;
+    }
+
+    const exportGeneration = uiGenerationRef.current;
+    setExportBusy(true);
+    try {
+      const textureUploadsBefore = i420RendererRef.current?.getStats().textureUploadCount ?? 0;
+      const source = captureDisplayedFrameCanvas(frame, displayStateRef.current, i420RendererRef.current);
+      const snapshotTransform = structuredClone(viewTransform);
+      const snapshotAnnotations = includeExportAnnotations
+        ? structuredClone(annotationsForFrame(annotationSessionRef.current, descriptor.frameIndex))
+        : [];
+      const identity = {
+        frameIndex: descriptor.frameIndex,
+        fingerprint: descriptor.fingerprint,
+        width: descriptor.width,
+        height: descriptor.height,
+      };
+      const output = renderFrameExport({
+        mode: exportMode,
+        identity,
+        source,
+        transform: snapshotTransform,
+        annotations: snapshotAnnotations,
+        devicePixelRatio: window.devicePixelRatio,
+      });
+      const bytes = await canvasToPngBytes(output);
+      const textureUploadsAfter = i420RendererRef.current?.getStats().textureUploadCount ?? 0;
+      if (window.ccr?.openQaVideo) {
+        document.documentElement.dataset.qaExport = JSON.stringify({
+          mode: exportMode,
+          frameIndex: identity.frameIndex,
+          fingerprint: identity.fingerprint,
+          width: output.width,
+          height: output.height,
+          dpr: window.devicePixelRatio,
+          annotationCount: snapshotAnnotations.length,
+          byteLength: bytes.byteLength,
+          textureUploadDelta: textureUploadsAfter - textureUploadsBefore,
+        });
+      }
+      if (action === "save") {
+        if (!window.ccr?.savePng) throw new Error("EXPORT_RUNTIME_REQUIRED");
+        const result = await window.ccr.savePng(bytes, defaultPngFileName(sourceBaseNameRef.current, identity.frameIndex, metadata.frameCount));
+        if (result.canceled) return;
+        if (!result.saved) throw new Error(result.error ?? "EXPORT_SAVE_FAILED");
+        if (exportGeneration === uiGenerationRef.current) setExportMessage(`PNG 저장 완료 · ${output.width}×${output.height}`);
+      } else {
+        if (!window.ccr?.copyPng) throw new Error("EXPORT_RUNTIME_REQUIRED");
+        const result = await window.ccr.copyPng(bytes);
+        if (!result.copied) throw new Error(result.error ?? "EXPORT_CLIPBOARD_FAILED");
+        if (exportGeneration === uiGenerationRef.current) setExportMessage(`클립보드 복사 완료 · ${output.width}×${output.height} · 앱 종료 후 유지될 수 있음`);
+      }
+    } catch (exportError) {
+      if (exportGeneration === uiGenerationRef.current) setExportMessage(exportFailureMessage(exportError, action));
+    } finally {
+      if (exportGeneration === uiGenerationRef.current) setExportBusy(false);
+    }
+  }, [exportBusy, exportMode, includeExportAnnotations, metadata, status, viewTransform]);
+
   const frameDisplay = metadata
     ? `${internalToDisplayFrame(frameIndex).toLocaleString()} / ${metadata.frameCount.toLocaleString()}`
     : "-";
@@ -1148,6 +1246,14 @@ export function App() {
     : displayActive ? "보정 적용" : "Original";
   const frameAnnotations = annotationsForFrame(annotationSession, frameIndex);
   const selectedAnnotation = annotationSession.annotations.find((annotation) => annotation.id === annotationSession.selectedId) ?? null;
+  const exportAvailable = Boolean(metadata && viewTransform && lastFrameRef.current?.descriptor) && isStableExportFrame({
+    accepted: lastFrameRef.current?.accepted === true,
+    hasPixels: Boolean(lastFrameRef.current?.pixels),
+    identity: lastFrameRef.current?.descriptor,
+    displayedFrameIndex: displayedFrameRef.current,
+    viewerStatus: status,
+    pumping: pumpingRef.current,
+  });
 
   return (
     <main
@@ -1350,6 +1456,42 @@ export function App() {
               <button type="button" onClick={() => applyHistoryResult(undoAnnotation(annotationSessionRef.current))} disabled={!annotationSession.undoStack.length}>Undo</button>
               <button type="button" onClick={() => applyHistoryResult(redoAnnotation(annotationSessionRef.current))} disabled={!annotationSession.redoStack.length}>Redo</button>
             </div>
+          </details>
+
+          <details className="export-panel" open>
+            <summary>
+              <span>내보내기</span>
+              <small>PNG</small>
+            </summary>
+            <fieldset disabled={!metadata || exportBusy}>
+              <legend>범위</legend>
+              <label><input
+                type="radio"
+                name="export-mode"
+                value="full-frame"
+                checked={exportMode === "full-frame"}
+                onChange={() => { setExportMode("full-frame"); setExportMessage(null); }}
+              />전체 프레임</label>
+              <label><input
+                type="radio"
+                name="export-mode"
+                value="current-view"
+                checked={exportMode === "current-view"}
+                onChange={() => { setExportMode("current-view"); setExportMessage(null); }}
+              />현재 보기</label>
+            </fieldset>
+            <label className="export-annotation-option"><input
+              type="checkbox"
+              checked={includeExportAnnotations}
+              disabled={!metadata || exportBusy}
+              onChange={(event) => { setIncludeExportAnnotations(event.target.checked); setExportMessage(null); }}
+            />현재 프레임 주석 포함</label>
+            <p className="export-help">전체: 원본 해상도 · 현재 보기: 화면 DPR 적용</p>
+            <div className="export-buttons">
+              <button type="button" disabled={!exportAvailable || exportBusy} onClick={() => void exportFrame("save")}>{exportBusy ? "처리 중" : "PNG 저장"}</button>
+              <button type="button" disabled={!exportAvailable || exportBusy} onClick={() => void exportFrame("copy")}>복사</button>
+            </div>
+            <p className="export-result" aria-live="polite">{exportMessage ?? " "}</p>
           </details>
 
           <details className="diagnostics" open>

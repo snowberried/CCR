@@ -156,6 +156,7 @@ async function openVideoPath(filePath: string, existingGeneration?: number) {
     }
     return {
       canceled: false as const,
+      sourceBaseName: path.basename(filePath, path.extname(filePath)),
       sessionId,
       generation,
       metadata: {
