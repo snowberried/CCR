@@ -46,4 +46,9 @@ React 계층의 active gesture는 `pan | zoom | display` 단일 union이다. 좌
 - Phase 2.3 순·역 30초 탐색: loading 0, seek 0, View/Display 유지
 - product build 통과
 
-이번 변경에서는 설치본을 생성하지 않았다.
+## 설치본
+
+- 파일: `CT-Cine-Reviewer-Setup-0.3.2-controls.exe`
+- 크기: 143,236,989 bytes (136.60 MiB)
+- SHA-256: `b10d8176c252bb4e138d5ea25dd06e8a995ddcfd3fedf908eb27d590d6d800d9`
+- unpacked 91개 파일과 privacy inspection 통과

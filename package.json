@@ -1,6 +1,6 @@
 {
   "name": "ct-cine-reviewer",
-  "version": "0.3.1-phase3b",
+  "version": "0.3.2-controls",
   "private": true,
   "author": "snowberried",
   "description": "Local CT cine MP4 frame review viewer.",

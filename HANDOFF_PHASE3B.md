@@ -4,7 +4,7 @@
 
 Phase 3A 기준선 `795ee14` 위에 플랫폼 중립 Video Display와 WebGL/RGBA 실시간 표시 보정을 통합했다.
 
-- 버전: `0.3.1-phase3b`
+- 버전: `0.3.2-controls`
 - Original Phase 3A byte equality: 통과
 - Level/Width, Gamma, Inverse, luminance Sharp: 통과
 - candidate preset, 우클릭 drag, R/I/O와 Original hold compare: 통과
@@ -17,6 +17,7 @@ Phase 3A 기준선 `795ee14` 위에 플랫폼 중립 Video Display와 WebGL/RGBA
 - NSIS·설치 앱 WebGL/RGBA 실사용: 통과. SHA-256 `7a31a58be3bf595cefb160f4977ccaa2e14512b1d8193f29325821bd57aeaf61`
 - 설치 앱을 `CCR_FORCE_RGBA=1`로 실행해 72MiB segment cache(대표 영상에서 1-41), preset 적용, frame 이동 시 상태 유지와 Original 복귀를 확인했다.
 - 승인 후 고정 10%p zoom과 Pan/Zoom/Fit/100% 세로 도구 막대를 추가했다. WebGL/RGBA에서 tool 입력에 따른 seek·texture upload 증가 0, cursor anchor 오차 0.076 image pixel을 확인했다.
+- 후속 조작 개선 설치본 `CT-Cine-Reviewer-Setup-0.3.2-controls.exe`를 생성했다. 크기 143,236,989 bytes, SHA-256 `b10d8176c252bb4e138d5ea25dd06e8a995ddcfd3fedf908eb27d590d6d800d9`, privacy inspection 통과다.
 
 표시 보정은 `docs/15_PHASE3B_VIDEO_DISPLAY.md`, 후속 조작 개선은 `docs/16_POST_PHASE3B_VIEWER_CONTROLS.md`를 확인한다.
 
