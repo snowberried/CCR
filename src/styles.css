@@ -14,7 +14,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   height: 100vh;
   padding: 10px 12px 12px;
   display: grid;
-  grid-template-rows: 44px minmax(0, 1fr) 42px;
+  grid-template-rows: 44px minmax(0, 1fr) 84px;
   gap: 8px;
   background: #0f1217;
 }
@@ -79,8 +79,8 @@ button:disabled { opacity: 0.38; cursor: default; }
   background: #15191f;
 }
 .viewer-tool-rail button { width: 34px; min-width: 0; height: 34px; padding: 0 2px; font-size: 11px; }
-.viewer-tool-rail button:nth-child(-n+2) { font-size: 18px; }
-.viewer-tool-rail button:last-child { font-size: 9px; }
+.viewer-tool-rail button { font-size: 17px; }
+.viewer-tool-rail button:nth-last-child(-n+2) { font-size: 9px; }
 .viewer-tool-rail button.is-active { color: #c7eefb; border-color: #4a9fbd; background: #183744; }
 
 .viewer-surface {
@@ -97,11 +97,20 @@ button:disabled { opacity: 0.38; cursor: default; }
 }
 .viewer-surface.tool-pan { cursor: grab; }
 .viewer-surface.tool-zoom, .viewer-surface.is-zooming { cursor: ns-resize; }
+.viewer-surface.tool-select { cursor: default; }
+.viewer-surface.tool-arrow, .viewer-surface.tool-text, .viewer-surface.tool-ellipse, .viewer-surface.tool-rectangle { cursor: crosshair; }
 .viewer-surface.is-panning { cursor: grabbing; }
 .viewer-surface.is-display-dragging { cursor: ew-resize; }
 
 .frame-canvas { position: absolute; left: 0; top: 0; display: block; max-width: none; max-height: none; transform-origin: 0 0; image-rendering: auto; will-change: transform; }
 .frame-canvas.empty { position: static; width: 1px; height: 1px; transform: none; }
+.annotation-overlay { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.annotation-visible, .annotation-text { pointer-events: none; }
+.annotation-text { paint-order: stroke; stroke: rgba(0, 0, 0, 0.75); stroke-width: 2px; stroke-linejoin: round; }
+.annotation-hit { stroke: transparent; stroke-width: 14px; pointer-events: all; }
+.annotation-selection { fill: none; stroke: #7fd6f1; stroke-width: 1px; stroke-dasharray: 4 3; pointer-events: none; }
+.annotation-handle { fill: #d8f5ff; stroke: #12657f; stroke-width: 1px; pointer-events: all; }
+.annotation-text-editor { position: absolute; z-index: 4; height: 30px; padding: 0 6px; border-color: #58b3d2; background: rgba(18, 25, 32, 0.96); color: #fff; font-size: 16px; user-select: text; }
 .empty-label { color: #4f5a65; font-size: 13px; }
 .loading-label { position: absolute; top: 10px; right: 10px; padding: 5px 8px; border: 1px solid #385466; border-radius: 4px; background: rgba(13, 22, 28, 0.92); color: #9fd5e8; font-size: 11px; font-weight: 700; }
 .drop-overlay { position: absolute; inset: 10px; display: grid; place-items: center; border: 1px dashed #55a7c5; background: rgba(10, 25, 34, 0.86); color: #bfe6f3; font-size: 14px; font-weight: 700; }
@@ -129,14 +138,34 @@ dd { margin: 0; overflow-wrap: anywhere; text-align: right; font-size: 11px; fon
 .display-buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
 .display-buttons button { min-width: 0; height: 28px; padding: 0 7px; font-size: 10px; }
 .display-buttons .is-comparing { color: #bfeafb; border-color: #4a9fbd; background: #183744; }
+.annotation-panel { margin-top: 12px; padding-top: 10px; border-top: 1px solid #2a323b; }
+.annotation-panel summary { display: flex; justify-content: space-between; color: #c6d0da; font-size: 11px; font-weight: 700; cursor: pointer; }
+.annotation-panel summary small { color: #84909c; font-size: 10px; }
+.annotation-panel label { display: grid; gap: 3px; margin-top: 7px; color: #8f9cab; font-size: 10px; }
+.annotation-panel label > span { display: flex; justify-content: space-between; }
+.annotation-panel output { color: #cbd4dd; font-variant-numeric: tabular-nums; }
+.annotation-panel input[type="range"] { width: 100%; height: 18px; accent-color: #4a9fbd; }
+.annotation-panel input[type="color"] { width: 100%; height: 28px; padding: 2px; }
+.annotation-history-buttons { display: flex; gap: 4px; margin-top: 8px; }
+.annotation-history-buttons button { flex: 1; min-width: 0; height: 28px; padding: 0 6px; font-size: 10px; }
 .error-message { margin-top: 12px; color: #ffaaaa; font-size: 11px; overflow-wrap: anywhere; }
 
-.frame-toolbar { min-width: 0; display: flex; justify-content: center; align-items: center; gap: 5px; border-top: 1px solid #29313a; padding-top: 8px; }
+.navigation-footer { min-width: 0; display: grid; grid-template-rows: 28px 42px; gap: 4px; border-top: 1px solid #29313a; }
+.annotated-timeline { min-width: 0; display: flex; align-items: center; padding: 5px 2px 0; }
+.timeline-track { position: relative; width: 100%; height: 18px; border: 1px solid #34414d; border-radius: 3px; background: #171d24; touch-action: none; cursor: pointer; }
+.timeline-track[aria-disabled="true"] { opacity: 0.4; cursor: default; }
+.timeline-progress { position: absolute; inset: 0 auto 0 0; background: rgba(48, 130, 159, 0.32); pointer-events: none; }
+.timeline-playhead { position: absolute; top: -3px; bottom: -3px; width: 2px; transform: translateX(-1px); background: #d9f4ff; box-shadow: 0 0 0 1px #216f89; pointer-events: none; }
+.timeline-marker { position: absolute; z-index: 2; top: 2px; width: 5px; min-width: 0; height: 12px; padding: 0; transform: translateX(-2px); border: 0; border-radius: 1px; background: #e4b94d; }
+.timeline-marker:hover:not(:disabled) { border: 0; background: #ffe091; }
+.timeline-marker:disabled { opacity: 1; }
+.timeline-marker.is-current { background: #76dcff; box-shadow: 0 0 0 1px #d8f6ff; }
+.frame-toolbar { min-width: 0; display: flex; justify-content: center; align-items: center; gap: 5px; padding-top: 4px; }
 .frame-input-group { height: 32px; display: flex; align-items: center; gap: 7px; padding-right: 10px; border: 1px solid #3c4652; border-radius: 5px; background: #171c22; color: #8794a1; font-size: 11px; }
 .frame-input-group input { width: 78px; border: 0; border-right: 1px solid #3c4652; border-radius: 4px 0 0 4px; padding: 0 7px; text-align: right; }
 
 @media (max-width: 760px) {
-  .app-shell { padding: 8px; grid-template-rows: 44px minmax(0, 1fr) 42px; }
+  .app-shell { padding: 8px; grid-template-rows: 44px minmax(0, 1fr) 84px; }
   .topbar { gap: 8px; }
   .source-summary { display: none; }
   .view-toolbar output { display: none; }

@@ -5,6 +5,7 @@ import {
   useState,
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent,
 } from "react";
@@ -12,6 +13,7 @@ import {
   actualSizeViewTransform,
   createViewTransform,
   fitViewTransform,
+  viewportToImage,
   panByViewportDelta,
   resizeViewTransform,
   stepViewZoom,
@@ -19,6 +21,27 @@ import {
   zoomAtViewportPoint,
   type ViewTransform,
 } from "./domain/viewTransform";
+import {
+  annotationsForFrame,
+  commitAnnotationChange,
+  createAnnotation,
+  createAnnotationSession,
+  discardAnnotationPreview,
+  moveAnnotation,
+  pointInImage,
+  previewAnnotation,
+  redoAnnotation,
+  resizeAnnotation,
+  selectAnnotation,
+  undoAnnotation,
+  updateAnnotationDefaults,
+  updateAnnotationStyle,
+  type Annotation,
+  type AnnotationHandle,
+  type AnnotationSession,
+  type DrawingAnnotationKind,
+} from "./domain/annotation";
+import { frameIndexFromTimelinePosition, nearestAnnotatedFrame, type TimelineMarkerBucket } from "./domain/annotatedTimeline";
 import {
   beginPan,
   beginZoomDrag,
@@ -58,6 +81,8 @@ import {
 } from "./ui/frameNavigation";
 import { releaseCanvas } from "./ui/viewerGeometry";
 import { I420WebglRenderer } from "./ui/I420WebglRenderer";
+import { AnnotationOverlay, type TextEditorState } from "./ui/AnnotationOverlay";
+import { AnnotatedTimeline } from "./ui/AnnotatedTimeline";
 
 type ViewerStatus = "idle" | "probing" | "ready" | "decoding" | "cancelled" | "error";
 
@@ -70,12 +95,33 @@ type KeyboardHoldIntent = {
   holdDurationMs: number;
 };
 
-type ViewTool = "pan" | "zoom";
+type ViewTool = "pan" | "zoom" | "select" | "arrow" | "text" | "ellipse" | "rectangle";
+
+type AnnotationCreateGesture = {
+  pointerId: number;
+  annotationId: string;
+  start: { x: number; y: number };
+  startClient: { x: number; y: number };
+  lastClient: { x: number; y: number };
+  selectionBefore: string | null;
+  kind: DrawingAnnotationKind;
+};
+
+type AnnotationEditGesture = {
+  pointerId: number;
+  before: Annotation;
+  start: { x: number; y: number };
+  handle?: AnnotationHandle;
+};
 
 type ActivePointerGesture =
   | { kind: "pan"; gesture: PanGesture }
   | { kind: "zoom"; gesture: ZoomDragGesture }
-  | { kind: "display"; gesture: DisplayDragGesture };
+  | { kind: "display"; gesture: DisplayDragGesture }
+  | { kind: "annotation-create"; gesture: AnnotationCreateGesture }
+  | { kind: "annotation-move"; gesture: AnnotationEditGesture }
+  | { kind: "annotation-resize"; gesture: AnnotationEditGesture }
+  | { kind: "timeline"; gesture: { pointerId: number } };
 
 const STATUS_LABELS: Record<ViewerStatus, string> = {
   idle: "대기",
@@ -105,6 +151,7 @@ function formatZoomPercent(zoom: number): string {
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewerSurfaceRef = useRef<HTMLElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef<string | null>(null);
   const desiredFrameRef = useRef(0);
   const displayedFrameRef = useRef(-1);
@@ -120,6 +167,7 @@ export function App() {
   const lastFrameRef = useRef<CcrFrameResponse | null>(null);
   const displayStateRef = useRef<VideoDisplayState>(originalVideoDisplay());
   const comparingOriginalRef = useRef(false);
+  const annotationSessionRef = useRef<AnnotationSession>(createAnnotationSession());
   const [metadata, setMetadata] = useState<SessionMetadata | null>(null);
   const [frameIndex, setFrameIndex] = useState(0);
   const [frameInput, setFrameInput] = useState("1");
@@ -137,6 +185,13 @@ export function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [displayState, setDisplayState] = useState<VideoDisplayState>(originalVideoDisplay);
   const [comparingOriginal, setComparingOriginal] = useState(false);
+  const [annotationSession, setAnnotationSessionState] = useState<AnnotationSession>(annotationSessionRef.current);
+  const [textEditor, setTextEditor] = useState<TextEditorState | null>(null);
+
+  const setAnnotationSession = useCallback((next: AnnotationSession) => {
+    annotationSessionRef.current = next;
+    setAnnotationSessionState(next);
+  }, []);
 
   const clearViewer = useCallback(() => {
     sessionIdRef.current = null;
@@ -156,15 +211,14 @@ export function App() {
     setActivePointerKind(null);
     setViewTool("pan");
     setViewTransform(null);
+    setTextEditor(null);
+    setAnnotationSession(createAnnotationSession());
     wheelRef.current.reset();
     zoomWheelRef.current.reset();
     displayStateRef.current = originalVideoDisplay();
     comparingOriginalRef.current = false;
     setDisplayState(displayStateRef.current);
     setComparingOriginal(false);
-    activePointerRef.current = null;
-    setActivePointerKind(null);
-    setViewTool("pan");
     i420RendererRef.current?.dispose();
     i420RendererRef.current = null;
     releaseCanvas(canvasRef.current);
@@ -176,6 +230,8 @@ export function App() {
       delete document.documentElement.dataset.qaViewRevision;
       document.documentElement.dataset.qaViewTool = "pan";
       document.documentElement.dataset.qaPointerGesture = "none";
+      document.documentElement.dataset.qaAnnotationCount = "0";
+      document.documentElement.dataset.qaAnnotationHistory = "0,0";
       delete document.documentElement.dataset.qaDisplayState;
       delete document.documentElement.dataset.qaDisplayDrawMs;
       delete document.documentElement.dataset.qaTextureUploads;
@@ -188,7 +244,7 @@ export function App() {
     if (!window.ccr?.openQaVideo) return;
     document.documentElement.dataset.qaDisplayDrawMs = String(drawMs);
     document.documentElement.dataset.qaTextureUploads = String(i420RendererRef.current?.getStats().textureUploadCount ?? 0);
-  }, []);
+  }, [setAnnotationSession]);
 
   const redrawCurrentFrame = useCallback(() => {
     const frame = lastFrameRef.current;
@@ -361,7 +417,12 @@ export function App() {
     if (!metadata) {
       return;
     }
-    desiredFrameRef.current = clampFrameIndex(nextFrameIndex, metadata.frameCount);
+    const target = clampFrameIndex(nextFrameIndex, metadata.frameCount);
+    desiredFrameRef.current = target;
+    const selected = annotationSessionRef.current.annotations.find((annotation) => annotation.id === annotationSessionRef.current.selectedId);
+    if (selected && selected.frameIndex !== target) {
+      setAnnotationSession(selectAnnotation(annotationSessionRef.current, null));
+    }
     if (!defer) {
       void pump();
       return;
@@ -372,7 +433,7 @@ export function App() {
         void pump();
       });
     }
-  }, [metadata, pump]);
+  }, [metadata, pump, setAnnotationSession]);
 
   const acceptOpenedVideo = useCallback(async (promise: Promise<CcrOpenVideoResponse>) => {
     const uiGeneration = ++uiGenerationRef.current;
@@ -404,6 +465,9 @@ export function App() {
     }
     sessionIdRef.current = opened.sessionId;
     setMetadata(opened.metadata);
+    setTextEditor(null);
+    setAnnotationSession(createAnnotationSession());
+    setViewTool("pan");
     displayStateRef.current = originalVideoDisplay();
     comparingOriginalRef.current = false;
     setDisplayState(displayStateRef.current);
@@ -426,7 +490,7 @@ export function App() {
       await window.ccr?.ackFirstFrame?.(opened.sessionId);
     }
     setStatus("ready");
-  }, [clearViewer, metadata, renderFrame]);
+  }, [clearViewer, metadata, renderFrame, setAnnotationSession]);
 
   useEffect(() => {
     if (!window.ccr?.openQaVideo) return;
@@ -529,13 +593,75 @@ export function App() {
     void window.ccr?.setFullscreen?.(false).then(setIsFullscreen);
   }, []);
 
-  const endPointerGesture = useCallback((element?: HTMLElement, pointerId?: number) => {
-    if (element && pointerId !== undefined && element.hasPointerCapture(pointerId)) {
-      element.releasePointerCapture(pointerId);
-    }
+  const endPointerGesture = useCallback((pointerId?: number) => {
     activePointerRef.current = null;
     setActivePointerKind(null);
+    if (pointerId === undefined) return;
+    for (const element of [viewerSurfaceRef.current, timelineRef.current]) {
+      if (element?.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
+    }
   }, []);
+
+  const cancelPointerGesture = useCallback(() => {
+    const active = activePointerRef.current;
+    if (!active) return;
+    if (active.kind === "annotation-create") {
+      setAnnotationSession(discardAnnotationPreview(
+        annotationSessionRef.current,
+        active.gesture.annotationId,
+        active.gesture.selectionBefore,
+      ));
+    } else if (active.kind === "annotation-move" || active.kind === "annotation-resize") {
+      setAnnotationSession(selectAnnotation(previewAnnotation(annotationSessionRef.current, active.gesture.before), active.gesture.before.id));
+    }
+    endPointerGesture(active.gesture.pointerId);
+  }, [endPointerGesture, setAnnotationSession]);
+
+  const finishPointerGesture = useCallback((pointerId: number) => {
+    const active = activePointerRef.current;
+    if (!active || active.gesture.pointerId !== pointerId) return;
+    if (active.kind === "annotation-create") {
+      const draft = annotationSessionRef.current.annotations.find((annotation) => annotation.id === active.gesture.annotationId);
+      const dragDistance = Math.hypot(
+        active.gesture.lastClient.x - active.gesture.startClient.x,
+        active.gesture.lastClient.y - active.gesture.startClient.y,
+      );
+      if (!draft || dragDistance < 4) {
+        setAnnotationSession(discardAnnotationPreview(
+          annotationSessionRef.current,
+          active.gesture.annotationId,
+          active.gesture.selectionBefore,
+        ));
+      } else {
+        const base = { ...annotationSessionRef.current, selectedId: active.gesture.selectionBefore };
+        setAnnotationSession(commitAnnotationChange(base, null, draft, draft.id));
+      }
+    } else if (active.kind === "annotation-move" || active.kind === "annotation-resize") {
+      const after = annotationSessionRef.current.annotations.find((annotation) => annotation.id === active.gesture.before.id);
+      if (after && JSON.stringify(after.geometry) !== JSON.stringify(active.gesture.before.geometry)) {
+        setAnnotationSession(commitAnnotationChange(annotationSessionRef.current, active.gesture.before, after, after.id));
+      }
+    } else if (active.kind === "timeline") {
+      goToFrame(desiredFrameRef.current);
+    }
+    endPointerGesture(pointerId);
+  }, [endPointerGesture, goToFrame, setAnnotationSession]);
+
+  const surfacePoint = (event: ReactPointerEvent<HTMLElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return {
+      x: event.clientX - bounds.left - event.currentTarget.clientLeft,
+      y: event.clientY - bounds.top - event.currentTarget.clientTop,
+    };
+  };
+
+  const annotationEventTarget = (target: EventTarget | null) => {
+    const element = target instanceof Element ? target.closest<SVGElement>("[data-annotation-id]") : null;
+    return {
+      id: element?.dataset.annotationId ?? null,
+      handle: (element?.dataset.annotationHandle as AnnotationHandle | undefined) ?? null,
+    };
+  };
 
   const onPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
     if (!metadata || activePointerRef.current || (event.button !== 0 && event.button !== 2)) return;
@@ -547,6 +673,56 @@ export function App() {
         gesture: beginDisplayDrag(event.pointerId, event.clientX, event.clientY, displayStateRef.current),
       };
       setActivePointerKind("display");
+      return;
+    }
+    const viewportPoint = surfacePoint(event);
+    const imagePoint = viewTransform ? viewportToImage(viewTransform, viewportPoint) : null;
+    const target = annotationEventTarget(event.target);
+    if (viewTool === "select") {
+      const annotation = annotationSessionRef.current.annotations.find((candidate) => candidate.id === target.id && candidate.frameIndex === frameIndex);
+      if (!annotation || !imagePoint) {
+        setAnnotationSession(selectAnnotation(annotationSessionRef.current, null));
+        endPointerGesture(event.pointerId);
+        return;
+      }
+      setAnnotationSession(selectAnnotation(annotationSessionRef.current, annotation.id));
+      activePointerRef.current = {
+        kind: target.handle ? "annotation-resize" : "annotation-move",
+        gesture: { pointerId: event.pointerId, before: annotation, start: imagePoint, handle: target.handle ?? undefined },
+      };
+      setActivePointerKind(target.handle ? "annotation-resize" : "annotation-move");
+      return;
+    }
+    if (viewTool === "text") {
+      if (!imagePoint || !viewTransform || !pointInImage(imagePoint, viewTransform.imageSize)) {
+        endPointerGesture(event.pointerId);
+        return;
+      }
+      setTextEditor({ annotationId: null, frameIndex, anchor: imagePoint, value: "" });
+      endPointerGesture(event.pointerId);
+      return;
+    }
+    if ((viewTool === "arrow" || viewTool === "ellipse" || viewTool === "rectangle") && viewTransform && imagePoint) {
+      if (!pointInImage(imagePoint, viewTransform.imageSize)) {
+        endPointerGesture(event.pointerId);
+        return;
+      }
+      const draft = createAnnotation(annotationSessionRef.current, frameIndex, viewTool, imagePoint, imagePoint, viewTransform.imageSize);
+      const selectionBefore = annotationSessionRef.current.selectedId;
+      setAnnotationSession(selectAnnotation(previewAnnotation(annotationSessionRef.current, draft), draft.id));
+      activePointerRef.current = {
+        kind: "annotation-create",
+        gesture: {
+          pointerId: event.pointerId,
+          annotationId: draft.id,
+          start: imagePoint,
+          startClient: { x: event.clientX, y: event.clientY },
+          lastClient: { x: event.clientX, y: event.clientY },
+          selectionBefore,
+          kind: viewTool,
+        },
+      };
+      setActivePointerKind("annotation-create");
       return;
     }
     if (viewTool === "zoom" && viewTransform) {
@@ -567,7 +743,7 @@ export function App() {
 
   const onPointerMove = (event: ReactPointerEvent<HTMLElement>) => {
     const active = activePointerRef.current;
-    if (!active) return;
+    if (!active || active.gesture.pointerId !== event.pointerId) return;
     if (active.kind === "display") {
       const next = moveDisplayDrag(active.gesture, event.pointerId, event.clientX, event.clientY);
       if (next) setDisplayState(next);
@@ -582,6 +758,40 @@ export function App() {
       }
       return;
     }
+    if (active.kind === "annotation-create") {
+      if (viewTransform) {
+        const point = viewportToImage(viewTransform, surfacePoint(event));
+        const current = annotationSessionRef.current.annotations.find((annotation) => annotation.id === active.gesture.annotationId);
+        if (current) {
+        const draft = createAnnotation(
+          { ...annotationSessionRef.current, nextOrder: current.order },
+          current.frameIndex,
+          active.gesture.kind,
+          active.gesture.start,
+          point,
+          viewTransform.imageSize,
+          event.shiftKey,
+        );
+        activePointerRef.current = {
+          ...active,
+          gesture: { ...active.gesture, lastClient: { x: event.clientX, y: event.clientY } },
+        };
+          setAnnotationSession(selectAnnotation(previewAnnotation(annotationSessionRef.current, draft), draft.id));
+        }
+      }
+      return;
+    }
+    if (active.kind === "annotation-move" || active.kind === "annotation-resize") {
+      if (viewTransform) {
+        const point = viewportToImage(viewTransform, surfacePoint(event));
+        const next = active.kind === "annotation-move"
+          ? moveAnnotation(active.gesture.before, { x: point.x - active.gesture.start.x, y: point.y - active.gesture.start.y }, viewTransform.imageSize)
+          : resizeAnnotation(active.gesture.before, active.gesture.handle!, point, viewTransform.imageSize, event.shiftKey);
+        setAnnotationSession(selectAnnotation(previewAnnotation(annotationSessionRef.current, next), next.id));
+      }
+      return;
+    }
+    if (active.kind === "timeline") return;
     const moved = movePan(active.gesture, event.pointerId, event.clientX, event.clientY);
     if (moved.delta) {
       activePointerRef.current = { kind: "pan", gesture: moved.gesture };
@@ -590,9 +800,117 @@ export function App() {
   };
 
   const onPointerEnd = (event: ReactPointerEvent<HTMLElement>) => {
-    if (activePointerRef.current?.gesture.pointerId === event.pointerId) {
-      endPointerGesture(event.currentTarget, event.pointerId);
+    finishPointerGesture(event.pointerId);
+  };
+
+  const onPointerCancel = (event: ReactPointerEvent<HTMLElement>) => {
+    if (activePointerRef.current?.gesture.pointerId === event.pointerId) cancelPointerGesture();
+  };
+
+  const commitTextEditor = () => {
+    if (!textEditor) return;
+    const value = textEditor.value;
+    if (textEditor.annotationId) {
+      const before = annotationSessionRef.current.annotations.find((annotation) => annotation.id === textEditor.annotationId);
+      if (before?.kind === "text" && value.trim() && value !== before.geometry.text) {
+        const after = { ...before, geometry: { ...before.geometry, text: value } };
+        setAnnotationSession(commitAnnotationChange(annotationSessionRef.current, before, after, after.id));
+      }
+    } else if (value.trim()) {
+      const annotation = createAnnotation(
+        annotationSessionRef.current,
+        textEditor.frameIndex,
+        "text",
+        textEditor.anchor,
+        textEditor.anchor,
+        undefined,
+        false,
+        value,
+      );
+      setAnnotationSession(commitAnnotationChange(annotationSessionRef.current, null, annotation, annotation.id));
     }
+    setTextEditor(null);
+  };
+
+  const editTextAnnotation = (annotation: Annotation) => {
+    if (annotation.kind !== "text") return;
+    setAnnotationSession(selectAnnotation(annotationSessionRef.current, annotation.id));
+    setTextEditor({
+      annotationId: annotation.id,
+      frameIndex: annotation.frameIndex,
+      anchor: annotation.geometry.anchor,
+      value: annotation.geometry.text,
+    });
+  };
+
+  const onViewerDoubleClick = (event: ReactMouseEvent<HTMLElement>) => {
+    const target = annotationEventTarget(event.target);
+    const annotation = annotationSessionRef.current.annotations.find((candidate) => candidate.id === target.id);
+    if (annotation?.kind === "text") {
+      event.preventDefault();
+      editTextAnnotation(annotation);
+    } else if (viewTool === "pan" || viewTool === "zoom" || viewTool === "select") {
+      fitView();
+    }
+  };
+
+  const changeAnnotationStyle = (style: Partial<Annotation["style"]>) => {
+    const selected = annotationSessionRef.current.annotations.find((annotation) => annotation.id === annotationSessionRef.current.selectedId);
+    if (!selected) {
+      setAnnotationSession(updateAnnotationDefaults(annotationSessionRef.current, style));
+      return;
+    }
+    const after = updateAnnotationStyle(selected, style);
+    setAnnotationSession(commitAnnotationChange(annotationSessionRef.current, selected, after, after.id));
+  };
+
+  const applyHistoryResult = (result: ReturnType<typeof undoAnnotation>) => {
+    if (!result) return;
+    setTextEditor(null);
+    setAnnotationSession(result.session);
+    goToFrame(result.frameIndex);
+  };
+
+  const timelineFrameAtEvent = (event: ReactPointerEvent<HTMLElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return metadata
+      ? frameIndexFromTimelinePosition(event.clientX - bounds.left - event.currentTarget.clientLeft, event.currentTarget.clientWidth, metadata.frameCount)
+      : 0;
+  };
+
+  const onTimelinePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!metadata || activePointerRef.current || event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    activePointerRef.current = { kind: "timeline", gesture: { pointerId: event.pointerId } };
+    setActivePointerKind("timeline");
+    goToFrame(timelineFrameAtEvent(event), true);
+  };
+
+  const onTimelinePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (activePointerRef.current?.kind === "timeline" && activePointerRef.current.gesture.pointerId === event.pointerId) {
+      goToFrame(timelineFrameAtEvent(event), true);
+    }
+  };
+
+  const onTimelinePointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (activePointerRef.current?.kind === "timeline" && activePointerRef.current.gesture.pointerId === event.pointerId) {
+      goToFrame(timelineFrameAtEvent(event));
+      endPointerGesture(event.pointerId);
+    }
+  };
+
+  const onTimelineMarkerSelect = (event: ReactPointerEvent<HTMLButtonElement>, bucket: TimelineMarkerBucket) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!metadata || activePointerRef.current) return;
+    const track = timelineRef.current;
+    const bounds = track?.getBoundingClientRect();
+    const target = nearestAnnotatedFrame(bucket, bounds && track
+      ? frameIndexFromTimelinePosition(event.clientX - bounds.left - track.clientLeft, track.clientWidth, metadata.frameCount)
+      : bucket.frames[0].frameIndex);
+    setAnnotationSession(selectAnnotation(annotationSessionRef.current, target.firstAnnotationId));
+    goToFrame(target.frameIndex);
   };
 
   const onDrop = (event: DragEvent<HTMLElement>) => {
@@ -622,7 +940,7 @@ export function App() {
           setComparingOriginal(false);
         } else if (activePointerRef.current) {
           event.preventDefault();
-          endPointerGesture(viewerSurfaceRef.current ?? undefined, activePointerRef.current.gesture.pointerId);
+          cancelPointerGesture();
         } else if (isFullscreen) {
           event.preventDefault();
           exitFullscreen();
@@ -638,6 +956,23 @@ export function App() {
       }
       if (!metadata) {
         return;
+      }
+      const historyShortcut = event.ctrlKey && !event.altKey && !editing && (
+        event.key.toLowerCase() === "z" || event.key.toLowerCase() === "y"
+      );
+      if (historyShortcut) {
+        event.preventDefault();
+        const redo = event.key.toLowerCase() === "y" || (event.key.toLowerCase() === "z" && event.shiftKey);
+        applyHistoryResult(redo ? redoAnnotation(annotationSessionRef.current) : undoAnnotation(annotationSessionRef.current));
+        return;
+      }
+      if (!editing && (event.key === "Delete" || event.key === "Backspace")) {
+        const selected = annotationSessionRef.current.annotations.find((annotation) => annotation.id === annotationSessionRef.current.selectedId);
+        if (selected) {
+          event.preventDefault();
+          setAnnotationSession(commitAnnotationChange(annotationSessionRef.current, selected, null, null));
+          return;
+        }
       }
       const displayShortcut = videoDisplayShortcut({ key: event.key, editing });
       if (displayShortcut) {
@@ -706,7 +1041,8 @@ export function App() {
       setComparingOriginal(false);
       const active = activePointerRef.current;
       if (active && (!event || active.gesture.pointerId === event.pointerId)) {
-        endPointerGesture(viewerSurfaceRef.current ?? undefined, active.gesture.pointerId);
+        if (event) finishPointerGesture(active.gesture.pointerId);
+        else cancelPointerGesture();
       }
     };
     const onWindowPointerUp = (event: PointerEvent) => releaseTemporaryInput(event);
@@ -721,7 +1057,7 @@ export function App() {
       window.removeEventListener("blur", onWindowBlur);
       window.removeEventListener("pointerup", onWindowPointerUp);
     };
-  }, [cancel, endPointerGesture, exitFullscreen, fitView, goToFrame, isFullscreen, metadata, openVideo, pump, toggleFullscreen, zoomByStep]);
+  }, [cancel, cancelPointerGesture, exitFullscreen, finishPointerGesture, fitView, goToFrame, isFullscreen, metadata, openVideo, pump, setAnnotationSession, toggleFullscreen, zoomByStep]);
 
   useEffect(() => {
     const surface = viewerSurfaceRef.current;
@@ -770,6 +1106,17 @@ export function App() {
   }, [activePointerKind, viewTool]);
 
   useEffect(() => {
+    if (!window.ccr?.openQaVideo) return;
+    document.documentElement.dataset.qaAnnotationCount = String(annotationSession.annotations.length);
+    document.documentElement.dataset.qaAnnotationHistory = `${annotationSession.undoStack.length},${annotationSession.redoStack.length}`;
+    document.documentElement.dataset.qaAnnotationState = JSON.stringify({
+      annotations: annotationSession.annotations,
+      selectedId: annotationSession.selectedId,
+      defaults: annotationSession.defaults,
+    });
+  }, [annotationSession]);
+
+  useEffect(() => {
     displayStateRef.current = displayState;
     comparingOriginalRef.current = comparingOriginal;
     if (window.ccr?.openQaVideo) {
@@ -799,6 +1146,8 @@ export function App() {
   const displayLabel = comparingOriginal
     ? "Original 비교"
     : displayActive ? "보정 적용" : "Original";
+  const frameAnnotations = annotationsForFrame(annotationSession, frameIndex);
+  const selectedAnnotation = annotationSession.annotations.find((annotation) => annotation.id === annotationSession.selectedId) ?? null;
 
   return (
     <main
@@ -835,24 +1184,24 @@ export function App() {
       <section className="viewer-layout">
         <section className="viewer-workspace">
           <div className="viewer-tool-rail" role="toolbar" aria-label="뷰어 도구" aria-orientation="vertical">
-            <button
+            {([
+              ["pan", "✥", "Pan 도구", "Pan: 좌클릭 드래그로 영상 이동"],
+              ["zoom", "⌕", "Zoom 도구", "Zoom: 좌클릭 후 위/아래 드래그"],
+              ["select", "↖", "Select 도구", "Select: 주석 선택·이동·크기 조절"],
+              ["arrow", "→", "Arrow 도구", "Arrow: 좌클릭 드래그로 화살표 생성"],
+              ["text", "T", "Text 도구", "Text: 영상 위를 클릭해 한 줄 입력"],
+              ["ellipse", "○", "Ellipse 도구", "Ellipse: 좌클릭 드래그로 타원 생성"],
+              ["rectangle", "▭", "Rectangle 도구", "Rectangle: 좌클릭 드래그로 사각형 생성"],
+            ] as const).map(([tool, icon, label, title]) => <button
+              key={tool}
               type="button"
-              className={viewTool === "pan" ? "is-active" : ""}
-              aria-label="Pan 도구"
-              aria-pressed={viewTool === "pan"}
-              title="Pan: 좌클릭 드래그로 영상 이동"
-              onClick={() => setViewTool("pan")}
+              className={viewTool === tool ? "is-active" : ""}
+              aria-label={label}
+              aria-pressed={viewTool === tool}
+              title={title}
+              onClick={() => setViewTool(tool)}
               disabled={!metadata}
-            ><span aria-hidden="true">✥</span></button>
-            <button
-              type="button"
-              className={viewTool === "zoom" ? "is-active" : ""}
-              aria-label="Zoom 도구"
-              aria-pressed={viewTool === "zoom"}
-              title="Zoom: 좌클릭 후 위/아래 드래그"
-              onClick={() => setViewTool("zoom")}
-              disabled={!metadata}
-            ><span aria-hidden="true">⌕</span></button>
+            ><span aria-hidden="true">{icon}</span></button>)}
             <button type="button" aria-label="화면 맞춤" title="Fit: 화면 맞춤" onClick={fitView} disabled={!metadata}>Fit</button>
             <button type="button" aria-label="원본 픽셀 100%" title="100%: 원본 픽셀 1:1" onClick={actualSizeView} disabled={!metadata}>100%</button>
           </div>
@@ -863,13 +1212,22 @@ export function App() {
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerEnd}
-            onPointerCancel={onPointerEnd}
-            onLostPointerCapture={() => endPointerGesture()}
-            onDoubleClick={fitView}
+            onPointerCancel={onPointerCancel}
+            onLostPointerCapture={() => { if (activePointerRef.current) cancelPointerGesture(); }}
+            onDoubleClick={onViewerDoubleClick}
             onContextMenu={(event) => event.preventDefault()}
             aria-label="CT cine frame"
           >
             <canvas ref={canvasRef} className={metadata ? "frame-canvas" : "frame-canvas empty"} style={canvasStyle} draggable={false} />
+            {metadata && viewTransform && <AnnotationOverlay
+              annotations={frameAnnotations}
+              selectedId={annotationSession.selectedId}
+              transform={viewTransform}
+              textEditor={textEditor}
+              onTextChange={(value) => setTextEditor((current) => current ? { ...current, value } : current)}
+              onTextCommit={commitTextEditor}
+              onTextCancel={() => setTextEditor(null)}
+            />}
             {!metadata && <span className="empty-label">CT Cine Reviewer</span>}
             {status === "decoding" && <span className="loading-label">디코딩 중</span>}
             {dragging && <div className="drop-overlay">동영상 놓기</div>}
@@ -947,6 +1305,53 @@ export function App() {
             </div>
           </details>
 
+          <details className="annotation-panel" open>
+            <summary>
+              <span>Annotation</span>
+              <small>{frameAnnotations.length}개</small>
+            </summary>
+            <label>
+              <span>Color</span>
+              <input
+                aria-label="Annotation Color"
+                type="color"
+                value={selectedAnnotation?.style.color ?? annotationSession.defaults.color}
+                disabled={!metadata}
+                onChange={(event) => changeAnnotationStyle({ color: event.target.value })}
+              />
+            </label>
+            <label>
+              <span>Line width <output>{selectedAnnotation?.style.lineWidth ?? annotationSession.defaults.lineWidth}</output></span>
+              <input
+                aria-label="Annotation Line Width"
+                type="range"
+                min="1"
+                max="6"
+                step="1"
+                value={selectedAnnotation?.style.lineWidth ?? annotationSession.defaults.lineWidth}
+                disabled={!metadata || selectedAnnotation?.kind === "text"}
+                onChange={(event) => changeAnnotationStyle({ lineWidth: Number(event.target.value) })}
+              />
+            </label>
+            <label>
+              <span>Font size <output>{selectedAnnotation?.style.fontSize ?? annotationSession.defaults.fontSize}</output></span>
+              <input
+                aria-label="Annotation Font Size"
+                type="range"
+                min="12"
+                max="32"
+                step="2"
+                value={selectedAnnotation?.style.fontSize ?? annotationSession.defaults.fontSize}
+                disabled={!metadata || (selectedAnnotation !== null && selectedAnnotation.kind !== "text")}
+                onChange={(event) => changeAnnotationStyle({ fontSize: Number(event.target.value) })}
+              />
+            </label>
+            <div className="annotation-history-buttons">
+              <button type="button" onClick={() => applyHistoryResult(undoAnnotation(annotationSessionRef.current))} disabled={!annotationSession.undoStack.length}>Undo</button>
+              <button type="button" onClick={() => applyHistoryResult(redoAnnotation(annotationSessionRef.current))} disabled={!annotationSession.redoStack.length}>Redo</button>
+            </div>
+          </details>
+
           <details className="diagnostics" open>
             <summary>진단</summary>
             <dl>
@@ -974,7 +1379,20 @@ export function App() {
         </aside>
       </section>
 
-      <nav className="frame-toolbar" aria-label="프레임 탐색">
+      <footer className="navigation-footer">
+        <AnnotatedTimeline
+          ref={timelineRef}
+          annotations={annotationSession.annotations}
+          frameIndex={frameIndex}
+          frameCount={metadata?.frameCount ?? 1}
+          disabled={!metadata}
+          onPointerDown={onTimelinePointerDown}
+          onPointerMove={onTimelinePointerMove}
+          onPointerEnd={onTimelinePointerEnd}
+          onPointerCancel={() => cancelPointerGesture()}
+          onMarkerSelect={onTimelineMarkerSelect}
+        />
+        <nav className="frame-toolbar" aria-label="프레임 탐색">
         <button type="button" title="첫 프레임" onClick={() => goToFrame(0)} disabled={!metadata}>|&lt;</button>
         <button type="button" title="5프레임 이전" onClick={() => goToFrame(desiredFrameRef.current - 5)} disabled={!metadata}>-5</button>
         <button type="button" title="이전 프레임" onClick={() => goToFrame(desiredFrameRef.current - 1)} disabled={!metadata}>&lt;</button>
@@ -996,7 +1414,8 @@ export function App() {
         <button type="button" title="5프레임 다음" onClick={() => goToFrame(desiredFrameRef.current + 5)} disabled={!metadata}>+5</button>
         <button type="button" title="마지막 프레임" onClick={() => metadata && goToFrame(metadata.frameCount - 1)} disabled={!metadata || (metadata.productCache === true && metadata.analysisReady === false)}>&gt;|</button>
         <button type="button" title="디코딩 취소" onClick={cancel} disabled={status !== "decoding" && status !== "probing"}>취소</button>
-      </nav>
+        </nav>
+      </footer>
     </main>
   );
 }

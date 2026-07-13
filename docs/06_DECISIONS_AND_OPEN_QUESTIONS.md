@@ -54,16 +54,19 @@
 | Phase 3B Sharp | 기본 Off, 1-pixel luminance 이웃과 amount 0~1 | chroma 훼손과 과도한 halo를 제한하기 위해 |
 | Phase 3B Original | Display shader/CPU 처리를 bypass하여 Phase 3A byte와 동일 | 원본 비교가 상태 reset이나 근사치가 되지 않게 하기 위해 |
 | Phase 3B preset | 8개 고정 candidate, frame별 histogram 자동 보정 없음 | 밝기 pumping을 피하고 사용자 파일럿 조정을 가능하게 하기 위해 |
+| Phase 4A geometry | 원본 image pixel 좌표, viewport/normalized screen 좌표 제외 | Phase 3A transform을 재사용하고 프레임 데이터와 분리하기 위해 |
+| Phase 4A 수명 | 새 파일에서 지워지는 세션 RAM 상태 | 프로젝트 저장을 승인 범위 밖으로 유지하기 위해 |
+| Phase 4A overlay | WebGL/RGBA와 분리한 SVG | 표시 보정과 texture upload에 영향을 주지 않기 위해 |
 
 ## 현재 제안
 
 | 항목 | 1순위 제안 | 확정 조건 |
 | --- | --- | --- |
-| 다음 단계 | Phase 3B preset·Sharp·우클릭 민감도 파일럿 | Phase 4 주석 범위 별도 승인 |
+| 다음 단계 | Phase 4A 주석·timeline 실제 사용자 파일럿 | 프로젝트 저장·mask·내보내기 범위 별도 승인 |
 | FFmpeg 연동 | 먼저 CLI process로 검증, native addon은 근거가 생길 때만 검토 | 성능·배포 측정 |
 | 초기 배포 | 포터블 Windows 앱 | 실제 사용 및 보안 정책 확인 |
 | 프로젝트 형식 | versioned JSON 계열 | schema와 저장 안전성 검토 |
-| 좌표 | 원본 content 기준 0~1 normalized 좌표 | 렌더링/내보내기 왕복 검증 |
+| 프로젝트 좌표 직렬화 | Phase 4A image pixel geometry 기반 schema | 프로젝트 저장 단계 별도 승인 |
 | 이미지 기본 형식 | PNG, JPEG는 선택 | 공유 용량 요구 확인 |
 | Phase 2.3 파일럿 | 새 설치본으로 아내분 실제 사용 피드백 수집 | 설치·기능 통합 QA 완료 후 |
 
@@ -94,8 +97,8 @@
 
 ### 5. v0.1 주석 도구 범위
 
-- 우선 제안: 화살표, 텍스트, 원, 사각형, 마스크.
-- 자유선, 여러 프레임 복제, 고급 스타일은 실제 필요 확인 전 P2로 둔다.
+- Phase 4A에서 Arrow, 한 줄 Text, Ellipse, Rectangle과 Select를 확정했다.
+- mask, 자유선, 여러 프레임 복제, 숨김과 고급 스타일은 실제 필요 확인 전 제외한다.
 
 ### 6. 프로젝트 자동 저장
 

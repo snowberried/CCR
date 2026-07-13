@@ -1,6 +1,6 @@
 {
   "name": "ct-cine-reviewer",
-  "version": "0.3.2-controls",
+  "version": "0.4.0",
   "private": true,
   "author": "snowberried",
   "description": "Local CT cine MP4 frame review viewer.",
@@ -30,6 +30,7 @@
     "qa:phase3b:display": "npm run build && electron scripts/electron-phase3b-display-qa.cjs",
     "qa:phase3b:soak": "npm run build && electron scripts/electron-phase3b-display-qa.cjs --minutes=10",
     "qa:phase3b:soak:smoke": "npm run build && electron scripts/electron-phase3b-display-qa.cjs --minutes=0.5",
+    "qa:phase4a:annotations": "npm run build && electron scripts/electron-phase4a-annotation-qa.cjs",
     "qa:phase2.2:synthetic": "node --import tsx scripts/qa-phase22-synthetic.ts",
     "qa:phase2": "node --import tsx scripts/qa-phase2-synthetic.ts",
     "soak:phase2": "node --expose-gc --import tsx scripts/soak-phase2.ts --minutes=20",
