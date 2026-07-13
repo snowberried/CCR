@@ -66,12 +66,18 @@ function memorySlope(samples) {
   const actualSampleCount = files.length;
   const syntheticDirectory = await mkdtemp(path.join(os.tmpdir(), "ccr-phase22-ui-"));
   const fallbackSource = path.join(syntheticDirectory, "bt709.mp4");
+  const fullRangeSource = path.join(syntheticDirectory, "full-range.mp4");
   await execFileAsync(path.join(root, "tools", "ffmpeg", "bin", "ffmpeg.exe"), [
     "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24", "-t", "1",
     "-an", "-c:v", "libopenh264", "-pix_fmt", "yuv420p",
     "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-y", fallbackSource,
   ], { windowsHide: true });
-  files.push(fallbackSource);
+  await execFileAsync(path.join(root, "tools", "ffmpeg", "bin", "ffmpeg.exe"), [
+    "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24", "-t", "1",
+    "-an", "-c:v", "libopenh264", "-pix_fmt", "yuv420p", "-color_range", "pc",
+    "-colorspace", "smpte170m", "-color_primaries", "smpte170m", "-color_trc", "smpte170m", "-y", fullRangeSource,
+  ], { windowsHide: true });
+  files.push(fallbackSource, fullRangeSource);
   const cacheModule = await import(pathToFileURL(path.join(root, "dist-electron", "electron", "cache", "cacheFrameIpc.js")).href);
   const fullscreenModule = await import(pathToFileURL(path.join(root, "dist-electron", "electron", "fullscreenIpc.js")).href);
   cacheModule.registerCacheFrameIpc();
@@ -143,10 +149,16 @@ function memorySlope(samples) {
       return { displayed, frameCount, pixelFormat: document.documentElement.dataset.qaPixelFormat };
     })()`, true);
     await window.webContents.executeJavaScript(`document.querySelector('button[title="확대 (+)"]')?.click()`, true);
+    await window.webContents.executeJavaScript(`(() => {
+      const select=document.querySelector('select[aria-label="Display Preset"]');
+      select.value="bone-like"; select.dispatchEvent(new Event("change",{bubbles:true}));
+    })()`, true);
+    await waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).presetId === "bone-like"`, 5_000, "display-preset");
     const holdTransformBefore = await window.webContents.executeJavaScript(`[
       document.documentElement.dataset.qaViewZoom,
       document.documentElement.dataset.qaViewCenter,
     ]`, true);
+    const holdDisplayBefore = await window.webContents.executeJavaScript(`document.documentElement.dataset.qaDisplayState`, true);
 
     let repeatCount = 0;
     window.webContents.sendInputEvent({ type: "keyDown", keyCode: "RIGHT" });
@@ -201,6 +213,7 @@ function memorySlope(samples) {
       document.documentElement.dataset.qaViewZoom,
       document.documentElement.dataset.qaViewCenter,
     ]`, true);
+    const holdDisplayAfter = await window.webContents.executeJavaScript(`document.documentElement.dataset.qaDisplayState`, true);
 
     await window.webContents.executeJavaScript(`window.__phase23Qa.acceptedSamples = []`, true);
     await window.webContents.executeJavaScript(`
@@ -239,8 +252,18 @@ function memorySlope(samples) {
     await waitFor(window, `document.documentElement.dataset.qaSampleIndex === "${actualSampleCount}" && document.documentElement.dataset.qaPixelFormat === "rgba" && document.querySelector(".status-indicator")?.textContent === "준비"`, 10_000, "rgba-fallback");
     const fallbackResult = await window.webContents.executeJavaScript(`({
       pixelFormat: document.documentElement.dataset.qaPixelFormat,
+      display: JSON.parse(document.documentElement.dataset.qaDisplayState),
       error: document.querySelector(".error-message")?.textContent ?? null,
     })`, true);
+    await window.webContents.executeJavaScript(`(() => { const select=document.querySelector('select[aria-label="Display Preset"]'); select.value="lung-like"; select.dispatchEvent(new Event("change",{bubbles:true})); })()`, true);
+    await waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).presetId === "lung-like"`, 5_000, "bt709-display");
+    const bt709DisplayResult = await window.webContents.executeJavaScript(`({ pixelFormat:document.documentElement.dataset.qaPixelFormat, display:JSON.parse(document.documentElement.dataset.qaDisplayState), drawMs:Number(document.documentElement.dataset.qaDisplayDrawMs), error:document.querySelector(".error-message")?.textContent ?? null })`, true);
+
+    await sendQaOpen(window, actualSampleCount + 1);
+    await waitFor(window, `document.documentElement.dataset.qaSampleIndex === "${actualSampleCount + 1}" && document.documentElement.dataset.qaPixelFormat === "rgba" && document.querySelector(".status-indicator")?.textContent === "준비"`, 10_000, "full-range-fallback");
+    await window.webContents.executeJavaScript(`(() => { const select=document.querySelector('select[aria-label="Display Preset"]'); select.value="high-contrast"; select.dispatchEvent(new Event("change",{bubbles:true})); })()`, true);
+    await waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).presetId === "high-contrast"`, 5_000, "full-range-display");
+    const fullRangeDisplayResult = await window.webContents.executeJavaScript(`({ pixelFormat:document.documentElement.dataset.qaPixelFormat, display:JSON.parse(document.documentElement.dataset.qaDisplayState), drawMs:Number(document.documentElement.dataset.qaDisplayDrawMs), error:document.querySelector(".error-message")?.textContent ?? null })`, true);
 
     let soakResult = null;
     if (soakMinutes > 0) {
@@ -323,10 +346,13 @@ function memorySlope(samples) {
         ...reverseHold,
       },
       holdTransformPreserved: JSON.stringify(holdTransformBefore) === JSON.stringify(holdTransformAfter),
+      holdDisplayPreserved: holdDisplayBefore === holdDisplayAfter,
       switchResult,
       contextLossResult,
       cancelResult,
       fallbackResult,
+      bt709DisplayResult,
+      fullRangeDisplayResult,
       soakResult,
       peakElectronRssMiB: peaks,
       passed: hold.finalDisplayed === expectedDisplayed
@@ -338,6 +364,7 @@ function memorySlope(samples) {
         && reverseHold.seekDecodeCount === 0
         && reverseHold.error === null
         && JSON.stringify(holdTransformBefore) === JSON.stringify(holdTransformAfter)
+        && holdDisplayBefore === holdDisplayAfter
         && switchResult.finalSample === 2
         && switchResult.acceptedSamples.every((value) => value === 2)
         && switchResult.error === null
@@ -347,6 +374,12 @@ function memorySlope(samples) {
         && cancelResult.acceptedAfterCancel === null
         && fallbackResult.pixelFormat === "rgba"
         && fallbackResult.error === null
+        && bt709DisplayResult.pixelFormat === "rgba"
+        && bt709DisplayResult.display.presetId === "lung-like"
+        && bt709DisplayResult.error === null
+        && fullRangeDisplayResult.pixelFormat === "rgba"
+        && fullRangeDisplayResult.display.presetId === "high-contrast"
+        && fullRangeDisplayResult.error === null
         && (soakResult === null || (
           soakResult.errors === 0
           && soakResult.maximumSeekDecodeCount === 0

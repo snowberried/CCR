@@ -49,12 +49,17 @@
 | Phase 3A 작은 축 | viewport보다 작은 영상 축은 cursor anchor보다 중앙 정렬 clamp 우선 | 확대되지 않은 축에서 영상이 떠다니지 않게 하기 위해 |
 | Phase 3A filtering | 공통 canvas 합성에서 linear | 색 shader를 변경하지 않고 CT 영상 확대를 부드럽게 유지하기 위해 |
 | Phase 3A fullscreen | 제한된 Electron BrowserWindow fullscreen IPC | Windows 설치 앱 전체화면과 resize를 안정적으로 연결하기 위해 |
+| Phase 3B Display 모델 | level/width/gamma/invert/sharp/preset/revision 플랫폼 중립 상태 | 모바일과 데스크톱에서 같은 화면 보정 의미를 재사용하기 위해 |
+| Phase 3B Gamma | 1보다 크면 중간톤이 밝아지는 `pow(value, 1/gamma)` | UI·CPU reference·shader 의미를 일치시키기 위해 |
+| Phase 3B Sharp | 기본 Off, 1-pixel luminance 이웃과 amount 0~1 | chroma 훼손과 과도한 halo를 제한하기 위해 |
+| Phase 3B Original | Display shader/CPU 처리를 bypass하여 Phase 3A byte와 동일 | 원본 비교가 상태 reset이나 근사치가 되지 않게 하기 위해 |
+| Phase 3B preset | 8개 고정 candidate, frame별 histogram 자동 보정 없음 | 밝기 pumping을 피하고 사용자 파일럿 조정을 가능하게 하기 위해 |
 
 ## 현재 제안
 
 | 항목 | 1순위 제안 | 확정 조건 |
 | --- | --- | --- |
-| 다음 단계 | Phase 3A 설치본 Zoom/Pan 파일럿 | Phase 3B 표시 보정 범위 별도 승인 |
+| 다음 단계 | Phase 3B preset·Sharp·우클릭 민감도 파일럿 | Phase 4 주석 범위 별도 승인 |
 | FFmpeg 연동 | 먼저 CLI process로 검증, native addon은 근거가 생길 때만 검토 | 성능·배포 측정 |
 | 초기 배포 | 포터블 Windows 앱 | 실제 사용 및 보안 정책 확인 |
 | 프로젝트 형식 | versioned JSON 계열 | schema와 저장 안전성 검토 |
@@ -83,7 +88,7 @@
 
 ### 4. Sharp와 Denoise 기본값
 
-- Sharp 기본 Off를 우선 제안한다.
+- Sharp 기본 Off를 확정했고 candidate preset은 0.08~0.25를 사용한다.
 - Denoise는 v0.1 P1 또는 P2 중 미결정이다.
 - 강한 보정은 가짜 경계 위험이 있어 preset 값은 실제 샘플 비교 후 정한다.
 
@@ -170,3 +175,10 @@
 - [x] 자동 재생과 표시 보정은 Phase 3A에서 제외
 - [x] 주석·이미지 저장은 별도 후속 Phase로 유지
 - [x] DICOM/PACS는 계속 제외
+
+## Phase 3B 승인 체크리스트
+
+- [x] MP4 화면 픽셀 Level/Width, Gamma, Inverse, Sharp와 candidate preset 진행
+- [x] 우클릭 drag, R/I/O와 Original hold compare 포함
+- [x] decoder/cache와 ViewTransform 기준선 유지
+- [x] 자동 재생·주석·저장·DICOM/PACS 제외

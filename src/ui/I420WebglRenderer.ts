@@ -1,3 +1,5 @@
+import { originalVideoDisplay, videoDisplayEqual, type VideoDisplayState } from "../domain/videoDisplay";
+
 type PlaneLayout = {
   offset: number;
   stride: number;
@@ -32,16 +34,47 @@ out vec4 color;
 uniform sampler2D yTex;
 uniform sampler2D uTex;
 uniform sampler2D vTex;
-void main() {
-  float y = (texture(yTex, uv).r * 255.0 - 16.0) * 1.16438356;
-  float u = texture(uTex, uv).r * 255.0 - 128.0;
-  float v = texture(vTex, uv).r * 255.0 - 128.0;
+uniform float displayLevel;
+uniform float displayWidth;
+uniform float displayGamma;
+uniform float displayInvert;
+uniform float displaySharp;
+uniform float displayBypass;
+uniform vec2 texelSize;
+vec3 sourceRgb(vec2 point) {
+  float y = (texture(yTex, point).r * 255.0 - 16.0) * 1.16438356;
+  float u = texture(uTex, point).r * 255.0 - 128.0;
+  float v = texture(vTex, point).r * 255.0 - 128.0;
   vec3 rgb = vec3(
     y + 1.59602678 * v,
     y - 0.39176229 * u - 0.81296765 * v,
     y + 2.01723214 * u
   ) - vec3(1.0);
-  color = vec4(clamp(rgb / 255.0, 0.0, 1.0), 1.0);
+  return clamp(rgb / 255.0, 0.0, 1.0);
+}
+float mappedLuma(vec2 point) {
+  vec3 rgb = sourceRgb(point);
+  float luminance = dot(rgb, vec3(0.299, 0.587, 0.114));
+  float mapped = clamp((luminance - (displayLevel - displayWidth * 0.5)) / displayWidth, 0.0, 1.0);
+  mapped = pow(mapped, 1.0 / displayGamma);
+  return mix(mapped, 1.0 - mapped, displayInvert);
+}
+void main() {
+  vec3 rgb = sourceRgb(uv);
+  if (displayBypass > 0.5) {
+    color = vec4(rgb, 1.0);
+    return;
+  }
+  float originalLuma = dot(rgb, vec3(0.299, 0.587, 0.114));
+  float adjustedLuma = mappedLuma(uv);
+  if (displaySharp > 0.0) {
+    float neighbors = mappedLuma(uv - vec2(texelSize.x, 0.0))
+      + mappedLuma(uv + vec2(texelSize.x, 0.0))
+      + mappedLuma(uv - vec2(0.0, texelSize.y))
+      + mappedLuma(uv + vec2(0.0, texelSize.y));
+    adjustedLuma = clamp(adjustedLuma + displaySharp * 0.25 * (4.0 * adjustedLuma - neighbors), 0.0, 1.0);
+  }
+  color = vec4(clamp(rgb + vec3(adjustedLuma - originalLuma), 0.0, 1.0), 1.0);
 }`;
 
 function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
@@ -62,9 +95,11 @@ export class I420WebglRenderer {
   private readonly program: WebGLProgram;
   private readonly textures: WebGLTexture[];
   private readonly buffers: WebGLBuffer[];
+  private readonly displayUniforms: Record<string, WebGLUniformLocation | null>;
   private lost = false;
   private width = 0;
   private height = 0;
+  private textureUploadCount = 0;
 
   constructor() {
     const gl = this.canvas.getContext("webgl2", { alpha: false, premultipliedAlpha: false });
@@ -98,6 +133,9 @@ export class I420WebglRenderer {
     ["yTex", "uTex", "vTex"].forEach((name, unit) => {
       gl.uniform1i(gl.getUniformLocation(program, name), unit);
     });
+    this.displayUniforms = Object.fromEntries([
+      "displayLevel", "displayWidth", "displayGamma", "displayInvert", "displaySharp", "displayBypass", "texelSize",
+    ].map((name) => [name, gl.getUniformLocation(program, name)]));
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   }
 
@@ -107,6 +145,7 @@ export class I420WebglRenderer {
     height: number;
     layout: FrameLayout;
     colorSpace: FrameColorSpace;
+    display: VideoDisplayState;
   }): HTMLCanvasElement {
     if (this.lost || this.gl.isContextLost()) throw new Error("I420_WEBGL_CONTEXT_LOST");
     if (!input.colorSpace.webglAllowed || input.colorSpace.fullRange || input.colorSpace.matrix !== "smpte170m") {
@@ -138,9 +177,20 @@ export class I420WebglRenderer {
     this.uploadPlane(1, chromaWidth, chromaHeight, input.layout.u, input.layout.v.offset, input.pixels);
     this.uploadPlane(2, chromaWidth, chromaHeight, input.layout.v, input.layout.byteLength, input.pixels);
     this.gl.pixelStorei(this.gl.UNPACK_ROW_LENGTH, 0);
-    this.gl.viewport(0, 0, input.width, input.height);
-    this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
+    this.textureUploadCount += 3;
+    this.draw(input.display);
     return this.canvas;
+  }
+
+  redraw(display: VideoDisplayState): HTMLCanvasElement {
+    if (this.lost || this.gl.isContextLost()) throw new Error("I420_WEBGL_CONTEXT_LOST");
+    if (this.width <= 0 || this.height <= 0) throw new Error("I420_WEBGL_FRAME_MISSING");
+    this.draw(display);
+    return this.canvas;
+  }
+
+  getStats(): { textureUploadCount: number } {
+    return { textureUploadCount: this.textureUploadCount };
   }
 
   dispose(): void {
@@ -158,6 +208,20 @@ export class I420WebglRenderer {
     event.preventDefault();
     this.lost = true;
   };
+
+  private draw(display: VideoDisplayState): void {
+    const gl = this.gl;
+    gl.useProgram(this.program);
+    gl.uniform1f(this.displayUniforms.displayLevel, display.level);
+    gl.uniform1f(this.displayUniforms.displayWidth, display.width);
+    gl.uniform1f(this.displayUniforms.displayGamma, display.gamma);
+    gl.uniform1f(this.displayUniforms.displayInvert, display.invert ? 1 : 0);
+    gl.uniform1f(this.displayUniforms.displaySharp, display.sharpAmount);
+    gl.uniform1f(this.displayUniforms.displayBypass, videoDisplayEqual(display, originalVideoDisplay()) ? 1 : 0);
+    gl.uniform2f(this.displayUniforms.texelSize, 1 / this.width, 1 / this.height);
+    gl.viewport(0, 0, this.width, this.height);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
 
   private createAttribute(name: string, values: Float32Array): WebGLBuffer {
     const buffer = this.gl.createBuffer();

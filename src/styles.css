@@ -7,8 +7,8 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; overflow: hidden; background: #0a0c0f; }
-button, input { font: inherit; }
-button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #55a7c5; outline-offset: 2px; }
+button, input, select { font: inherit; }
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #55a7c5; outline-offset: 2px; }
 
 .app-shell {
   height: 100vh;
@@ -41,7 +41,7 @@ h1 { font-size: 16px; font-weight: 720; }
 .status-error { color: #ffb0b0; border-color: #774545; }
 .status-cancelled { color: #e4c68d; border-color: #6f5c35; }
 
-button, input {
+button, input, select {
   height: 32px;
   border: 1px solid #3c4652;
   border-radius: 5px;
@@ -74,6 +74,7 @@ button:disabled { opacity: 0.38; cursor: default; }
   user-select: none;
 }
 .viewer-surface.is-panning { cursor: grabbing; }
+.viewer-surface.is-display-dragging { cursor: ew-resize; }
 
 .frame-canvas { position: absolute; left: 0; top: 0; display: block; max-width: none; max-height: none; transform-origin: 0 0; image-rendering: auto; will-change: transform; }
 .frame-canvas.empty { position: static; width: 1px; height: 1px; transform: none; }
@@ -91,6 +92,19 @@ dt { color: #7f8c99; font-size: 11px; }
 dd { margin: 0; overflow-wrap: anywhere; text-align: right; font-size: 11px; font-weight: 650; }
 .diagnostics { margin-top: 14px; padding-top: 10px; border-top: 1px solid #2a323b; }
 .diagnostics summary { color: #8f9cab; font-size: 11px; cursor: pointer; }
+.display-panel { margin-top: 12px; padding-top: 10px; border-top: 1px solid #2a323b; }
+.display-panel summary { display: flex; justify-content: space-between; color: #c6d0da; font-size: 11px; font-weight: 700; cursor: pointer; }
+.display-panel summary small { color: #84909c; font-size: 10px; font-weight: 600; }
+.display-panel summary small.display-active { color: #83c9df; }
+.display-help { margin: 7px 0; color: #778490; font-size: 9px; }
+.display-panel label { display: grid; gap: 3px; margin-top: 6px; color: #8f9cab; font-size: 10px; }
+.display-panel label > span { display: flex; justify-content: space-between; }
+.display-panel output { color: #cbd4dd; font-variant-numeric: tabular-nums; }
+.display-panel select { width: 100%; height: 28px; padding: 0 6px; font-size: 11px; }
+.display-panel input[type="range"] { width: 100%; height: 18px; accent-color: #4a9fbd; }
+.display-buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.display-buttons button { min-width: 0; height: 28px; padding: 0 7px; font-size: 10px; }
+.display-buttons .is-comparing { color: #bfeafb; border-color: #4a9fbd; background: #183744; }
 .error-message { margin-top: 12px; color: #ffaaaa; font-size: 11px; overflow-wrap: anywhere; }
 
 .frame-toolbar { min-width: 0; display: flex; justify-content: center; align-items: center; gap: 5px; border-top: 1px solid #29313a; padding-top: 8px; }

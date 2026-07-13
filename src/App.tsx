@@ -27,6 +27,22 @@ import {
   type PanGesture,
 } from "./domain/viewInteraction";
 import {
+  VIDEO_DISPLAY_PRESETS,
+  applyVideoDisplayPreset,
+  beginDisplayDrag,
+  moveDisplayDrag,
+  originalVideoDisplay,
+  temporaryOriginalDisplay,
+  toggleVideoDisplayInvert,
+  updateVideoDisplay,
+  videoDisplayEqual,
+  videoDisplayShortcut,
+  type DisplayDragGesture,
+  type VideoDisplayPresetId,
+  type VideoDisplayState,
+} from "./domain/videoDisplay";
+import { applyVideoDisplayToRgba } from "./domain/videoDisplayReference";
+import {
   WheelFrameAccumulator,
   clampFrameIndex,
   displayToInternalFrame,
@@ -84,6 +100,10 @@ export function App() {
   const forceRgbaRef = useRef(false);
   const i420RendererRef = useRef<I420WebglRenderer | null>(null);
   const panGestureRef = useRef<PanGesture | null>(null);
+  const displayDragRef = useRef<DisplayDragGesture | null>(null);
+  const lastFrameRef = useRef<CcrFrameResponse | null>(null);
+  const displayStateRef = useRef<VideoDisplayState>(originalVideoDisplay());
+  const comparingOriginalRef = useRef(false);
   const [metadata, setMetadata] = useState<SessionMetadata | null>(null);
   const [frameIndex, setFrameIndex] = useState(0);
   const [frameInput, setFrameInput] = useState("1");
@@ -98,6 +118,9 @@ export function App() {
   const [viewTransform, setViewTransform] = useState<ViewTransform | null>(null);
   const [isPanning, setIsPanning] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [displayState, setDisplayState] = useState<VideoDisplayState>(originalVideoDisplay);
+  const [comparingOriginal, setComparingOriginal] = useState(false);
+  const [isDisplayDragging, setIsDisplayDragging] = useState(false);
 
   const clearViewer = useCallback(() => {
     sessionIdRef.current = null;
@@ -113,8 +136,15 @@ export function App() {
     setRequestMs(null);
     setDiagnostics(null);
     panGestureRef.current = null;
+    displayDragRef.current = null;
+    lastFrameRef.current = null;
     setIsPanning(false);
+    setIsDisplayDragging(false);
     setViewTransform(null);
+    displayStateRef.current = originalVideoDisplay();
+    comparingOriginalRef.current = false;
+    setDisplayState(displayStateRef.current);
+    setComparingOriginal(false);
     i420RendererRef.current?.dispose();
     i420RendererRef.current = null;
     releaseCanvas(canvasRef.current);
@@ -124,10 +154,45 @@ export function App() {
       delete document.documentElement.dataset.qaViewZoom;
       delete document.documentElement.dataset.qaViewCenter;
       delete document.documentElement.dataset.qaViewRevision;
+      delete document.documentElement.dataset.qaDisplayState;
+      delete document.documentElement.dataset.qaDisplayDrawMs;
+      delete document.documentElement.dataset.qaTextureUploads;
       document.documentElement.dataset.qaBackgroundComplete = "false";
       document.documentElement.dataset.qaSeekDecodeCount = "0";
     }
   }, []);
+
+  const recordDisplayQa = useCallback((drawMs: number) => {
+    if (!window.ccr?.openQaVideo) return;
+    document.documentElement.dataset.qaDisplayDrawMs = String(drawMs);
+    document.documentElement.dataset.qaTextureUploads = String(i420RendererRef.current?.getStats().textureUploadCount ?? 0);
+  }, []);
+
+  const redrawCurrentFrame = useCallback(() => {
+    const frame = lastFrameRef.current;
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (!frame?.descriptor || !frame.pixels || !canvas || !context) return;
+    const effective = temporaryOriginalDisplay(displayStateRef.current, comparingOriginalRef.current);
+    const startedAt = performance.now();
+    if (frame.descriptor.pixelFormat === "i420" && i420RendererRef.current) {
+      try {
+        context.drawImage(i420RendererRef.current.redraw(effective), 0, 0);
+      } catch {
+        return;
+      }
+    } else {
+      const adjusted = applyVideoDisplayToRgba(
+        frame.pixels,
+        frame.descriptor.width,
+        frame.descriptor.height,
+        displayStateRef.current,
+        comparingOriginalRef.current,
+      );
+      context.putImageData(new ImageData(adjusted, frame.descriptor.width, frame.descriptor.height), 0, 0);
+    }
+    recordDisplayQa(performance.now() - startedAt);
+  }, [recordDisplayQa]);
 
   const renderFrame = useCallback(async (frame: CcrFrameResponse) => {
     if (!frame.accepted || !frame.descriptor || !frame.pixels) {
@@ -141,17 +206,21 @@ export function App() {
     let rendered = frame;
     canvas.width = frame.descriptor.width;
     canvas.height = frame.descriptor.height;
+    const effective = temporaryOriginalDisplay(displayStateRef.current, comparingOriginalRef.current);
     if (frame.descriptor.pixelFormat === "i420" && frame.layout && frame.colorSpace) {
       try {
         i420RendererRef.current ??= new I420WebglRenderer();
+        const startedAt = performance.now();
         const renderedCanvas = i420RendererRef.current.render({
           pixels: frame.pixels,
           width: frame.descriptor.width,
           height: frame.descriptor.height,
           layout: frame.layout,
           colorSpace: frame.colorSpace,
+          display: effective,
         });
         context.drawImage(renderedCanvas, 0, 0);
+        recordDisplayQa(performance.now() - startedAt);
       } catch {
         i420RendererRef.current?.dispose();
         i420RendererRef.current = null;
@@ -176,20 +245,31 @@ export function App() {
           return;
         }
         rendered = fallback;
-        context.putImageData(new ImageData(
-          new Uint8ClampedArray(fallback.pixels),
+        const startedAt = performance.now();
+        const adjusted = applyVideoDisplayToRgba(
+          fallback.pixels,
           fallback.descriptor.width,
           fallback.descriptor.height,
-        ), 0, 0);
+          displayStateRef.current,
+          comparingOriginalRef.current,
+        );
+        context.putImageData(new ImageData(adjusted, fallback.descriptor.width, fallback.descriptor.height), 0, 0);
+        recordDisplayQa(performance.now() - startedAt);
       }
     } else {
-      context.putImageData(new ImageData(
-        new Uint8ClampedArray(frame.pixels),
+      const startedAt = performance.now();
+      const adjusted = applyVideoDisplayToRgba(
+        frame.pixels,
         frame.descriptor.width,
         frame.descriptor.height,
-      ), 0, 0);
+        displayStateRef.current,
+        comparingOriginalRef.current,
+      );
+      context.putImageData(new ImageData(adjusted, frame.descriptor.width, frame.descriptor.height), 0, 0);
+      recordDisplayQa(performance.now() - startedAt);
     }
     if (!rendered.descriptor) return;
+    lastFrameRef.current = rendered;
     displayedFrameRef.current = rendered.descriptor.frameIndex;
     if (window.ccr?.openQaVideo) {
       document.documentElement.dataset.qaPixelFormat = rendered.descriptor.pixelFormat;
@@ -201,7 +281,7 @@ export function App() {
     setRequestMs(rendered.requestMs ?? null);
     setCacheStatus(rendered.cacheStatus ?? null);
     setDiagnostics(rendered.diagnostics ?? null);
-  }, []);
+  }, [recordDisplayQa]);
 
   const pump = useCallback(async () => {
     if (pumpingRef.current || !window.ccr?.getFrame || !sessionIdRef.current || !metadata) {
@@ -302,6 +382,10 @@ export function App() {
     }
     sessionIdRef.current = opened.sessionId;
     setMetadata(opened.metadata);
+    displayStateRef.current = originalVideoDisplay();
+    comparingOriginalRef.current = false;
+    setDisplayState(displayStateRef.current);
+    setComparingOriginal(false);
     const viewport = viewerSurfaceRef.current?.getBoundingClientRect();
     setViewTransform(createViewTransform(
       { width: opened.metadata.width, height: opened.metadata.height },
@@ -387,7 +471,7 @@ export function App() {
         : current);
       return;
     }
-    if (panGestureRef.current) return;
+    if (panGestureRef.current || displayDragRef.current) return;
     const direction = wheelRef.current.consume(event.deltaY, event.deltaMode);
     if (direction !== 0) {
       goToFrame(desiredFrameRef.current + direction);
@@ -423,15 +507,34 @@ export function App() {
     setIsPanning(false);
   }, []);
 
+  const endDisplayDrag = useCallback((element?: HTMLElement, pointerId?: number) => {
+    if (element && pointerId !== undefined && element.hasPointerCapture(pointerId)) {
+      element.releasePointerCapture(pointerId);
+    }
+    displayDragRef.current = null;
+    setIsDisplayDragging(false);
+  }, []);
+
   const onPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
-    if (!metadata || event.button !== 0) return;
+    if (!metadata || (event.button !== 0 && event.button !== 2)) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (event.button === 2) {
+      displayDragRef.current = beginDisplayDrag(event.pointerId, event.clientX, event.clientY, displayStateRef.current);
+      setIsDisplayDragging(true);
+      return;
+    }
     panGestureRef.current = beginPan(event.pointerId, event.clientX, event.clientY);
     setIsPanning(true);
   };
 
   const onPointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+    const displayGesture = displayDragRef.current;
+    if (displayGesture) {
+      const next = moveDisplayDrag(displayGesture, event.pointerId, event.clientX, event.clientY);
+      if (next) setDisplayState(next);
+      return;
+    }
     const gesture = panGestureRef.current;
     if (!gesture) return;
     const moved = movePan(gesture, event.pointerId, event.clientX, event.clientY);
@@ -441,6 +544,7 @@ export function App() {
   };
 
   const onPointerEnd = (event: ReactPointerEvent<HTMLElement>) => {
+    if (displayDragRef.current?.pointerId === event.pointerId) endDisplayDrag(event.currentTarget, event.pointerId);
     if (endsPan(panGestureRef.current, event.pointerId)) endPan(event.currentTarget, event.pointerId);
   };
 
@@ -466,7 +570,13 @@ export function App() {
       }
       const editing = isTextEntryElement(event.target);
       if (event.key === "Escape" && !editing) {
-        if (panGestureRef.current) {
+        if (comparingOriginalRef.current) {
+          event.preventDefault();
+          setComparingOriginal(false);
+        } else if (displayDragRef.current) {
+          event.preventDefault();
+          endDisplayDrag(viewerSurfaceRef.current ?? undefined, displayDragRef.current.pointerId);
+        } else if (panGestureRef.current) {
           event.preventDefault();
           endPan(viewerSurfaceRef.current ?? undefined, panGestureRef.current.pointerId);
         } else if (isFullscreen) {
@@ -483,6 +593,18 @@ export function App() {
         return;
       }
       if (!metadata) {
+        return;
+      }
+      const displayShortcut = videoDisplayShortcut({ key: event.key, editing });
+      if (displayShortcut) {
+        event.preventDefault();
+        if (displayShortcut === "reset") {
+          setDisplayState((current) => applyVideoDisplayPreset(current, "original"));
+        } else if (displayShortcut === "invert") {
+          setDisplayState(toggleVideoDisplayInvert);
+        } else if (!event.repeat) {
+          setComparingOriginal(true);
+        }
         return;
       }
       const viewShortcut = zoomShortcut({ key: event.key, editing });
@@ -522,6 +644,7 @@ export function App() {
       }
     };
     const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === "o") setComparingOriginal(false);
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         if (keyboardHoldRef.current) {
           keyboardHoldRef.current.targetFrame = desiredFrameRef.current;
@@ -535,13 +658,22 @@ export function App() {
         void pump();
       }
     };
+    const releaseTemporaryInput = () => {
+      setComparingOriginal(false);
+      const gesture = displayDragRef.current;
+      endDisplayDrag(viewerSurfaceRef.current ?? undefined, gesture?.pointerId);
+    };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", releaseTemporaryInput);
+    window.addEventListener("pointerup", releaseTemporaryInput);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", releaseTemporaryInput);
+      window.removeEventListener("pointerup", releaseTemporaryInput);
     };
-  }, [cancel, endPan, exitFullscreen, fitView, goToFrame, isFullscreen, metadata, openVideo, pump, toggleFullscreen, zoomBy]);
+  }, [cancel, endDisplayDrag, endPan, exitFullscreen, fitView, goToFrame, isFullscreen, metadata, openVideo, pump, toggleFullscreen, zoomBy]);
 
   useEffect(() => {
     const surface = viewerSurfaceRef.current;
@@ -584,6 +716,15 @@ export function App() {
     document.documentElement.dataset.qaViewRevision = String(viewTransform.revision);
   }, [viewTransform]);
 
+  useEffect(() => {
+    displayStateRef.current = displayState;
+    comparingOriginalRef.current = comparingOriginal;
+    if (window.ccr?.openQaVideo) {
+      document.documentElement.dataset.qaDisplayState = JSON.stringify({ ...displayState, comparingOriginal });
+    }
+    redrawCurrentFrame();
+  }, [comparingOriginal, displayState, redrawCurrentFrame]);
+
   useEffect(() => () => {
     uiGenerationRef.current += 1;
     void window.ccr?.closeVideo?.();
@@ -601,6 +742,10 @@ export function App() {
     height: `${placement.height}px`,
     transform: `translate3d(${placement.left}px, ${placement.top}px, 0)`,
   } : undefined;
+  const displayActive = !videoDisplayEqual(displayState, originalVideoDisplay());
+  const displayLabel = comparingOriginal
+    ? "Original 비교"
+    : displayActive ? "보정 적용" : "Original";
 
   return (
     <main
@@ -637,14 +782,15 @@ export function App() {
       <section className="viewer-layout">
         <section
           ref={viewerSurfaceRef}
-          className={`viewer-surface${isPanning ? " is-panning" : ""}`}
+          className={`viewer-surface${isPanning ? " is-panning" : ""}${isDisplayDragging ? " is-display-dragging" : ""}`}
           onWheel={onWheel}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerEnd}
           onPointerCancel={onPointerEnd}
-          onLostPointerCapture={() => endPan()}
+          onLostPointerCapture={() => { endPan(); endDisplayDrag(); }}
           onDoubleClick={fitView}
+          onContextMenu={(event) => event.preventDefault()}
           aria-label="CT cine frame"
         >
           <canvas ref={canvasRef} className={metadata ? "frame-canvas" : "frame-canvas empty"} style={canvasStyle} draggable={false} />
@@ -666,6 +812,64 @@ export function App() {
             <div><dt>코덱</dt><dd>{metadata?.codecName?.toUpperCase() ?? "-"}</dd></div>
           </dl>
 
+          <details className="display-panel" open>
+            <summary>
+              <span>Video Display</span>
+              <small className={displayActive ? "display-active" : ""}>{displayLabel}</small>
+            </summary>
+            <p className="display-help" title="MP4 화면 픽셀 보정이며 DICOM HU Window가 아닙니다.">
+              MP4 화면 픽셀 보정 · HU Window 아님
+            </p>
+            <label>
+              <span>Preset</span>
+              <select
+                aria-label="Display Preset"
+                value={displayState.presetId}
+                disabled={!metadata}
+                onChange={(event) => {
+                  const presetId = event.target.value as VideoDisplayPresetId;
+                  if (presetId !== "custom") setDisplayState((current) => applyVideoDisplayPreset(current, presetId));
+                }}
+              >
+                {VIDEO_DISPLAY_PRESETS.map((preset) => <option key={preset.presetId} value={preset.presetId}>{preset.label}</option>)}
+                <option value="custom" disabled>Custom</option>
+              </select>
+            </label>
+            {([
+              ["level", "Level", 0, 1, 0.01],
+              ["width", "Width", 0.02, 2, 0.01],
+              ["gamma", "Gamma", 0.25, 4, 0.05],
+              ["sharpAmount", "Sharp", 0, 1, 0.05],
+            ] as const).map(([key, label, min, max, step]) => (
+              <label key={key}>
+                <span>{label}<output>{displayState[key].toFixed(2)}</output></span>
+                <input
+                  aria-label={`Video ${label}`}
+                  type="range"
+                  min={min}
+                  max={max}
+                  step={step}
+                  value={displayState[key]}
+                  disabled={!metadata}
+                  onChange={(event) => setDisplayState((current) => updateVideoDisplay(current, { [key]: Number(event.target.value) }))}
+                />
+              </label>
+            ))}
+            <div className="display-buttons">
+              <button type="button" onClick={() => setDisplayState(toggleVideoDisplayInvert)} disabled={!metadata} aria-pressed={displayState.invert}>Inverse</button>
+              <button type="button" onClick={() => setDisplayState((current) => applyVideoDisplayPreset(current, "original"))} disabled={!metadata}>Original</button>
+              <button
+                type="button"
+                className={comparingOriginal ? "is-comparing" : ""}
+                disabled={!metadata}
+                onPointerDown={(event) => { event.preventDefault(); setComparingOriginal(true); }}
+                onPointerUp={() => setComparingOriginal(false)}
+                onPointerLeave={() => setComparingOriginal(false)}
+                onPointerCancel={() => setComparingOriginal(false)}
+              >원본 비교 (O)</button>
+            </div>
+          </details>
+
           <details className="diagnostics" open>
             <summary>진단</summary>
             <dl>
@@ -683,6 +887,10 @@ export function App() {
               <div><dt>Zoom</dt><dd>{viewTransform ? `${(viewTransform.zoom * 100).toFixed(0)}%` : "-"}</dd></div>
               <div><dt>View center</dt><dd>{viewTransform ? `${viewTransform.center.x.toFixed(1)}, ${viewTransform.center.y.toFixed(1)}` : "-"}</dd></div>
               <div><dt>View revision</dt><dd>{viewTransform?.revision ?? "-"}</dd></div>
+              <div><dt>Display</dt><dd>{displayState.presetId}</dd></div>
+              <div><dt>L / W</dt><dd>{displayState.level.toFixed(2)} / {displayState.width.toFixed(2)}</dd></div>
+              <div><dt>Gamma / Sharp</dt><dd>{displayState.gamma.toFixed(2)} / {displayState.sharpAmount.toFixed(2)}</dd></div>
+              <div><dt>Display revision</dt><dd>{displayState.revision}</dd></div>
             </dl>
           </details>
           {error && <p className="error-message">{error}</p>}

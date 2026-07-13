@@ -7,7 +7,7 @@
 | 문서 | 위치 | 용도 |
 | --- | --- | --- |
 | 프로젝트 개요 | `../README.md` | CT Cine Reviewer 명칭, 현재 단계, v0.1 범위와 제외 범위 |
-| Latest Project Handoff | `../HANDOFF_PHASE3A.md` | Phase 3A View Transform, 설치본과 Phase 3B 진입 상태 |
+| Latest Project Handoff | `../HANDOFF_PHASE3B.md` | Phase 3B Video Display, 설치본과 사용자 preset 조정 상태 |
 | Phase 1 Handoff | `../HANDOFF_PHASE1.md` | Phase 1~2 구현 과정과 이전 기준선 |
 | 프로젝트 작업 지침 | `../AGENTS.md` | 중요한 결정 전 사용자 확인, 의료·보안 경계, 단계별 검증 원칙 |
 
@@ -30,9 +30,11 @@
 | Phase 2.2 Continuous Scan Cache Spike | `12_CONTINUOUS_SCAN_CACHE_SPIKE.md` | 전체 I420 cache, block LRU, WebGL2, 연속 탐색과 메모리 실측 |
 | Phase 2.3 Product Cache Integration | `13_PHASE2_3_PRODUCT_CACHE_INTEGRATION.md` | 제품 mode, 색·fallback, 설치본과 내구 검증 |
 | Phase 3A View Transform Foundation | `14_PHASE3A_VIEW_TRANSFORM.md` | 좌표계, Zoom/Pan/Fit, fullscreen과 renderer 공통 transform |
+| Phase 3B Video Display Adjustment | `15_PHASE3B_VIDEO_DISPLAY.md` | MP4 Level/Width, Gamma, Inverse, Sharp, preset과 Original 비교 |
 | Phase 2.2 Handoff | `../HANDOFF_PHASE2_2.md` | 최종 검증 상태와 제품 통합 전 승인 사항 |
 | Phase 2.3 Handoff | `../HANDOFF_PHASE2_3.md` | 제품 통합 최종 상태와 Phase 3 진입 조건 |
 | Phase 3A Handoff | `../HANDOFF_PHASE3A.md` | View Transform 최종 상태와 Phase 3B 진입 조건 |
+| Phase 3B Handoff | `../HANDOFF_PHASE3B.md` | Video Display 최종 상태와 preset 파일럿 조건 |
 | Project Troubleshooting | `troubleshooting.md` | CT Cine Reviewer에서만 발생하는 문제와 검증된 해결 방법 |
 | Docs Hub | `docs_hub.md` | 프로젝트 문서 목록과 위치 안내 |
 
@@ -44,9 +46,9 @@
 - 실제 Explorer drag/drop, Windows 제거 등록 확인과 사용자 파일럿 피드백은 남아 있다.
 - Phase 2.2 연속 탐색·대용량 RAM cache 기술 스파이크의 구현·실샘플·30분 내구 검증과 문서화를 완료했다.
 - Phase 2.3에서 검증된 I420 cache를 제품 기본 경로로 통합하고 NSIS·실제 설치 앱 검증을 완료했다.
-- Phase 3A에서 플랫폼 중립 View Transform과 Zoom/Pan/Fit/Fullscreen을 통합하고 설치 검증을 진행 중이다.
+- Phase 3A View Transform과 Phase 3B 플랫폼 중립 Video Display를 통합하고 설치 검증을 진행 중이다.
 - 2GiB dynamic soft cap의 I420 full/LRU를 기본 사용하며 72MiB 방향성 cache는 RGBA rollback으로 유지한다.
-- 사용자 승인 전 Phase 3, 재생, Zoom/Pan, 보정, 주석과 저장을 시작하지 않는다.
+- 사용자 승인 전 Phase 4 주석, 자동 재생, 이미지·프로젝트 저장을 시작하지 않는다.
 
 ## 갱신 규칙
 

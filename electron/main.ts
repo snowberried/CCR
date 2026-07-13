@@ -46,7 +46,7 @@ ipcMain.handle("runtime:getStatus", () => {
     resourcesPath: process.resourcesPath,
   });
   return {
-    phase: "phase3a-view-transform",
+    phase: "phase3b-video-display",
     decoderMode,
     ffmpegConfigured: existsSync(ffmpegPath) && existsSync(ffprobePath),
   };
