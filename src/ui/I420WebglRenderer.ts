@@ -100,8 +100,12 @@ export class I420WebglRenderer {
   private width = 0;
   private height = 0;
   private textureUploadCount = 0;
+  private frameUploadCount = 0;
+  private drawCount = 0;
+  private readonly onLost?: () => void;
 
-  constructor() {
+  constructor(onLost?: () => void) {
+    this.onLost = onLost;
     const gl = this.canvas.getContext("webgl2", { alpha: false, premultipliedAlpha: false });
     if (!gl) throw new Error("I420_WEBGL2_UNAVAILABLE");
     this.gl = gl;
@@ -178,6 +182,7 @@ export class I420WebglRenderer {
     this.uploadPlane(2, chromaWidth, chromaHeight, input.layout.v, input.layout.byteLength, input.pixels);
     this.gl.pixelStorei(this.gl.UNPACK_ROW_LENGTH, 0);
     this.textureUploadCount += 3;
+    this.frameUploadCount += 1;
     this.draw(input.display);
     return this.canvas;
   }
@@ -189,8 +194,16 @@ export class I420WebglRenderer {
     return this.canvas;
   }
 
-  getStats(): { textureUploadCount: number } {
-    return { textureUploadCount: this.textureUploadCount };
+  getStats(): { textureUploadCount: number; frameUploadCount: number; drawCount: number } {
+    return {
+      textureUploadCount: this.textureUploadCount,
+      frameUploadCount: this.frameUploadCount,
+      drawCount: this.drawCount,
+    };
+  }
+
+  isReady(): boolean {
+    return !this.lost && !this.gl.isContextLost() && this.width > 0 && this.height > 0;
   }
 
   dispose(): void {
@@ -207,6 +220,7 @@ export class I420WebglRenderer {
   private readonly onContextLost = (event: Event) => {
     event.preventDefault();
     this.lost = true;
+    this.onLost?.();
   };
 
   private draw(display: VideoDisplayState): void {
@@ -221,6 +235,7 @@ export class I420WebglRenderer {
     gl.uniform2f(this.displayUniforms.texelSize, 1 / this.width, 1 / this.height);
     gl.viewport(0, 0, this.width, this.height);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    this.drawCount += 1;
   }
 
   private createAttribute(name: string, values: Float32Array): WebGLBuffer {

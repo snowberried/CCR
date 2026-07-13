@@ -3,6 +3,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type SetStateAction,
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -85,6 +86,17 @@ import { AnnotationOverlay, type TextEditorState } from "./ui/AnnotationOverlay"
 import { AnnotatedTimeline } from "./ui/AnnotatedTimeline";
 import { defaultPngFileName, isStableExportFrame, type FrameExportMode } from "./domain/frameExport";
 import { canvasToPngBytes, captureDisplayedFrameCanvas, renderFrameExport } from "./ui/frameExport";
+import {
+  clonePaneState,
+  linkedPaneFramesMatch,
+  mapLinkedCrosshair,
+  otherPane,
+  updatePaneState,
+  type PaneId,
+  type PaneState,
+  type PaneStates,
+  type ViewerTool,
+} from "./domain/linkedDualView";
 
 type ViewerStatus = "idle" | "probing" | "ready" | "decoding" | "cancelled" | "error";
 
@@ -96,8 +108,6 @@ type KeyboardHoldIntent = {
   startedAt: number;
   holdDurationMs: number;
 };
-
-type ViewTool = "pan" | "zoom" | "select" | "arrow" | "text" | "ellipse" | "rectangle";
 
 type AnnotationCreateGesture = {
   pointerId: number;
@@ -117,13 +127,28 @@ type AnnotationEditGesture = {
 };
 
 type ActivePointerGesture =
-  | { kind: "pan"; gesture: PanGesture }
-  | { kind: "zoom"; gesture: ZoomDragGesture }
-  | { kind: "display"; gesture: DisplayDragGesture }
-  | { kind: "annotation-create"; gesture: AnnotationCreateGesture }
-  | { kind: "annotation-move"; gesture: AnnotationEditGesture }
-  | { kind: "annotation-resize"; gesture: AnnotationEditGesture }
+  | { paneId: PaneId; kind: "pan"; gesture: PanGesture }
+  | { paneId: PaneId; kind: "zoom"; gesture: ZoomDragGesture }
+  | { paneId: PaneId; kind: "display"; gesture: DisplayDragGesture }
+  | { paneId: PaneId; kind: "annotation-create"; gesture: AnnotationCreateGesture }
+  | { paneId: PaneId; kind: "annotation-move"; gesture: AnnotationEditGesture }
+  | { paneId: PaneId; kind: "annotation-resize"; gesture: AnnotationEditGesture }
   | { kind: "timeline"; gesture: { pointerId: number } };
+
+type RenderedPaneFrame = {
+  frameIndex: number;
+  fingerprint: string;
+  pixels: Uint8Array;
+};
+
+function emptyPaneState(): PaneState {
+  return {
+    viewTransform: null,
+    display: originalVideoDisplay(),
+    tool: "pan",
+    comparingOriginal: false,
+  };
+}
 
 const STATUS_LABELS: Record<ViewerStatus, string> = {
   idle: "대기",
@@ -158,8 +183,9 @@ function exportFailureMessage(error: unknown, action: "save" | "copy"): string {
 }
 
 export function App() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const viewerSurfaceRef = useRef<HTMLElement>(null);
+  const canvasRefs = useRef<Record<PaneId, HTMLCanvasElement | null>>({ a: null, b: null });
+  const viewerSurfaceRefs = useRef<Record<PaneId, HTMLElement | null>>({ a: null, b: null });
+  const crosshairRefs = useRef<Record<PaneId, HTMLDivElement | null>>({ a: null, b: null });
   const timelineRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef<string | null>(null);
   const sourceBaseNameRef = useRef<string | undefined>(undefined);
@@ -175,9 +201,23 @@ export function App() {
   const i420RendererRef = useRef<I420WebglRenderer | null>(null);
   const activePointerRef = useRef<ActivePointerGesture | null>(null);
   const lastFrameRef = useRef<CcrFrameResponse | null>(null);
-  const displayStateRef = useRef<VideoDisplayState>(originalVideoDisplay());
-  const comparingOriginalRef = useRef(false);
+  const renderedPaneFrameRef = useRef<Record<PaneId, RenderedPaneFrame | null>>({ a: null, b: null });
+  const crosshairAnimationRef = useRef<number | null>(null);
+  const pendingCrosshairRef = useRef<{ sourcePane: PaneId; point: { x: number; y: number } } | null>(null);
+  const originalHoldPaneRef = useRef<PaneId | null>(null);
+  const dualInitializedRef = useRef(false);
+  const rgbaDisplayProcessCountRef = useRef(0);
+  const dualViewRef = useRef(false);
+  const crosshairEnabledRef = useRef(true);
   const annotationSessionRef = useRef<AnnotationSession>(createAnnotationSession());
+  const [paneStates, setPaneStates] = useState<PaneStates>(() => ({ a: emptyPaneState(), b: emptyPaneState() }));
+  const paneStatesRef = useRef(paneStates);
+  const [activePane, setActivePaneState] = useState<PaneId>("a");
+  const activePaneRef = useRef<PaneId>("a");
+  const [dualView, setDualView] = useState(false);
+  const [crosshairEnabled, setCrosshairEnabled] = useState(true);
+  const [annotationOwnerPane, setAnnotationOwnerPane] = useState<PaneId | null>(null);
+  const [textEditorPane, setTextEditorPane] = useState<PaneId | null>(null);
   const [metadata, setMetadata] = useState<SessionMetadata | null>(null);
   const [frameIndex, setFrameIndex] = useState(0);
   const [frameInput, setFrameInput] = useState("1");
@@ -189,12 +229,8 @@ export function App() {
   const [status, setStatus] = useState<ViewerStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [viewTransform, setViewTransform] = useState<ViewTransform | null>(null);
-  const [viewTool, setViewTool] = useState<ViewTool>("pan");
   const [activePointerKind, setActivePointerKind] = useState<ActivePointerGesture["kind"] | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [displayState, setDisplayState] = useState<VideoDisplayState>(originalVideoDisplay);
-  const [comparingOriginal, setComparingOriginal] = useState(false);
   const [annotationSession, setAnnotationSessionState] = useState<AnnotationSession>(annotationSessionRef.current);
   const [textEditor, setTextEditor] = useState<TextEditorState | null>(null);
   const [exportMode, setExportMode] = useState<FrameExportMode>("full-frame");
@@ -202,9 +238,70 @@ export function App() {
   const [exportBusy, setExportBusy] = useState(false);
   const [exportMessage, setExportMessage] = useState<string | null>(null);
 
+  const activePaneState = paneStates[activePane];
+  const viewTransform = activePaneState.viewTransform;
+  const viewTool = activePaneState.tool;
+  const displayState = activePaneState.display;
+  const comparingOriginal = activePaneState.comparingOriginal;
+
+  const setActivePane = useCallback((paneId: PaneId) => {
+    activePaneRef.current = paneId;
+    setActivePaneState(paneId);
+  }, []);
+
+  const updatePane = useCallback((paneId: PaneId, updater: (state: PaneState) => PaneState) => {
+    setPaneStates((current) => {
+      const next = updatePaneState(current, paneId, updater(current[paneId]));
+      paneStatesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const applySetState = <T,>(current: T, action: SetStateAction<T>): T =>
+    typeof action === "function" ? (action as (value: T) => T)(current) : action;
+
+  const setViewTransform = useCallback((action: SetStateAction<ViewTransform | null>) => {
+    const paneId = activePaneRef.current;
+    updatePane(paneId, (state) => ({ ...state, viewTransform: applySetState(state.viewTransform, action) }));
+  }, [updatePane]);
+
+  const setPaneViewTransform = useCallback((paneId: PaneId, action: SetStateAction<ViewTransform | null>) => {
+    updatePane(paneId, (state) => ({ ...state, viewTransform: applySetState(state.viewTransform, action) }));
+  }, [updatePane]);
+
+  const setViewTool = useCallback((tool: ViewerTool) => {
+    const paneId = activePaneRef.current;
+    updatePane(paneId, (state) => state.tool === tool ? state : { ...state, tool });
+  }, [updatePane]);
+
+  const setDisplayState = useCallback((action: SetStateAction<VideoDisplayState>) => {
+    const paneId = activePaneRef.current;
+    updatePane(paneId, (state) => ({ ...state, display: applySetState(state.display, action) }));
+  }, [updatePane]);
+
+  const setPaneDisplayState = useCallback((paneId: PaneId, action: SetStateAction<VideoDisplayState>) => {
+    updatePane(paneId, (state) => ({ ...state, display: applySetState(state.display, action) }));
+  }, [updatePane]);
+
+  const setComparingOriginal = useCallback((value: boolean, paneId = activePaneRef.current) => {
+    updatePane(paneId, (state) => state.comparingOriginal === value ? state : { ...state, comparingOriginal: value });
+  }, [updatePane]);
+
   const setAnnotationSession = useCallback((next: AnnotationSession) => {
     annotationSessionRef.current = next;
     setAnnotationSessionState(next);
+  }, []);
+
+  const hideCrosshairs = useCallback(() => {
+    pendingCrosshairRef.current = null;
+    if (crosshairAnimationRef.current !== null) {
+      cancelAnimationFrame(crosshairAnimationRef.current);
+      crosshairAnimationRef.current = null;
+    }
+    for (const paneId of ["a", "b"] as const) {
+      const element = crosshairRefs.current[paneId];
+      if (element) element.hidden = true;
+    }
   }, []);
 
   const clearViewer = useCallback(() => {
@@ -223,22 +320,29 @@ export function App() {
     setDiagnostics(null);
     activePointerRef.current = null;
     lastFrameRef.current = null;
+    renderedPaneFrameRef.current = { a: null, b: null };
     setActivePointerKind(null);
-    setViewTool("pan");
-    setViewTransform(null);
+    paneStatesRef.current = { a: emptyPaneState(), b: emptyPaneState() };
+    setPaneStates(paneStatesRef.current);
+    setActivePane("a");
+    setCrosshairEnabled(true);
+    crosshairEnabledRef.current = true;
+    dualInitializedRef.current = false;
+    setAnnotationOwnerPane(null);
     setTextEditor(null);
+    setTextEditorPane(null);
     setExportBusy(false);
     setExportMessage(null);
     setAnnotationSession(createAnnotationSession());
     wheelRef.current.reset();
     zoomWheelRef.current.reset();
-    displayStateRef.current = originalVideoDisplay();
-    comparingOriginalRef.current = false;
-    setDisplayState(displayStateRef.current);
-    setComparingOriginal(false);
+    originalHoldPaneRef.current = null;
+    rgbaDisplayProcessCountRef.current = 0;
+    hideCrosshairs();
     i420RendererRef.current?.dispose();
     i420RendererRef.current = null;
-    releaseCanvas(canvasRef.current);
+    releaseCanvas(canvasRefs.current.a);
+    releaseCanvas(canvasRefs.current.b);
     if (window.ccr?.openQaVideo) {
       delete document.documentElement.dataset.qaSampleIndex;
       delete document.documentElement.dataset.qaPixelFormat;
@@ -252,23 +356,42 @@ export function App() {
       delete document.documentElement.dataset.qaDisplayState;
       delete document.documentElement.dataset.qaDisplayDrawMs;
       delete document.documentElement.dataset.qaTextureUploads;
+      delete document.documentElement.dataset.qaFrameUploads;
+      delete document.documentElement.dataset.qaDrawCount;
+      document.documentElement.dataset.qaRgbaDisplayProcesses = "0";
       document.documentElement.dataset.qaBackgroundComplete = "false";
       document.documentElement.dataset.qaSeekDecodeCount = "0";
     }
-  }, []);
+  }, [hideCrosshairs, setActivePane]);
 
   const recordDisplayQa = useCallback((drawMs: number) => {
     if (!window.ccr?.openQaVideo) return;
     document.documentElement.dataset.qaDisplayDrawMs = String(drawMs);
-    document.documentElement.dataset.qaTextureUploads = String(i420RendererRef.current?.getStats().textureUploadCount ?? 0);
-  }, [setAnnotationSession]);
+    const stats = i420RendererRef.current?.getStats();
+    document.documentElement.dataset.qaTextureUploads = String(stats?.textureUploadCount ?? 0);
+    document.documentElement.dataset.qaFrameUploads = String(stats?.frameUploadCount ?? 0);
+    document.documentElement.dataset.qaDrawCount = String(stats?.drawCount ?? 0);
+    document.documentElement.dataset.qaRgbaDisplayProcesses = String(rgbaDisplayProcessCountRef.current);
+  }, []);
 
-  const redrawCurrentFrame = useCallback(() => {
+  const recordPaneFramesQa = useCallback(() => {
+    if (!window.ccr?.openQaVideo) return;
+    const a = renderedPaneFrameRef.current.a;
+    const b = renderedPaneFrameRef.current.b;
+    document.documentElement.dataset.qaPaneFrames = JSON.stringify({
+      a: a && { frameIndex: a.frameIndex, fingerprint: a.fingerprint },
+      b: b && { frameIndex: b.frameIndex, fingerprint: b.fingerprint },
+      sharedPixels: Boolean(a && b && a.pixels === b.pixels),
+    });
+  }, []);
+
+  const redrawPane = useCallback((paneId: PaneId) => {
     const frame = lastFrameRef.current;
-    const canvas = canvasRef.current;
+    const canvas = canvasRefs.current[paneId];
     const context = canvas?.getContext("2d");
     if (!frame?.descriptor || !frame.pixels || !canvas || !context) return;
-    const effective = temporaryOriginalDisplay(displayStateRef.current, comparingOriginalRef.current);
+    const pane = paneStatesRef.current[paneId];
+    const effective = temporaryOriginalDisplay(pane.display, pane.comparingOriginal);
     const startedAt = performance.now();
     if (frame.descriptor.pixelFormat === "i420" && i420RendererRef.current) {
       try {
@@ -281,41 +404,58 @@ export function App() {
         frame.pixels,
         frame.descriptor.width,
         frame.descriptor.height,
-        displayStateRef.current,
-        comparingOriginalRef.current,
+        pane.display,
+        pane.comparingOriginal,
       );
+      rgbaDisplayProcessCountRef.current += 1;
       context.putImageData(new ImageData(adjusted, frame.descriptor.width, frame.descriptor.height), 0, 0);
     }
+    renderedPaneFrameRef.current[paneId] = {
+      frameIndex: frame.descriptor.frameIndex,
+      fingerprint: frame.descriptor.fingerprint,
+      pixels: frame.pixels,
+    };
+    recordPaneFramesQa();
     recordDisplayQa(performance.now() - startedAt);
-  }, [recordDisplayQa]);
+  }, [recordDisplayQa, recordPaneFramesQa]);
+
+  const redrawVisiblePanes = useCallback(() => {
+    const paneIds: PaneId[] = dualViewRef.current ? ["a", "b"] : [activePaneRef.current];
+    for (const paneId of paneIds) redrawPane(paneId);
+  }, [redrawPane]);
 
   const renderFrame = useCallback(async (frame: CcrFrameResponse) => {
     if (!frame.accepted || !frame.descriptor || !frame.pixels) {
       return;
     }
-    const canvas = canvasRef.current;
-    const context = canvas?.getContext("2d");
-    if (!canvas || !context) {
+    const paneIds: PaneId[] = dualViewRef.current ? ["a", "b"] : [activePaneRef.current];
+    if (paneIds.some((paneId) => !canvasRefs.current[paneId]?.getContext("2d"))) {
       return;
     }
     let rendered = frame;
-    canvas.width = frame.descriptor.width;
-    canvas.height = frame.descriptor.height;
-    const effective = temporaryOriginalDisplay(displayStateRef.current, comparingOriginalRef.current);
+    for (const paneId of paneIds) {
+      const canvas = canvasRefs.current[paneId]!;
+      canvas.width = frame.descriptor.width;
+      canvas.height = frame.descriptor.height;
+    }
+    const startedAt = performance.now();
     if (frame.descriptor.pixelFormat === "i420" && frame.layout && frame.colorSpace) {
       try {
-        i420RendererRef.current ??= new I420WebglRenderer();
-        const startedAt = performance.now();
-        const renderedCanvas = i420RendererRef.current.render({
+        i420RendererRef.current ??= new I420WebglRenderer(hideCrosshairs);
+        const firstPane = paneStatesRef.current[paneIds[0]];
+        let renderedCanvas = i420RendererRef.current.render({
           pixels: frame.pixels,
           width: frame.descriptor.width,
           height: frame.descriptor.height,
           layout: frame.layout,
           colorSpace: frame.colorSpace,
-          display: effective,
+          display: temporaryOriginalDisplay(firstPane.display, firstPane.comparingOriginal),
         });
-        context.drawImage(renderedCanvas, 0, 0);
-        recordDisplayQa(performance.now() - startedAt);
+        paneIds.forEach((paneId, index) => {
+          const pane = paneStatesRef.current[paneId];
+          if (index > 0) renderedCanvas = i420RendererRef.current!.redraw(temporaryOriginalDisplay(pane.display, pane.comparingOriginal));
+          canvasRefs.current[paneId]!.getContext("2d")!.drawImage(renderedCanvas, 0, 0);
+        });
       } catch {
         i420RendererRef.current?.dispose();
         i420RendererRef.current = null;
@@ -340,34 +480,48 @@ export function App() {
           return;
         }
         rendered = fallback;
-        const startedAt = performance.now();
-        const adjusted = applyVideoDisplayToRgba(
-          fallback.pixels,
-          fallback.descriptor.width,
-          fallback.descriptor.height,
-          displayStateRef.current,
-          comparingOriginalRef.current,
-        );
-        context.putImageData(new ImageData(adjusted, fallback.descriptor.width, fallback.descriptor.height), 0, 0);
-        recordDisplayQa(performance.now() - startedAt);
+        for (const paneId of paneIds) {
+          const pane = paneStatesRef.current[paneId];
+          const adjusted = applyVideoDisplayToRgba(
+            fallback.pixels,
+            fallback.descriptor.width,
+            fallback.descriptor.height,
+            pane.display,
+            pane.comparingOriginal,
+          );
+          rgbaDisplayProcessCountRef.current += 1;
+          canvasRefs.current[paneId]!.getContext("2d")!.putImageData(new ImageData(adjusted, fallback.descriptor.width, fallback.descriptor.height), 0, 0);
+        }
       }
     } else {
-      const startedAt = performance.now();
-      const adjusted = applyVideoDisplayToRgba(
-        frame.pixels,
-        frame.descriptor.width,
-        frame.descriptor.height,
-        displayStateRef.current,
-        comparingOriginalRef.current,
-      );
-      context.putImageData(new ImageData(adjusted, frame.descriptor.width, frame.descriptor.height), 0, 0);
-      recordDisplayQa(performance.now() - startedAt);
+      for (const paneId of paneIds) {
+        const pane = paneStatesRef.current[paneId];
+        const adjusted = applyVideoDisplayToRgba(
+          frame.pixels,
+          frame.descriptor.width,
+          frame.descriptor.height,
+          pane.display,
+          pane.comparingOriginal,
+        );
+        rgbaDisplayProcessCountRef.current += 1;
+        canvasRefs.current[paneId]!.getContext("2d")!.putImageData(new ImageData(adjusted, frame.descriptor.width, frame.descriptor.height), 0, 0);
+      }
     }
     if (!rendered.descriptor) return;
+    recordDisplayQa(performance.now() - startedAt);
     lastFrameRef.current = rendered;
     displayedFrameRef.current = rendered.descriptor.frameIndex;
+    for (const paneId of paneIds) {
+      renderedPaneFrameRef.current[paneId] = {
+        frameIndex: rendered.descriptor.frameIndex,
+        fingerprint: rendered.descriptor.fingerprint,
+        pixels: rendered.pixels!,
+      };
+    }
+    recordPaneFramesQa();
     if (window.ccr?.openQaVideo) {
       document.documentElement.dataset.qaPixelFormat = rendered.descriptor.pixelFormat;
+      document.documentElement.dataset.qaRequestMs = String(rendered.requestMs ?? 0);
     }
     setFrameIndex(rendered.descriptor.frameIndex);
     setFrameInput(String(internalToDisplayFrame(rendered.descriptor.frameIndex)));
@@ -376,7 +530,7 @@ export function App() {
     setRequestMs(rendered.requestMs ?? null);
     setCacheStatus(rendered.cacheStatus ?? null);
     setDiagnostics(rendered.diagnostics ?? null);
-  }, [recordDisplayQa]);
+  }, [hideCrosshairs, recordDisplayQa, recordPaneFramesQa]);
 
   const pump = useCallback(async () => {
     if (pumpingRef.current || !window.ccr?.getFrame || !sessionIdRef.current || !metadata) {
@@ -435,6 +589,7 @@ export function App() {
       return;
     }
     const target = clampFrameIndex(nextFrameIndex, metadata.frameCount);
+    hideCrosshairs();
     desiredFrameRef.current = target;
     const selected = annotationSessionRef.current.annotations.find((annotation) => annotation.id === annotationSessionRef.current.selectedId);
     if (selected && selected.frameIndex !== target) {
@@ -450,7 +605,7 @@ export function App() {
         void pump();
       });
     }
-  }, [metadata, pump, setAnnotationSession]);
+  }, [hideCrosshairs, metadata, pump, setAnnotationSession]);
 
   const acceptOpenedVideo = useCallback(async (promise: Promise<CcrOpenVideoResponse>) => {
     const uiGeneration = ++uiGenerationRef.current;
@@ -482,22 +637,36 @@ export function App() {
     }
     sessionIdRef.current = opened.sessionId;
     sourceBaseNameRef.current = opened.sourceBaseName;
+    hideCrosshairs();
+    lastFrameRef.current = null;
+    renderedPaneFrameRef.current = { a: null, b: null };
     setMetadata(opened.metadata);
     setTextEditor(null);
+    setTextEditorPane(null);
     setAnnotationSession(createAnnotationSession());
-    setViewTool("pan");
+    setAnnotationOwnerPane(null);
     setExportMessage(null);
-    displayStateRef.current = originalVideoDisplay();
-    comparingOriginalRef.current = false;
-    setDisplayState(displayStateRef.current);
-    setComparingOriginal(false);
-    const viewport = viewerSurfaceRef.current?.getBoundingClientRect();
-    setViewTransform(createViewTransform(
-      { width: opened.metadata.width, height: opened.metadata.height },
-      { width: viewport?.width ?? 1, height: viewport?.height ?? 1 },
-    ));
+    setActivePane("a");
+    setCrosshairEnabled(true);
+    crosshairEnabledRef.current = true;
+    originalHoldPaneRef.current = null;
+    const imageSize = { width: opened.metadata.width, height: opened.metadata.height };
+    const createPane = (paneId: PaneId): PaneState => {
+      const viewport = viewerSurfaceRefs.current[paneId]?.getBoundingClientRect();
+      return {
+        viewTransform: createViewTransform(imageSize, { width: viewport?.width ?? 1, height: viewport?.height ?? 1 }),
+        display: originalVideoDisplay(),
+        tool: "pan",
+        comparingOriginal: false,
+      };
+    };
+    const nextPaneStates = { a: createPane("a"), b: createPane("b") };
+    paneStatesRef.current = nextPaneStates;
+    setPaneStates(nextPaneStates);
+    dualInitializedRef.current = dualViewRef.current;
     desiredFrameRef.current = 0;
     displayedFrameRef.current = -1;
+    renderedPaneFrameRef.current = { a: null, b: null };
     wheelRef.current.reset();
     zoomWheelRef.current.reset();
     forceRgbaRef.current = false;
@@ -509,7 +678,7 @@ export function App() {
       await window.ccr?.ackFirstFrame?.(opened.sessionId);
     }
     setStatus("ready");
-  }, [clearViewer, metadata, renderFrame, setAnnotationSession]);
+  }, [clearViewer, hideCrosshairs, metadata, renderFrame, setActivePane, setAnnotationSession]);
 
   useEffect(() => {
     if (!window.ccr?.openQaVideo) return;
@@ -566,15 +735,16 @@ export function App() {
     }
   };
 
-  const onWheel = (event: WheelEvent<HTMLElement>) => {
+  const onWheel = (paneId: PaneId, event: WheelEvent<HTMLElement>) => {
     event.preventDefault();
+    setActivePane(paneId);
     const intent = viewWheelIntent(event);
     if (intent.type === "zoom") {
       const wheelDirection = zoomWheelRef.current.consume(event.deltaY, event.deltaMode);
       if (wheelDirection === 0) return;
       const bounds = event.currentTarget.getBoundingClientRect();
       const anchor = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
-      setViewTransform((current) => current
+      setPaneViewTransform(paneId, (current) => current
         ? stepViewZoom(current, wheelDirection < 0 ? 1 : -1, anchor)
         : current);
       return;
@@ -612,11 +782,32 @@ export function App() {
     void window.ccr?.setFullscreen?.(false).then(setIsFullscreen);
   }, []);
 
+  const toggleCrosshair = useCallback(() => {
+    setCrosshairEnabled((current) => {
+      const next = !current;
+      crosshairEnabledRef.current = next;
+      if (!next) hideCrosshairs();
+      return next;
+    });
+  }, [hideCrosshairs]);
+
+  const beginOriginalHold = useCallback((paneId: PaneId) => {
+    originalHoldPaneRef.current = paneId;
+    setActivePane(paneId);
+    setComparingOriginal(true, paneId);
+  }, [setActivePane, setComparingOriginal]);
+
+  const releaseOriginalHold = useCallback(() => {
+    const paneId = originalHoldPaneRef.current;
+    originalHoldPaneRef.current = null;
+    if (paneId) setComparingOriginal(false, paneId);
+  }, [setComparingOriginal]);
+
   const endPointerGesture = useCallback((pointerId?: number) => {
     activePointerRef.current = null;
     setActivePointerKind(null);
     if (pointerId === undefined) return;
-    for (const element of [viewerSurfaceRef.current, timelineRef.current]) {
+    for (const element of [viewerSurfaceRefs.current.a, viewerSurfaceRefs.current.b, timelineRef.current]) {
       if (element?.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
     }
   }, []);
@@ -633,8 +824,34 @@ export function App() {
     } else if (active.kind === "annotation-move" || active.kind === "annotation-resize") {
       setAnnotationSession(selectAnnotation(previewAnnotation(annotationSessionRef.current, active.gesture.before), active.gesture.before.id));
     }
+    hideCrosshairs();
     endPointerGesture(active.gesture.pointerId);
-  }, [endPointerGesture, setAnnotationSession]);
+  }, [endPointerGesture, hideCrosshairs, setAnnotationSession]);
+
+  const toggleDualView = useCallback(() => {
+    cancelPointerGesture();
+    releaseOriginalHold();
+    setTextEditor(null);
+    setTextEditorPane(null);
+    hideCrosshairs();
+    if (!dualViewRef.current) {
+      if (!dualInitializedRef.current) {
+        const source = paneStatesRef.current[activePaneRef.current];
+        const next = { a: clonePaneState(source), b: clonePaneState(source) };
+        paneStatesRef.current = next;
+        setPaneStates(next);
+        setActivePane("a");
+        dualInitializedRef.current = true;
+        setCrosshairEnabled(true);
+        crosshairEnabledRef.current = true;
+      }
+      dualViewRef.current = true;
+      setDualView(true);
+      return;
+    }
+    dualViewRef.current = false;
+    setDualView(false);
+  }, [cancelPointerGesture, hideCrosshairs, releaseOriginalHold, setActivePane]);
 
   const finishPointerGesture = useCallback((pointerId: number) => {
     const active = activePointerRef.current;
@@ -682,54 +899,112 @@ export function App() {
     };
   };
 
-  const onPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+  const scheduleCrosshair = useCallback((sourcePane: PaneId, point: { x: number; y: number }) => {
+    if (!dualViewRef.current || !crosshairEnabledRef.current || desiredFrameRef.current !== displayedFrameRef.current) {
+      hideCrosshairs();
+      return;
+    }
+    pendingCrosshairRef.current = { sourcePane, point };
+    if (crosshairAnimationRef.current !== null) return;
+    crosshairAnimationRef.current = requestAnimationFrame(() => {
+      crosshairAnimationRef.current = null;
+      const pending = pendingCrosshairRef.current;
+      pendingCrosshairRef.current = null;
+      if (!pending || !dualViewRef.current || !crosshairEnabledRef.current) return;
+      const startedAt = performance.now();
+      const targetPane = otherPane(pending.sourcePane);
+      const sourceFrame = renderedPaneFrameRef.current[pending.sourcePane];
+      const targetFrame = renderedPaneFrameRef.current[targetPane];
+      const sourceTransform = paneStatesRef.current[pending.sourcePane].viewTransform;
+      const targetTransform = paneStatesRef.current[targetPane].viewTransform;
+      const lastFrame = lastFrameRef.current;
+      const rendererReady = lastFrame?.descriptor?.pixelFormat === "rgba" || i420RendererRef.current?.isReady() === true;
+      const framesMatch = linkedPaneFramesMatch(sourceFrame, targetFrame);
+      const mapped = sourceTransform && targetTransform
+        ? mapLinkedCrosshair({
+          sourceTransform,
+          targetTransform,
+          sourceViewportPoint: pending.point,
+          framesMatch,
+          rendererReady,
+        })
+        : null;
+      const sourceElement = crosshairRefs.current[pending.sourcePane];
+      const targetElement = crosshairRefs.current[targetPane];
+      if (sourceElement) sourceElement.hidden = true;
+      if (targetElement) {
+        targetElement.hidden = !mapped;
+        if (mapped) targetElement.style.transform = `translate3d(${mapped.targetViewportPoint.x}px, ${mapped.targetViewportPoint.y}px, 0)`;
+      }
+      if (window.ccr?.openQaVideo) {
+        document.documentElement.dataset.qaCrosshairUpdateMs = String(performance.now() - startedAt);
+        document.documentElement.dataset.qaCrosshair = mapped
+          ? JSON.stringify({ sourcePane: pending.sourcePane, targetPane, ...mapped })
+          : "hidden";
+      }
+    });
+  }, [hideCrosshairs]);
+
+  const onPointerDown = (paneId: PaneId, event: ReactPointerEvent<HTMLElement>) => {
     if (!metadata || activePointerRef.current || (event.button !== 0 && event.button !== 2)) return;
     event.preventDefault();
+    setActivePane(paneId);
     event.currentTarget.setPointerCapture(event.pointerId);
+    const pane = paneStatesRef.current[paneId];
+    const paneTransform = pane.viewTransform;
+    const paneTool = pane.tool;
     if (event.button === 2) {
       activePointerRef.current = {
+        paneId,
         kind: "display",
-        gesture: beginDisplayDrag(event.pointerId, event.clientX, event.clientY, displayStateRef.current),
+        gesture: beginDisplayDrag(event.pointerId, event.clientX, event.clientY, pane.display),
       };
       setActivePointerKind("display");
       return;
     }
     const viewportPoint = surfacePoint(event);
-    const imagePoint = viewTransform ? viewportToImage(viewTransform, viewportPoint) : null;
+    const imagePoint = paneTransform ? viewportToImage(paneTransform, viewportPoint) : null;
     const target = annotationEventTarget(event.target);
-    if (viewTool === "select") {
+    if (paneTool === "select") {
       const annotation = annotationSessionRef.current.annotations.find((candidate) => candidate.id === target.id && candidate.frameIndex === frameIndex);
       if (!annotation || !imagePoint) {
         setAnnotationSession(selectAnnotation(annotationSessionRef.current, null));
+        setAnnotationOwnerPane(null);
         endPointerGesture(event.pointerId);
         return;
       }
       setAnnotationSession(selectAnnotation(annotationSessionRef.current, annotation.id));
+      setAnnotationOwnerPane(paneId);
       activePointerRef.current = {
+        paneId,
         kind: target.handle ? "annotation-resize" : "annotation-move",
         gesture: { pointerId: event.pointerId, before: annotation, start: imagePoint, handle: target.handle ?? undefined },
       };
       setActivePointerKind(target.handle ? "annotation-resize" : "annotation-move");
       return;
     }
-    if (viewTool === "text") {
-      if (!imagePoint || !viewTransform || !pointInImage(imagePoint, viewTransform.imageSize)) {
+    if (paneTool === "text") {
+      if (!imagePoint || !paneTransform || !pointInImage(imagePoint, paneTransform.imageSize)) {
         endPointerGesture(event.pointerId);
         return;
       }
       setTextEditor({ annotationId: null, frameIndex, anchor: imagePoint, value: "" });
+      setTextEditorPane(paneId);
+      setAnnotationOwnerPane(paneId);
       endPointerGesture(event.pointerId);
       return;
     }
-    if ((viewTool === "arrow" || viewTool === "ellipse" || viewTool === "rectangle") && viewTransform && imagePoint) {
-      if (!pointInImage(imagePoint, viewTransform.imageSize)) {
+    if ((paneTool === "arrow" || paneTool === "ellipse" || paneTool === "rectangle") && paneTransform && imagePoint) {
+      if (!pointInImage(imagePoint, paneTransform.imageSize)) {
         endPointerGesture(event.pointerId);
         return;
       }
-      const draft = createAnnotation(annotationSessionRef.current, frameIndex, viewTool, imagePoint, imagePoint, viewTransform.imageSize);
+      const draft = createAnnotation(annotationSessionRef.current, frameIndex, paneTool, imagePoint, imagePoint, paneTransform.imageSize);
       const selectionBefore = annotationSessionRef.current.selectedId;
       setAnnotationSession(selectAnnotation(previewAnnotation(annotationSessionRef.current, draft), draft.id));
+      setAnnotationOwnerPane(paneId);
       activePointerRef.current = {
+        paneId,
         kind: "annotation-create",
         gesture: {
           pointerId: event.pointerId,
@@ -738,17 +1013,18 @@ export function App() {
           startClient: { x: event.clientX, y: event.clientY },
           lastClient: { x: event.clientX, y: event.clientY },
           selectionBefore,
-          kind: viewTool,
+          kind: paneTool,
         },
       };
       setActivePointerKind("annotation-create");
       return;
     }
-    if (viewTool === "zoom" && viewTransform) {
+    if (paneTool === "zoom" && paneTransform) {
       const bounds = event.currentTarget.getBoundingClientRect();
       activePointerRef.current = {
+        paneId,
         kind: "zoom",
-        gesture: beginZoomDrag(event.pointerId, event.clientY, viewTransform.zoom, {
+        gesture: beginZoomDrag(event.pointerId, event.clientY, paneTransform.zoom, {
           x: event.clientX - bounds.left,
           y: event.clientY - bounds.top,
         }),
@@ -756,30 +1032,32 @@ export function App() {
       setActivePointerKind("zoom");
       return;
     }
-    activePointerRef.current = { kind: "pan", gesture: beginPan(event.pointerId, event.clientX, event.clientY) };
+    activePointerRef.current = { paneId, kind: "pan", gesture: beginPan(event.pointerId, event.clientX, event.clientY) };
     setActivePointerKind("pan");
   };
 
-  const onPointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+  const onPointerMove = (paneId: PaneId, event: ReactPointerEvent<HTMLElement>) => {
+    scheduleCrosshair(paneId, surfacePoint(event));
     const active = activePointerRef.current;
-    if (!active || active.gesture.pointerId !== event.pointerId) return;
+    if (!active || active.kind === "timeline" || active.paneId !== paneId || active.gesture.pointerId !== event.pointerId) return;
+    const paneTransform = paneStatesRef.current[paneId].viewTransform;
     if (active.kind === "display") {
       const next = moveDisplayDrag(active.gesture, event.pointerId, event.clientX, event.clientY);
-      if (next) setDisplayState(next);
+      if (next) setPaneDisplayState(paneId, next);
       return;
     }
     if (active.kind === "zoom") {
       const nextZoom = zoomForVerticalDrag(active.gesture, event.pointerId, event.clientY);
       if (nextZoom !== null) {
-        setViewTransform((current) => current
+        setPaneViewTransform(paneId, (current) => current
           ? zoomAtViewportPoint(current, nextZoom, active.gesture.anchor)
           : current);
       }
       return;
     }
     if (active.kind === "annotation-create") {
-      if (viewTransform) {
-        const point = viewportToImage(viewTransform, surfacePoint(event));
+      if (paneTransform) {
+        const point = viewportToImage(paneTransform, surfacePoint(event));
         const current = annotationSessionRef.current.annotations.find((annotation) => annotation.id === active.gesture.annotationId);
         if (current) {
         const draft = createAnnotation(
@@ -788,7 +1066,7 @@ export function App() {
           active.gesture.kind,
           active.gesture.start,
           point,
-          viewTransform.imageSize,
+          paneTransform.imageSize,
           event.shiftKey,
         );
         activePointerRef.current = {
@@ -801,20 +1079,19 @@ export function App() {
       return;
     }
     if (active.kind === "annotation-move" || active.kind === "annotation-resize") {
-      if (viewTransform) {
-        const point = viewportToImage(viewTransform, surfacePoint(event));
+      if (paneTransform) {
+        const point = viewportToImage(paneTransform, surfacePoint(event));
         const next = active.kind === "annotation-move"
-          ? moveAnnotation(active.gesture.before, { x: point.x - active.gesture.start.x, y: point.y - active.gesture.start.y }, viewTransform.imageSize)
-          : resizeAnnotation(active.gesture.before, active.gesture.handle!, point, viewTransform.imageSize, event.shiftKey);
+          ? moveAnnotation(active.gesture.before, { x: point.x - active.gesture.start.x, y: point.y - active.gesture.start.y }, paneTransform.imageSize)
+          : resizeAnnotation(active.gesture.before, active.gesture.handle!, point, paneTransform.imageSize, event.shiftKey);
         setAnnotationSession(selectAnnotation(previewAnnotation(annotationSessionRef.current, next), next.id));
       }
       return;
     }
-    if (active.kind === "timeline") return;
     const moved = movePan(active.gesture, event.pointerId, event.clientX, event.clientY);
     if (moved.delta) {
-      activePointerRef.current = { kind: "pan", gesture: moved.gesture };
-      setViewTransform((current) => current ? panByViewportDelta(current, moved.delta!) : current);
+      activePointerRef.current = { paneId, kind: "pan", gesture: moved.gesture };
+      setPaneViewTransform(paneId, (current) => current ? panByViewportDelta(current, moved.delta!) : current);
     }
   };
 
@@ -823,6 +1100,7 @@ export function App() {
   };
 
   const onPointerCancel = (event: ReactPointerEvent<HTMLElement>) => {
+    hideCrosshairs();
     if (activePointerRef.current?.gesture.pointerId === event.pointerId) cancelPointerGesture();
   };
 
@@ -849,10 +1127,13 @@ export function App() {
       setAnnotationSession(commitAnnotationChange(annotationSessionRef.current, null, annotation, annotation.id));
     }
     setTextEditor(null);
+    setTextEditorPane(null);
   };
 
-  const editTextAnnotation = (annotation: Annotation) => {
+  const editTextAnnotation = (paneId: PaneId, annotation: Annotation) => {
     if (annotation.kind !== "text") return;
+    setActivePane(paneId);
+    setAnnotationOwnerPane(paneId);
     setAnnotationSession(selectAnnotation(annotationSessionRef.current, annotation.id));
     setTextEditor({
       annotationId: annotation.id,
@@ -860,16 +1141,17 @@ export function App() {
       anchor: annotation.geometry.anchor,
       value: annotation.geometry.text,
     });
+    setTextEditorPane(paneId);
   };
 
-  const onViewerDoubleClick = (event: ReactMouseEvent<HTMLElement>) => {
+  const onViewerDoubleClick = (paneId: PaneId, event: ReactMouseEvent<HTMLElement>) => {
     const target = annotationEventTarget(event.target);
     const annotation = annotationSessionRef.current.annotations.find((candidate) => candidate.id === target.id);
     if (annotation?.kind === "text") {
       event.preventDefault();
-      editTextAnnotation(annotation);
-    } else if (viewTool === "pan" || viewTool === "zoom" || viewTool === "select") {
-      fitView();
+      editTextAnnotation(paneId, annotation);
+    } else if (["pan", "zoom", "select"].includes(paneStatesRef.current[paneId].tool)) {
+      setPaneViewTransform(paneId, (current) => current ? fitViewTransform(current) : current);
     }
   };
 
@@ -886,6 +1168,7 @@ export function App() {
   const applyHistoryResult = (result: ReturnType<typeof undoAnnotation>) => {
     if (!result) return;
     setTextEditor(null);
+    setTextEditorPane(null);
     setAnnotationSession(result.session);
     goToFrame(result.frameIndex);
   };
@@ -954,9 +1237,10 @@ export function App() {
       }
       const editing = isTextEntryElement(event.target);
       if (event.key === "Escape" && !editing) {
-        if (comparingOriginalRef.current) {
+        hideCrosshairs();
+        if (originalHoldPaneRef.current) {
           event.preventDefault();
-          setComparingOriginal(false);
+          releaseOriginalHold();
         } else if (activePointerRef.current) {
           event.preventDefault();
           cancelPointerGesture();
@@ -1001,7 +1285,7 @@ export function App() {
         } else if (displayShortcut === "invert") {
           setDisplayState(toggleVideoDisplayInvert);
         } else if (!event.repeat) {
-          setComparingOriginal(true);
+          beginOriginalHold(activePaneRef.current);
         }
         return;
       }
@@ -1042,7 +1326,7 @@ export function App() {
       }
     };
     const onKeyUp = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() === "o") setComparingOriginal(false);
+      if (event.key.toLowerCase() === "o") releaseOriginalHold();
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         if (keyboardHoldRef.current) {
           keyboardHoldRef.current.targetFrame = desiredFrameRef.current;
@@ -1057,7 +1341,8 @@ export function App() {
       }
     };
     const releaseTemporaryInput = (event?: PointerEvent) => {
-      setComparingOriginal(false);
+      releaseOriginalHold();
+      hideCrosshairs();
       const active = activePointerRef.current;
       if (active && (!event || active.gesture.pointerId === event.pointerId)) {
         if (event) finishPointerGesture(active.gesture.pointerId);
@@ -1076,20 +1361,34 @@ export function App() {
       window.removeEventListener("blur", onWindowBlur);
       window.removeEventListener("pointerup", onWindowPointerUp);
     };
-  }, [cancel, cancelPointerGesture, exitFullscreen, finishPointerGesture, fitView, goToFrame, isFullscreen, metadata, openVideo, pump, setAnnotationSession, toggleFullscreen, zoomByStep]);
+  }, [beginOriginalHold, cancel, cancelPointerGesture, exitFullscreen, finishPointerGesture, fitView, goToFrame, hideCrosshairs, isFullscreen, metadata, openVideo, pump, releaseOriginalHold, setAnnotationSession, toggleFullscreen, zoomByStep]);
 
   useEffect(() => {
-    const surface = viewerSurfaceRef.current;
-    if (!surface) return;
-    const observer = new ResizeObserver(([entry]) => {
-      const { width, height } = entry.contentRect;
-      setViewTransform((current) => current
-        ? resizeViewTransform(current, { width, height })
-        : current);
+    const paneIds: PaneId[] = dualView ? ["a", "b"] : [activePane];
+    const paneByElement = new Map<Element, PaneId>();
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const paneId = paneByElement.get(entry.target);
+        if (!paneId) continue;
+        const { width, height } = entry.contentRect;
+        hideCrosshairs();
+        setPaneViewTransform(paneId, (current) => current
+          ? resizeViewTransform(current, { width, height })
+          : current);
+      }
     });
-    observer.observe(surface);
-    return () => observer.disconnect();
-  }, []);
+    for (const paneId of paneIds) {
+      const surface = viewerSurfaceRefs.current[paneId];
+      if (!surface) continue;
+      paneByElement.set(surface, paneId);
+      observer.observe(surface);
+    }
+    const redrawFrame = requestAnimationFrame(redrawVisiblePanes);
+    return () => {
+      cancelAnimationFrame(redrawFrame);
+      observer.disconnect();
+    };
+  }, [activePane, dualView, hideCrosshairs, redrawVisiblePanes, setPaneViewTransform]);
 
   useEffect(() => {
     void window.ccr?.getFullscreen?.().then(setIsFullscreen);
@@ -1117,7 +1416,17 @@ export function App() {
     document.documentElement.dataset.qaViewZoom = String(viewTransform.zoom);
     document.documentElement.dataset.qaViewCenter = `${viewTransform.center.x},${viewTransform.center.y}`;
     document.documentElement.dataset.qaViewRevision = String(viewTransform.revision);
-  }, [viewTransform]);
+    document.documentElement.dataset.qaActivePane = activePane;
+    document.documentElement.dataset.qaDualView = String(dualView);
+    document.documentElement.dataset.qaPaneStates = JSON.stringify(paneStates);
+    const a = renderedPaneFrameRef.current.a;
+    const b = renderedPaneFrameRef.current.b;
+    document.documentElement.dataset.qaPaneFrames = JSON.stringify({
+      a: a && { frameIndex: a.frameIndex, fingerprint: a.fingerprint },
+      b: b && { frameIndex: b.frameIndex, fingerprint: b.fingerprint },
+      sharedPixels: Boolean(a && b && a.pixels === b.pixels),
+    });
+  }, [activePane, dualView, paneStates, viewTransform]);
 
   useEffect(() => {
     document.documentElement.dataset.qaViewTool = viewTool;
@@ -1136,20 +1445,27 @@ export function App() {
   }, [annotationSession]);
 
   useEffect(() => {
-    displayStateRef.current = displayState;
-    comparingOriginalRef.current = comparingOriginal;
     if (window.ccr?.openQaVideo) {
       document.documentElement.dataset.qaDisplayState = JSON.stringify({ ...displayState, comparingOriginal });
     }
-    redrawCurrentFrame();
-  }, [comparingOriginal, displayState, redrawCurrentFrame]);
+  }, [comparingOriginal, displayState]);
+
+  useEffect(() => {
+    redrawPane("a");
+  }, [paneStates.a.comparingOriginal, paneStates.a.display, redrawPane]);
+
+  useEffect(() => {
+    redrawPane("b");
+  }, [paneStates.b.comparingOriginal, paneStates.b.display, redrawPane]);
 
   useEffect(() => () => {
     uiGenerationRef.current += 1;
     void window.ccr?.closeVideo?.();
     i420RendererRef.current?.dispose();
     i420RendererRef.current = null;
-    releaseCanvas(canvasRef.current);
+    releaseCanvas(canvasRefs.current.a);
+    releaseCanvas(canvasRefs.current.b);
+    hideCrosshairs();
   }, []);
 
   const exportFrame = useCallback(async (action: "save" | "copy") => {
@@ -1175,11 +1491,14 @@ export function App() {
     }
 
     const exportGeneration = uiGenerationRef.current;
+    const exportPane = activePaneRef.current;
+    const exportPaneState = paneStatesRef.current[exportPane];
+    if (!exportPaneState.viewTransform) return;
     setExportBusy(true);
     try {
       const textureUploadsBefore = i420RendererRef.current?.getStats().textureUploadCount ?? 0;
-      const source = captureDisplayedFrameCanvas(frame, displayStateRef.current, i420RendererRef.current);
-      const snapshotTransform = structuredClone(viewTransform);
+      const source = captureDisplayedFrameCanvas(frame, exportPaneState.display, i420RendererRef.current);
+      const snapshotTransform = structuredClone(exportPaneState.viewTransform);
       const snapshotAnnotations = includeExportAnnotations
         ? structuredClone(annotationsForFrame(annotationSessionRef.current, descriptor.frameIndex))
         : [];
@@ -1202,6 +1521,7 @@ export function App() {
       if (window.ccr?.openQaVideo) {
         document.documentElement.dataset.qaExport = JSON.stringify({
           mode: exportMode,
+          paneId: exportPane,
           frameIndex: identity.frameIndex,
           fingerprint: identity.fingerprint,
           width: output.width,
@@ -1234,12 +1554,16 @@ export function App() {
   const frameDisplay = metadata
     ? `${internalToDisplayFrame(frameIndex).toLocaleString()} / ${metadata.frameCount.toLocaleString()}`
     : "-";
-  const placement = viewTransform ? viewPlacement(viewTransform) : null;
-  const canvasStyle = placement ? {
-    width: `${placement.width}px`,
-    height: `${placement.height}px`,
-    transform: `translate3d(${placement.left}px, ${placement.top}px, 0)`,
-  } : undefined;
+  const displayedPaneIds: PaneId[] = dualView ? ["a", "b"] : [activePane];
+  const canvasStyleForPane = (paneId: PaneId) => {
+    const transform = paneStates[paneId].viewTransform;
+    const placement = transform ? viewPlacement(transform) : null;
+    return placement ? {
+      width: `${placement.width}px`,
+      height: `${placement.height}px`,
+      transform: `translate3d(${placement.left}px, ${placement.top}px, 0)`,
+    } : undefined;
+  };
   const displayActive = !videoDisplayEqual(displayState, originalVideoDisplay());
   const displayLabel = comparingOriginal
     ? "Original 비교"
@@ -1282,6 +1606,8 @@ export function App() {
             <button type="button" title="10%p 확대 (+)" onClick={() => zoomByStep(1)} disabled={!metadata}>+</button>
             <button type="button" title="화면 맞춤 (0)" onClick={fitView} disabled={!metadata}>Fit</button>
             <button type="button" title="전체화면 (F)" onClick={toggleFullscreen}>{isFullscreen ? "창" : "전체"}</button>
+            <button type="button" className={dualView ? "is-active" : ""} aria-pressed={dualView} title="동일 프레임을 두 화면에서 독립 보정" onClick={toggleDualView} disabled={!metadata}>비교 뷰</button>
+            {dualView && <button type="button" className={crosshairEnabled ? "is-active" : ""} aria-pressed={crosshairEnabled} title="Image pixel 연동 crosshair" onClick={toggleCrosshair}>십자선</button>}
           </div>
           <button className="primary-button" type="button" onClick={openVideo}>열기</button>
         </div>
@@ -1311,33 +1637,50 @@ export function App() {
             <button type="button" aria-label="화면 맞춤" title="Fit: 화면 맞춤" onClick={fitView} disabled={!metadata}>Fit</button>
             <button type="button" aria-label="원본 픽셀 100%" title="100%: 원본 픽셀 1:1" onClick={actualSizeView} disabled={!metadata}>100%</button>
           </div>
-          <section
-            ref={viewerSurfaceRef}
-            className={`viewer-surface tool-${viewTool}${activePointerKind === "pan" ? " is-panning" : ""}${activePointerKind === "zoom" ? " is-zooming" : ""}${activePointerKind === "display" ? " is-display-dragging" : ""}`}
-            onWheel={onWheel}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerEnd}
-            onPointerCancel={onPointerCancel}
-            onLostPointerCapture={() => { if (activePointerRef.current) cancelPointerGesture(); }}
-            onDoubleClick={onViewerDoubleClick}
-            onContextMenu={(event) => event.preventDefault()}
-            aria-label="CT cine frame"
-          >
-            <canvas ref={canvasRef} className={metadata ? "frame-canvas" : "frame-canvas empty"} style={canvasStyle} draggable={false} />
-            {metadata && viewTransform && <AnnotationOverlay
-              annotations={frameAnnotations}
-              selectedId={annotationSession.selectedId}
-              transform={viewTransform}
-              textEditor={textEditor}
-              onTextChange={(value) => setTextEditor((current) => current ? { ...current, value } : current)}
-              onTextCommit={commitTextEditor}
-              onTextCancel={() => setTextEditor(null)}
-            />}
-            {!metadata && <span className="empty-label">CT Cine Reviewer</span>}
-            {status === "decoding" && <span className="loading-label">디코딩 중</span>}
-            {dragging && <div className="drop-overlay">동영상 놓기</div>}
-          </section>
+          <div className={`viewer-panes${dualView ? " is-dual" : " is-single"}`}>
+            {displayedPaneIds.map((paneId) => {
+              const pane = paneStates[paneId];
+              const paneGesture = activePointerRef.current?.kind !== "timeline" && activePointerRef.current?.paneId === paneId
+                ? activePointerKind
+                : null;
+              return <section
+                key={paneId}
+                ref={(element) => { viewerSurfaceRefs.current[paneId] = element; }}
+                className={`viewer-surface viewer-pane tool-${pane.tool}${activePane === paneId ? " is-active-pane" : ""}${paneGesture === "pan" ? " is-panning" : ""}${paneGesture === "zoom" ? " is-zooming" : ""}${paneGesture === "display" ? " is-display-dragging" : ""}`}
+                onWheel={(event) => onWheel(paneId, event)}
+                onPointerDown={(event) => onPointerDown(paneId, event)}
+                onPointerMove={(event) => onPointerMove(paneId, event)}
+                onPointerUp={onPointerEnd}
+                onPointerCancel={onPointerCancel}
+                onPointerLeave={hideCrosshairs}
+                onLostPointerCapture={() => { hideCrosshairs(); if (activePointerRef.current) cancelPointerGesture(); }}
+                onDoubleClick={(event) => onViewerDoubleClick(paneId, event)}
+                onContextMenu={(event) => event.preventDefault()}
+                aria-label={dualView ? `View ${paneId.toUpperCase()}` : "CT cine frame"}
+              >
+                {dualView && <span className="pane-label">View {paneId.toUpperCase()}</span>}
+                <canvas
+                  ref={(element) => { canvasRefs.current[paneId] = element; }}
+                  className={metadata ? "frame-canvas" : "frame-canvas empty"}
+                  style={canvasStyleForPane(paneId)}
+                  draggable={false}
+                />
+                {metadata && pane.viewTransform && <AnnotationOverlay
+                  annotations={frameAnnotations}
+                  selectedId={annotationOwnerPane === paneId && activePane === paneId ? annotationSession.selectedId : null}
+                  transform={pane.viewTransform}
+                  textEditor={textEditorPane === paneId ? textEditor : null}
+                  onTextChange={(value) => setTextEditor((current) => current ? { ...current, value } : current)}
+                  onTextCommit={commitTextEditor}
+                  onTextCancel={() => { setTextEditor(null); setTextEditorPane(null); }}
+                />}
+                <div ref={(element) => { crosshairRefs.current[paneId] = element; }} className="linked-crosshair" hidden aria-hidden="true" />
+                {!metadata && <span className="empty-label">CT Cine Reviewer</span>}
+                {status === "decoding" && <span className="loading-label">디코딩 중</span>}
+                {dragging && <div className="drop-overlay">동영상 놓기</div>}
+              </section>;
+            })}
+          </div>
         </section>
 
         <aside className="inspection-panel">
@@ -1355,7 +1698,7 @@ export function App() {
 
           <details className="display-panel" open>
             <summary>
-              <span>Video Display</span>
+              <span>Video Display{dualView ? ` · View ${activePane.toUpperCase()}` : ""}</span>
               <small className={displayActive ? "display-active" : ""}>{displayLabel}</small>
             </summary>
             <p className="display-help" title="MP4 화면 픽셀 보정이며 DICOM HU Window가 아닙니다.">
@@ -1403,10 +1746,10 @@ export function App() {
                 type="button"
                 className={comparingOriginal ? "is-comparing" : ""}
                 disabled={!metadata}
-                onPointerDown={(event) => { event.preventDefault(); setComparingOriginal(true); }}
-                onPointerUp={() => setComparingOriginal(false)}
-                onPointerLeave={() => setComparingOriginal(false)}
-                onPointerCancel={() => setComparingOriginal(false)}
+                onPointerDown={(event) => { event.preventDefault(); beginOriginalHold(activePaneRef.current); }}
+                onPointerUp={releaseOriginalHold}
+                onPointerLeave={releaseOriginalHold}
+                onPointerCancel={releaseOriginalHold}
               >원본 비교 (O)</button>
             </div>
           </details>
@@ -1508,6 +1851,7 @@ export function App() {
               <div><dt>요청</dt><dd>{requestMs === null ? "-" : `${requestMs.toFixed(1)} ms`}</dd></div>
               <div><dt>Probe</dt><dd>{metadata ? `${metadata.probeMs.toFixed(1)} ms` : "-"}</dd></div>
               <div><dt>세션 / 세대</dt><dd>{diagnostics ? `${diagnostics.session} / ${diagnostics.generation}` : "-"}</dd></div>
+              <div><dt>비교 뷰</dt><dd>{dualView ? `ON · View ${activePane.toUpperCase()}` : "OFF"}</dd></div>
               <div><dt>Zoom</dt><dd>{viewTransform ? `${(viewTransform.zoom * 100).toFixed(0)}%` : "-"}</dd></div>
               <div><dt>View center</dt><dd>{viewTransform ? `${viewTransform.center.x.toFixed(1)}, ${viewTransform.center.y.toFixed(1)}` : "-"}</dd></div>
               <div><dt>View revision</dt><dd>{viewTransform?.revision ?? "-"}</dd></div>

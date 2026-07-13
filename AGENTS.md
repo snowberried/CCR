@@ -24,10 +24,10 @@
 3. 검증: 가능한 명령, 테스트, 파일 확인으로 결과를 확인한다.
 4. 요약: 변경 내용과 남은 위험을 짧게 보고한다.
 
-## 현재 단계: Phase 4B-1 Deterministic Frame Export & Clipboard 통합·검증
+## 현재 단계: Phase 5 Linked Dual View & Crosshair 통합·검증
 
 - Phase 0 기획은 완료됐다.
-- `HANDOFF_PHASE4B1.md`와 `docs/18_PHASE4B1_FRAME_EXPORT.md`를 먼저 읽고 PNG·clipboard와 snapshot 검증 상태를 확인한다.
+- `HANDOFF_PHASE5.md`와 `docs/19_PHASE5_LINKED_DUAL_VIEW.md`를 먼저 읽고 비교 뷰·crosshair와 성능 검증 상태를 확인한다.
 - Phase 1 기술 스파이크와 Phase 2 최소 실사용 뷰어 범위는 승인됐고 완료됐다.
 - 파일 열기, Canvas 표시, 정확한 프레임 탐색, 상태·진단 표시와 방향성 RAM cache를 구현했다.
 - FFmpeg는 Phase 1B에서 승인된 BtbN Windows x64 LGPL shared 고정 자산만 사용하며 `scripts/setup-ffmpeg.ps1`의 checksum 검증을 거쳐 로컬 배치한다.
@@ -40,7 +40,10 @@
 - Phase 3B 승인 후 Ctrl+wheel 10%p step과 Pan/Zoom/Fit/100% 세로 도구 막대를 추가했다. 좌클릭 tool과 우클릭 Level/Width는 단일 pointer 소유권으로 분리한다.
 - Phase 4A 주석 geometry는 원본 image pixel 좌표이며 프로젝트 저장 없이 세션 RAM에만 유지한다.
 - Phase 4B-1은 실제 displayed frame snapshot만 저장하며 OS/window screenshot, temp preview와 decoder/cache 재실행을 사용하지 않는다.
-- 실제 사용 피드백과 별도 사용자 승인 전 프로젝트 저장, 마스크, JPEG 또는 clip/batch 내보내기로 범위를 넓히지 않는다.
+- Phase 5 비교 뷰의 두 pane는 같은 `frameIndex`, fingerprint와 decoded pixels를 공유한다. View Transform, Video Display, persistent tool과 임시 pointer/Original 상태만 pane별 독립이다.
+- linked crosshair는 기존 Phase 3A image↔viewport 변환을 재사용하는 image pixel correspondence이며 DICOM spatial registration이 아니다.
+- decoder/cache/navigation/annotation store/timeline은 각각 하나만 유지하고 export는 active pane 기준이다.
+- 실제 사용 피드백과 별도 사용자 승인 전 프로젝트 저장, JPEG 또는 clip/batch 내보내기로 범위를 넓히지 않는다. 개인정보 마스킹은 현재 제품 범위에서 제외한다.
 - Phase 2.3 NSIS 패키징, unpacked/privacy/checksum 검증, 실제 설치와 재설치를 완료했다.
 - 실제 설치 앱에서 Sample A~K, full cache, 직접 입력, Home/End, 휠, 파일 전환과 RGBA rollback을 검증했다.
 - 실제 Explorer drag/drop, Windows 제거 등록 확인과 사용자 파일럿 피드백은 남아 있다.

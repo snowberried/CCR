@@ -30,6 +30,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .topbar-actions, .view-toolbar { display: flex; align-items: center; gap: 5px; }
 .view-toolbar output { min-width: 44px; color: #aab5c0; text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; }
 .view-toolbar button { min-width: 32px; padding: 0 8px; }
+.view-toolbar button.is-active { color: #c7eefb; border-color: #4a9fbd; background: #183744; }
 
 .brand-block { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
 h1, p { margin: 0; letter-spacing: 0; }
@@ -83,6 +84,15 @@ button:disabled { opacity: 0.38; cursor: default; }
 .viewer-tool-rail button:nth-last-child(-n+2) { font-size: 9px; }
 .viewer-tool-rail button.is-active { color: #c7eefb; border-color: #4a9fbd; background: #183744; }
 
+.viewer-panes {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  overflow: hidden;
+}
+.viewer-panes.is-single { grid-template-columns: minmax(0, 1fr); }
+.viewer-panes.is-dual { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; background: #34414d; }
+
 .viewer-surface {
   position: relative;
   min-width: 0;
@@ -101,6 +111,14 @@ button:disabled { opacity: 0.38; cursor: default; }
 .viewer-surface.tool-arrow, .viewer-surface.tool-text, .viewer-surface.tool-ellipse, .viewer-surface.tool-rectangle { cursor: crosshair; }
 .viewer-surface.is-panning { cursor: grabbing; }
 .viewer-surface.is-display-dragging { cursor: ew-resize; }
+.viewer-pane.is-active-pane { border-color: #67bddb; box-shadow: inset 0 0 0 1px rgba(103, 189, 219, 0.45); }
+.pane-label { position: absolute; z-index: 5; top: 7px; left: 7px; padding: 3px 6px; border: 1px solid #41505e; border-radius: 3px; background: rgba(12, 16, 21, 0.78); color: #b8c5d1; font-size: 10px; font-weight: 750; pointer-events: none; }
+.is-active-pane .pane-label { color: #c9f2ff; border-color: #4a9fbd; }
+.linked-crosshair { position: absolute; z-index: 6; left: 0; top: 0; width: 0; height: 0; pointer-events: none; }
+.linked-crosshair[hidden] { display: none; }
+.linked-crosshair::before, .linked-crosshair::after { content: ""; position: absolute; background: rgba(91, 221, 255, 0.82); box-shadow: 0 0 1px rgba(0, 0, 0, 0.9); }
+.linked-crosshair::before { left: -1px; top: -12px; width: 1px; height: 25px; }
+.linked-crosshair::after { left: -12px; top: -1px; width: 25px; height: 1px; }
 
 .frame-canvas { position: absolute; left: 0; top: 0; display: block; max-width: none; max-height: none; transform-origin: 0 0; image-rendering: auto; will-change: transform; }
 .frame-canvas.empty { position: static; width: 1px; height: 1px; transform: none; }

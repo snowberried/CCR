@@ -74,6 +74,17 @@ fingerprint 후보:
 
 View State와 Display Settings를 분리해야 원본 해상도 내보내기에서 화면 배치와 픽셀 보정을 독립적으로 재현할 수 있다.
 
+### Phase 5 Linked Dual View session
+
+비교 뷰는 영구 프로젝트 상태가 아니라 현재 파일 세션의 RAM 상태다.
+
+- 공용: source, current `frameIndex`, fingerprint, decoded pixels, color metadata, decoder/cache/navigation, annotation store/history와 timeline marker
+- pane별: View Transform, Display Settings, persistent tool, Original hold, pointer/drag 상태
+- UI 공용: active pane ID와 linked crosshair on/off
+- crosshair: source viewport → image pixel → target viewport의 일시적 overlay 좌표
+
+두 pane의 frame identity와 pixel object identity가 일치할 때만 crosshair가 유효하다. Crosshair는 annotation이나 export data가 아니며 디스크, 로그 또는 프로젝트에 저장하지 않는다. 새 파일에서는 A/B를 Fit·Original·Pan으로 초기화하고 annotation/history도 기존 Phase 4A 정책대로 비운다.
+
 ### Annotation — Phase 4A 확정
 
 공통 정보:
@@ -149,6 +160,7 @@ Phase 4A의 주석은 세션 RAM에만 있으며 PTS, opacity, 숨김, mask, 자
 | 표시 설정 | 프로젝트 | 예 |
 | Phase 4A 주석 | 세션 RAM | 아니오 |
 | Phase 4B-1 export snapshot/PNG buffer | 한 export 작업의 RAM | 아니오 |
+| Phase 5 pane state/crosshair | 현재 파일 세션 RAM | 아니오 |
 | 향후 마스크·북마크 | 미결정 | 별도 승인 |
 | 최근 파일·썸네일 | 미결정, 기본 최소화 | 별도 앱 설정 |
 | 사용자 preset | 미결정 | 프로젝트 또는 로컬 설정 |

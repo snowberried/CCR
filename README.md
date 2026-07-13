@@ -10,7 +10,7 @@
 
 ## 현재 단계
 
-Phase 2.3 I420 제품 cache, Phase 3A View Transform, Phase 3B Video Display와 Phase 4A frame annotation을 완료했다. Phase 4B-1에서는 실제 displayed frame을 동결해 전체 원본 해상도 또는 현재 viewport를 PNG로 저장·복사하는 기능을 통합했다. 상세 내용은 [Phase 4B-1](docs/18_PHASE4B1_FRAME_EXPORT.md)에서 확인한다.
+Phase 2.3 I420 제품 cache부터 Phase 4B-1 PNG/clipboard까지의 기준선 위에 Phase 5 **비교 뷰**를 통합했다. View A와 View B는 항상 같은 영상의 동일한 현재 프레임을 공유하고, Zoom/Pan과 Video Display는 pane별로 독립적이다. linked crosshair는 DICOM registration이 아니라 같은 image pixel 좌표를 두 transform 사이에서 대응시킨다. 상세 내용은 [Phase 5](docs/19_PHASE5_LINKED_DUAL_VIEW.md)에서 확인한다.
 
 - 실제 로컬 샘플은 Git에 포함하지 않으며 컴퓨터별 `local-samples/`에서 확인함
 - Electron/React/TypeScript 최소 scaffold 작성됨
@@ -35,6 +35,7 @@ Phase 2.3 I420 제품 cache, Phase 3A View Transform, Phase 3B Video Display와 
 - 프레임별 Arrow/Text/Ellipse/Rectangle 주석, 선택·이동·resize·삭제와 전역 Undo/Redo 구현
 - 픽셀 열 집계 annotated timeline과 WebGL/RGBA 공통 SVG overlay 구현
 - 확정 Video Display와 선택적 주석을 포함한 전체 프레임/현재 보기 PNG 저장·clipboard 복사 구현
+- 동일 frame/pixels를 공유하는 View A/B 비교 뷰, pane별 독립 View/Display/tool과 image-space linked crosshair 구현
 - Sample A/B/C와 합성 HEVC·1080p/60fps·VFR·B-frame·회전 metadata QA 완료
 - 실행: `npm start`
 - Windows 패키지 생성: `npm run package:win`
@@ -43,12 +44,11 @@ Phase 2.3 I420 제품 cache, Phase 3A View Transform, Phase 3B Video Display와 
 ## v0.1 범위
 
 - MP4 중심의 동영상 파일 열기와 정확한 프레임 인덱스 탐색
-- 재생·정지, 확대·축소, Pan, 화면 맞춤
+- 확대·축소, Pan, 화면 맞춤과 동일 프레임 비교 뷰
 - Video Level/Width, Gamma, Inverse, Sharp 등 화면 픽셀 기반 표시 보정
 - Lung-like 등 Video Display Preset
-- 화살표·텍스트·기본 도형·개인정보 마스킹 주석
-- 원본·보정·주석 포함 프레임을 PNG/JPEG로 저장
-- 원본을 수정하지 않는 별도 JSON 계열 프로젝트 저장
+- 화살표·텍스트·기본 도형 주석
+- 원본·보정·주석 포함 프레임을 PNG로 저장·복사
 - 인터넷, 로그인, 텔레메트리 없이 완전 로컬 동작
 
 ## v0.1 제외 범위
@@ -57,6 +57,7 @@ Phase 2.3 I420 제품 cache, Phase 3A View Transform, Phase 3B Video Display와 
 - HU·거리·면적 측정
 - PACS 또는 DICOMweb 연동
 - AI 판독, 클라우드 동기화, 사용자 계정, 자동 업데이트
+- 서로 다른 프레임·영상 비교, registration, 개인정보 마스킹, 프로젝트 저장, JPEG/clip/batch export와 자동 재생
 
 ## 문서 안내
 

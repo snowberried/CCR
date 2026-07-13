@@ -61,12 +61,18 @@
 | Phase 4B-1 전체 출력 | 원본 pixel 크기, 확정 Display, 선택적 주석 | Zoom/Pan/UI 없이 공유 가능한 frame을 만들기 위해 |
 | Phase 4B-1 현재 보기 | viewport CSS size × DPR, View Transform과 letterbox 포함 | 사용자가 보고 있는 구도를 재현하기 위해 |
 | Phase 4B-1 저장 경계 | Canvas PNG RAM buffer를 최종 선택 경로 또는 native clipboard에 직접 전달 | 원본·환자 영상의 임시 파일 노출을 피하기 위해 |
+| Phase 5 frame 의미 | View A/B는 항상 같은 current frame/fingerprint/pixels | 서로 다른 프레임 비교나 별도 decoder를 만들지 않기 위해 |
+| Phase 5 pane 경계 | View Transform, Video Display, tool과 임시 gesture만 pane별 독립 | 같은 해부학적 image pixel을 서로 다른 표시로 비교하기 위해 |
+| Phase 5 crosshair | Phase 3A 변환을 재사용한 image pixel correspondence | CSS 비율 복사나 DICOM registration 오인을 피하기 위해 |
+| Phase 5 renderer | decoder/cache 하나, WebGL texture upload 한 번 후 pane별 draw | frame hot path와 RAM cache를 복제하지 않기 위해 |
+| Phase 5 export | active pane의 Display/View를 기존 coherent snapshot에 사용 | dual composite를 새 출력 의미로 추가하지 않기 위해 |
+| 개인정보 마스킹 | 현재 제품 범위에서 제외 | 실제 안전 UX와 사용자 승인 없이 불완전한 마스킹을 제공하지 않기 위해 |
 
 ## 현재 제안
 
 | 항목 | 1순위 제안 | 확정 조건 |
 | --- | --- | --- |
-| 다음 단계 | Phase 4B-1 PNG·clipboard 실제 사용자 파일럿 | 프로젝트 저장·mask·추가 포맷 범위 별도 승인 |
+| 다음 단계 | Phase 5 비교 뷰 실제 사용자 파일럿과 기능 동결 판단 | 신규 기능은 별도 승인 |
 | FFmpeg 연동 | 먼저 CLI process로 검증, native addon은 근거가 생길 때만 검토 | 성능·배포 측정 |
 | 초기 배포 | 포터블 Windows 앱 | 실제 사용 및 보안 정책 확인 |
 | 프로젝트 형식 | versioned JSON 계열 | schema와 저장 안전성 검토 |
