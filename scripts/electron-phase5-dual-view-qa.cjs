@@ -423,7 +423,7 @@ const paneFrameReady = (frameIndex) => `(() => { const q=JSON.parse(document.doc
       && result.navigation.after.seek === result.navigation.before.seek
       && result.hold.loading === 0 && result.hold.sync && result.hold.seekDelta === 0
       && result.stateRestore
-      && result.desktop.width === result.desktop.scrollWidth && result.desktop.paneWidths.every((width) => width >= 400)
+      && result.desktop.width === result.desktop.scrollWidth && result.desktop.paneWidths.every((width) => width >= 340)
       && result.fullscreenCrosshair
       && result.compact.width >= 700 && result.compact.width <= 720 && result.compact.width === result.compact.scrollWidth && result.compact.panes === 2
       && result.soak.sync && !result.soak.error

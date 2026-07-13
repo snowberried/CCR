@@ -148,7 +148,7 @@ const clipboardPng = () => clipboard.readImage().toPNG();
     await window.webContents.executeJavaScript(`document.querySelector('[title="이전 프레임"]').click()`, true);
     await waitFor(window, `document.querySelector('[aria-label="프레임 번호"]').value === "1"`, 10_000, "return-first");
     await window.webContents.executeJavaScript(`(() => {
-      const input=document.querySelector('[aria-label="Video Gamma"]');
+      const input=document.querySelector('[aria-label="화면 보정 감마"]');
       const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set;
       setter.call(input,"1.5"); input.dispatchEvent(new Event("input",{bubbles:true}));
     })()`, true);
@@ -181,15 +181,15 @@ const clipboardPng = () => clipboard.readImage().toPNG();
     await window.webContents.executeJavaScript(`document.querySelector(".export-annotation-option input").click()`, true);
     const fullRepeat = await copy(4, "full-repeat");
     await recordStage("full-copies");
-    await window.webContents.executeJavaScript(`(() => { const input=document.querySelector('[aria-label="Video Gamma"]'); const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set; setter.call(input,"1"); input.dispatchEvent(new Event("input",{bubbles:true})); })()`, true);
+    await window.webContents.executeJavaScript(`(() => { const input=document.querySelector('[aria-label="화면 보정 감마"]'); const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set; setter.call(input,"1"); input.dispatchEvent(new Event("input",{bubbles:true})); })()`, true);
     await waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).gamma === 1`, 5_000, "display-original");
     const originalDisplay = await copy(4, "original-display");
-    await window.webContents.executeJavaScript(`(() => { const input=document.querySelector('[aria-label="Video Gamma"]'); const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set; setter.call(input,"1.5"); input.dispatchEvent(new Event("input",{bubbles:true})); })()`, true);
+    await window.webContents.executeJavaScript(`(() => { const input=document.querySelector('[aria-label="화면 보정 감마"]'); const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set; setter.call(input,"1.5"); input.dispatchEvent(new Event("input",{bubbles:true})); })()`, true);
     await waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).gamma === 1.5`, 5_000, "display-restored");
 
-    await window.webContents.executeJavaScript(`document.querySelector('input[value="current-view"]').click(); document.querySelector('[aria-label="화면 맞춤"]').click()`, true);
+    await window.webContents.executeJavaScript(`document.querySelector('input[value="current-view"]').click(); document.querySelector('[title^="화면 맞춤"]').click()`, true);
     const fitCurrent = await copy(4, "current-fit");
-    await window.webContents.executeJavaScript(`document.querySelector('[aria-label="원본 픽셀 100%"]' ).click()`, true);
+    await window.webContents.executeJavaScript(`document.querySelector('.zoom-value-button').click()`, true);
     const actualCurrent = await copy(4, "current-actual");
     await window.webContents.executeJavaScript(`(() => { const plus=document.querySelector('[title="10%p 확대 (+)"]'); for(let i=0;i<10;i+=1)plus.click(); document.querySelector('[aria-label="Pan 도구"]').click(); })()`, true);
     const panGeometry = await window.webContents.executeJavaScript(`(() => { const r=document.querySelector(".viewer-surface").getBoundingClientRect(); return {a:{x:Math.round(r.left+r.width*.5),y:Math.round(r.top+r.height*.65)},b:{x:Math.round(r.left+r.width*.5),y:Math.round(r.top+r.height*.45)}}; })()`, true);
@@ -276,6 +276,6 @@ const clipboardPng = () => clipboard.readImage().toPNG();
     app.quit();
   }
 })().catch((error) => {
-  console.error(error instanceof Error ? error.message : "PHASE4B1_QA_FAILED");
+  console.error(error instanceof Error ? (error.stack ?? error.message) : "PHASE4B1_QA_FAILED");
   app.exit(1);
 });

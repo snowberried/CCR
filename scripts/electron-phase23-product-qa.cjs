@@ -148,9 +148,9 @@ function memorySlope(samples) {
       const [displayed, frameCount] = text.split("/").map((part) => Number(part.trim()));
       return { displayed, frameCount, pixelFormat: document.documentElement.dataset.qaPixelFormat };
     })()`, true);
-    await window.webContents.executeJavaScript(`document.querySelector('button[title="확대 (+)"]')?.click()`, true);
+    await window.webContents.executeJavaScript(`document.querySelector('button[title="10%p 확대 (+)"]')?.click()`, true);
     await window.webContents.executeJavaScript(`(() => {
-      const select=document.querySelector('select[aria-label="Display Preset"]');
+      const select=document.querySelector('select[aria-label="화면 보정 프리셋"]');
       select.value="bone-like"; select.dispatchEvent(new Event("change",{bubbles:true}));
     })()`, true);
     await waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).presetId === "bone-like"`, 5_000, "display-preset");
@@ -239,7 +239,7 @@ function memorySlope(samples) {
 
     await sendQaOpen(window, 0);
     await waitFor(window, `document.querySelector(".status-indicator")?.textContent === "분석 중"`, 10_000, "cancel-probing");
-    await window.webContents.executeJavaScript(`document.querySelector('button[title="디코딩 취소"]').click()`, true);
+    sendKey(window, "ESCAPE");
     await waitFor(window, `document.querySelector(".status-indicator")?.textContent === "취소됨"`, 10_000, "cancelled");
     await new Promise((resolve) => setTimeout(resolve, 500));
     const cancelResult = await window.webContents.executeJavaScript(`({
@@ -255,13 +255,13 @@ function memorySlope(samples) {
       display: JSON.parse(document.documentElement.dataset.qaDisplayState),
       error: document.querySelector(".error-message")?.textContent ?? null,
     })`, true);
-    await window.webContents.executeJavaScript(`(() => { const select=document.querySelector('select[aria-label="Display Preset"]'); select.value="lung-like"; select.dispatchEvent(new Event("change",{bubbles:true})); })()`, true);
+    await window.webContents.executeJavaScript(`(() => { const select=document.querySelector('select[aria-label="화면 보정 프리셋"]'); select.value="lung-like"; select.dispatchEvent(new Event("change",{bubbles:true})); })()`, true);
     await waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).presetId === "lung-like"`, 5_000, "bt709-display");
     const bt709DisplayResult = await window.webContents.executeJavaScript(`({ pixelFormat:document.documentElement.dataset.qaPixelFormat, display:JSON.parse(document.documentElement.dataset.qaDisplayState), drawMs:Number(document.documentElement.dataset.qaDisplayDrawMs), error:document.querySelector(".error-message")?.textContent ?? null })`, true);
 
     await sendQaOpen(window, actualSampleCount + 1);
     await waitFor(window, `document.documentElement.dataset.qaSampleIndex === "${actualSampleCount + 1}" && document.documentElement.dataset.qaPixelFormat === "rgba" && document.querySelector(".status-indicator")?.textContent === "준비"`, 10_000, "full-range-fallback");
-    await window.webContents.executeJavaScript(`(() => { const select=document.querySelector('select[aria-label="Display Preset"]'); select.value="high-contrast"; select.dispatchEvent(new Event("change",{bubbles:true})); })()`, true);
+    await window.webContents.executeJavaScript(`(() => { const select=document.querySelector('select[aria-label="화면 보정 프리셋"]'); select.value="high-contrast"; select.dispatchEvent(new Event("change",{bubbles:true})); })()`, true);
     await waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).presetId === "high-contrast"`, 5_000, "full-range-display");
     const fullRangeDisplayResult = await window.webContents.executeJavaScript(`({ pixelFormat:document.documentElement.dataset.qaPixelFormat, display:JSON.parse(document.documentElement.dataset.qaDisplayState), drawMs:Number(document.documentElement.dataset.qaDisplayDrawMs), error:document.querySelector(".error-message")?.textContent ?? null })`, true);
 

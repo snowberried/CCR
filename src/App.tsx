@@ -3,6 +3,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type SetStateAction,
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -97,6 +98,32 @@ import {
   type PaneStates,
   type ViewerTool,
 } from "./domain/linkedDualView";
+import annotationArrowIcon from "./assets/icons/annotation-arrow.svg";
+import ccrLogoIcon from "./assets/icons/ccr-logo.svg";
+import chevronLeftIcon from "./assets/icons/chevron-left.svg";
+import chevronRightIcon from "./assets/icons/chevron-right.svg";
+import copyIcon from "./assets/icons/copy.svg";
+import dualViewIcon from "./assets/icons/dual-view.svg";
+import ellipseIcon from "./assets/icons/ellipse.svg";
+import firstFrameIcon from "./assets/icons/first-frame.svg";
+import fitIcon from "./assets/icons/fit.svg";
+import folderOpenIcon from "./assets/icons/folder-open.svg";
+import fullscreenIcon from "./assets/icons/fullscreen.svg";
+import inverseIcon from "./assets/icons/inverse.svg";
+import lastFrameIcon from "./assets/icons/last-frame.svg";
+import linkedCrosshairIcon from "./assets/icons/linked-crosshair.svg";
+import minusIcon from "./assets/icons/minus.svg";
+import panIcon from "./assets/icons/pan.svg";
+import plusIcon from "./assets/icons/plus.svg";
+import rectangleIcon from "./assets/icons/rectangle.svg";
+import redoIcon from "./assets/icons/redo.svg";
+import resetIcon from "./assets/icons/reset.svg";
+import savePngIcon from "./assets/icons/save-png.svg";
+import selectIcon from "./assets/icons/select.svg";
+import singleViewIcon from "./assets/icons/single-view.svg";
+import textIcon from "./assets/icons/text.svg";
+import undoIcon from "./assets/icons/undo.svg";
+import zoomIcon from "./assets/icons/zoom.svg";
 
 type ViewerStatus = "idle" | "probing" | "ready" | "decoding" | "cancelled" | "error";
 
@@ -165,6 +192,14 @@ function readableTime(seconds: number | null): string {
   }
   const minutes = Math.floor(seconds / 60);
   return `${String(minutes).padStart(2, "0")}:${(seconds % 60).toFixed(3).padStart(6, "0")}`;
+}
+
+function Icon({ src, className = "" }: { src: string; className?: string }) {
+  return <span
+    className={`ui-icon${className ? ` ${className}` : ""}`}
+    style={{ "--icon-url": `url("${src}")` } as CSSProperties}
+    aria-hidden="true"
+  />;
 }
 
 function formatBytes(bytes: number): string {
@@ -1565,9 +1600,6 @@ export function App() {
     } : undefined;
   };
   const displayActive = !videoDisplayEqual(displayState, originalVideoDisplay());
-  const displayLabel = comparingOriginal
-    ? "원본 비교"
-    : displayActive ? "보정 적용" : "원본";
   const frameAnnotations = annotationsForFrame(annotationSession, frameIndex);
   const selectedAnnotation = annotationSession.annotations.find((annotation) => annotation.id === annotationSession.selectedId) ?? null;
   const exportAvailable = Boolean(metadata && viewTransform && lastFrameRef.current?.descriptor) && isStableExportFrame({
@@ -1591,6 +1623,7 @@ export function App() {
     >
       <header className="topbar">
         <div className="brand-block">
+          <Icon src={ccrLogoIcon} className="brand-mark" />
           <h1>CT Cine Reviewer</h1>
           <span className={`status-indicator status-${status}`}>{STATUS_LABELS[status]}</span>
         </div>
@@ -1601,7 +1634,7 @@ export function App() {
         </div>
         <div className="topbar-actions">
           <div className="zoom-control-group" role="group" aria-label="확대 및 축소">
-            <button type="button" title="10%p 축소 (-)" onClick={() => zoomByStep(-1)} disabled={!metadata}>−</button>
+            <button type="button" title="10%p 축소 (-)" onClick={() => zoomByStep(-1)} disabled={!metadata}><Icon src={minusIcon} /></button>
             <button
               type="button"
               className="zoom-value-button"
@@ -1610,16 +1643,18 @@ export function App() {
               onClick={actualSizeView}
               disabled={!metadata}
             >{formatZoomPercent(viewTransform?.zoom ?? 1)}</button>
-            <button type="button" title="10%p 확대 (+)" onClick={() => zoomByStep(1)} disabled={!metadata}>+</button>
+            <button type="button" title="10%p 확대 (+)" onClick={() => zoomByStep(1)} disabled={!metadata}><Icon src={plusIcon} /></button>
           </div>
           <div className="view-command-group" role="group" aria-label="화면 명령">
-            <button type="button" title="화면 맞춤 (0)" onClick={fitView} disabled={!metadata}>화면 맞춤</button>
+            <button type="button" title="화면 맞춤 (0)" onClick={fitView} disabled={!metadata}>
+              <Icon src={fitIcon} /><span>화면 맞춤</span>
+            </button>
             <button
               type="button"
               aria-label={isFullscreen ? "창 모드" : "전체 화면"}
               title={isFullscreen ? "창 모드 (F)" : "전체 화면 (F)"}
               onClick={toggleFullscreen}
-            >{isFullscreen ? "창 모드" : "전체 화면"}</button>
+            ><Icon src={fullscreenIcon} /><span>{isFullscreen ? "창 모드" : "전체 화면"}</span></button>
           </div>
           <div className="view-mode-control" role="group" aria-label="보기 모드">
             <button
@@ -1629,7 +1664,7 @@ export function App() {
               aria-pressed={!dualView}
               onClick={() => { if (dualView) toggleDualView(); }}
               disabled={!metadata}
-            >단일 보기</button>
+            ><Icon src={singleViewIcon} /><span>단일 보기</span></button>
             <button
               type="button"
               className={dualView ? "is-active" : ""}
@@ -1638,10 +1673,10 @@ export function App() {
               title="동일 프레임을 두 화면에서 독립 보정"
               onClick={() => { if (!dualView) toggleDualView(); }}
               disabled={!metadata}
-            >비교 보기</button>
+            ><Icon src={dualViewIcon} /><span>비교 보기</span></button>
           </div>
           <button className="primary-button" type="button" onClick={openVideo} aria-label="파일 열기">
-            <span aria-hidden="true">📁</span>
+            <Icon src={folderOpenIcon} />
             <span>파일 열기</span>
           </button>
         </div>
@@ -1651,9 +1686,9 @@ export function App() {
         <section className="viewer-workspace">
           <div className="viewer-tool-rail" role="toolbar" aria-label="뷰어 도구" aria-orientation="vertical">
             {([
-              ["pan", "✥", "Pan 도구", "Pan: 좌클릭 드래그로 영상 이동"],
-              ["zoom", "⌕", "Zoom 도구", "Zoom: 좌클릭 후 위/아래 드래그"],
-            ] as const).map(([tool, icon, label, title]) => <button
+              ["pan", panIcon, "이동", "Pan 도구", "Pan: 좌클릭 드래그로 영상 이동"],
+              ["zoom", zoomIcon, "확대", "Zoom 도구", "Zoom: 좌클릭 후 위/아래 드래그"],
+            ] as const).map(([tool, icon, visualLabel, label, title]) => <button
               key={tool}
               type="button"
               className={viewTool === tool ? "is-active" : ""}
@@ -1662,7 +1697,7 @@ export function App() {
               title={title}
               onClick={() => setViewTool(tool)}
               disabled={!metadata}
-            ><span aria-hidden="true">{icon}</span></button>)}
+            ><Icon src={icon} /><span className="tool-label">{visualLabel}</span></button>)}
             <button
               type="button"
               className={`crosshair-tool${dualView && crosshairEnabled ? " is-active" : ""}`}
@@ -1671,15 +1706,15 @@ export function App() {
               title={dualView ? "연결 십자선" : "비교 보기에서 사용할 수 있습니다"}
               onClick={toggleCrosshair}
               disabled={!metadata || !dualView}
-            ><span aria-hidden="true">⌖</span></button>
+            ><Icon src={linkedCrosshairIcon} /><span className="tool-label">십자선</span></button>
             <span className="tool-separator" aria-hidden="true" />
             {([
-              ["select", "↖", "Select 도구", "Select: 주석 선택·이동·크기 조절"],
-              ["arrow", "→", "Arrow 도구", "Arrow: 좌클릭 드래그로 화살표 생성"],
-              ["text", "T", "Text 도구", "Text: 영상 위를 클릭해 한 줄 입력"],
-              ["ellipse", "○", "Ellipse 도구", "Ellipse: 좌클릭 드래그로 타원 생성"],
-              ["rectangle", "▭", "Rectangle 도구", "Rectangle: 좌클릭 드래그로 사각형 생성"],
-            ] as const).map(([tool, icon, label, title]) => <button
+              ["select", selectIcon, "선택", "Select 도구", "Select: 주석 선택·이동·크기 조절"],
+              ["arrow", annotationArrowIcon, "화살표", "Arrow 도구", "Arrow: 좌클릭 드래그로 화살표 생성"],
+              ["text", textIcon, "텍스트", "Text 도구", "Text: 영상 위를 클릭해 한 줄 입력"],
+              ["ellipse", ellipseIcon, "타원", "Ellipse 도구", "Ellipse: 좌클릭 드래그로 타원 생성"],
+              ["rectangle", rectangleIcon, "사각형", "Rectangle 도구", "Rectangle: 좌클릭 드래그로 사각형 생성"],
+            ] as const).map(([tool, icon, visualLabel, label, title]) => <button
               key={tool}
               type="button"
               className={viewTool === tool ? "is-active" : ""}
@@ -1688,7 +1723,7 @@ export function App() {
               title={title}
               onClick={() => setViewTool(tool)}
               disabled={!metadata}
-            ><span aria-hidden="true">{icon}</span></button>)}
+            ><Icon src={icon} /><span className="tool-label">{visualLabel}</span></button>)}
           </div>
           <div className={`viewer-panes${dualView ? " is-dual" : " is-single"}`}>
             {displayedPaneIds.map((paneId) => {
@@ -1734,25 +1769,47 @@ export function App() {
               </section>;
             })}
           </div>
+          <div className="viewer-timeline">
+            <AnnotatedTimeline
+              ref={timelineRef}
+              annotations={annotationSession.annotations}
+              frameIndex={frameIndex}
+              frameCount={metadata?.frameCount ?? 1}
+              disabled={!metadata}
+              onPointerDown={onTimelinePointerDown}
+              onPointerMove={onTimelinePointerMove}
+              onPointerEnd={onTimelinePointerEnd}
+              onPointerCancel={() => cancelPointerGesture()}
+              onMarkerSelect={onTimelineMarkerSelect}
+            />
+            <output className="frame-time-readout" aria-label="현재 시간과 전체 시간">
+              <span>{readableTime(ptsSeconds)}</span>
+              <i aria-hidden="true">/</i>
+              <span>{readableTime(metadata?.durationSeconds ?? null)}</span>
+            </output>
+          </div>
         </section>
 
-        <aside className="inspection-panel">
-          <div className="primary-readout">
-            <span>프레임</span>
-            <strong>{frameDisplay}</strong>
+        <aside className="inspection-panel" aria-label="조정">
+          <div className="side-panel-heading">
+            <strong>조정</strong>
+            <span>선택한 뷰</span>
           </div>
-          <dl className="metadata-list">
-            <div><dt>시간</dt><dd>{readableTime(ptsSeconds)}</dd></div>
-            <div><dt>길이</dt><dd>{readableTime(metadata?.durationSeconds ?? null)}</dd></div>
-            <div><dt>해상도</dt><dd>{metadata ? `${metadata.width} x ${metadata.height}` : "-"}</dd></div>
-            <div><dt>FPS</dt><dd>{metadata?.fps?.toFixed(3) ?? "-"}</dd></div>
-            <div><dt>코덱</dt><dd>{metadata?.codecName?.toUpperCase() ?? "-"}</dd></div>
-          </dl>
 
           <details className="display-panel" open>
             <summary>
               <span>화면 보정 · 뷰 {activePane.toUpperCase()}</span>
-              <small className={displayActive ? "display-active" : ""}>{displayLabel}</small>
+              <button
+                type="button"
+                className={displayActive ? "panel-reset-button display-active" : "panel-reset-button"}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setDisplayState((current) => applyVideoDisplayPreset(current, "original"));
+                }}
+                disabled={!metadata}
+                title="화면 보정 재설정"
+              ><Icon src={resetIcon} /><span>재설정</span></button>
             </summary>
             <p className="display-help" title="MP4 화면 픽셀 보정이며 DICOM HU Window가 아닙니다.">
               MP4 화면 픽셀 보정 · HU Window 아님
@@ -1793,7 +1850,7 @@ export function App() {
               </label>
             ))}
             <div className="display-buttons">
-              <button type="button" onClick={() => setDisplayState(toggleVideoDisplayInvert)} disabled={!metadata} aria-pressed={displayState.invert}>반전</button>
+              <button type="button" onClick={() => setDisplayState(toggleVideoDisplayInvert)} disabled={!metadata} aria-pressed={displayState.invert}><Icon src={inverseIcon} />반전</button>
               <button type="button" onClick={() => setDisplayState((current) => applyVideoDisplayPreset(current, "original"))} disabled={!metadata}>원본</button>
               <button
                 type="button"
@@ -1813,7 +1870,7 @@ export function App() {
               <small>{frameAnnotations.length}개</small>
             </summary>
             <label>
-              <span>Color</span>
+              <span>색상</span>
               <input
                 aria-label="Annotation Color"
                 type="color"
@@ -1823,7 +1880,7 @@ export function App() {
               />
             </label>
             <label>
-              <span>Line width <output>{selectedAnnotation?.style.lineWidth ?? annotationSession.defaults.lineWidth}</output></span>
+              <span>선 두께 <output>{selectedAnnotation?.style.lineWidth ?? annotationSession.defaults.lineWidth}</output></span>
               <input
                 aria-label="Annotation Line Width"
                 type="range"
@@ -1836,7 +1893,7 @@ export function App() {
               />
             </label>
             <label>
-              <span>Font size <output>{selectedAnnotation?.style.fontSize ?? annotationSession.defaults.fontSize}</output></span>
+              <span>글꼴 크기 <output>{selectedAnnotation?.style.fontSize ?? annotationSession.defaults.fontSize}</output></span>
               <input
                 aria-label="Annotation Font Size"
                 type="range"
@@ -1849,8 +1906,8 @@ export function App() {
               />
             </label>
             <div className="annotation-history-buttons">
-              <button type="button" onClick={() => applyHistoryResult(undoAnnotation(annotationSessionRef.current))} disabled={!annotationSession.undoStack.length}>Undo</button>
-              <button type="button" onClick={() => applyHistoryResult(redoAnnotation(annotationSessionRef.current))} disabled={!annotationSession.redoStack.length}>Redo</button>
+              <button type="button" onClick={() => applyHistoryResult(undoAnnotation(annotationSessionRef.current))} disabled={!annotationSession.undoStack.length}><Icon src={undoIcon} />실행 취소</button>
+              <button type="button" onClick={() => applyHistoryResult(redoAnnotation(annotationSessionRef.current))} disabled={!annotationSession.redoStack.length}><Icon src={redoIcon} />다시 실행</button>
             </div>
           </details>
 
@@ -1884,11 +1941,30 @@ export function App() {
             />현재 프레임 주석 포함</label>
             <p className="export-help">전체: 원본 해상도 · 현재 보기: 화면 DPR 적용</p>
             <div className="export-buttons">
-              <button type="button" disabled={!exportAvailable || exportBusy} onClick={() => void exportFrame("save")}>{exportBusy ? "처리 중" : "PNG 저장"}</button>
-              <button type="button" disabled={!exportAvailable || exportBusy} onClick={() => void exportFrame("copy")}>복사</button>
+              <button type="button" disabled={!exportAvailable || exportBusy} onClick={() => void exportFrame("save")}><Icon src={savePngIcon} />{exportBusy ? "처리 중" : "PNG 저장"}</button>
+              <button type="button" disabled={!exportAvailable || exportBusy} onClick={() => void exportFrame("copy")}><Icon src={copyIcon} />복사</button>
             </div>
             <p className="export-result" aria-live="polite">{exportMessage ?? " "}</p>
           </details>
+
+        </aside>
+
+        <aside className="information-panel" aria-label="정보">
+          <div className="side-panel-heading">
+            <strong>정보</strong>
+            <span>영상 · 상태</span>
+          </div>
+          <div className="primary-readout">
+            <span>프레임</span>
+            <strong>{frameDisplay}</strong>
+          </div>
+          <dl className="metadata-list">
+            <div><dt>시간</dt><dd>{readableTime(ptsSeconds)}</dd></div>
+            <div><dt>길이</dt><dd>{readableTime(metadata?.durationSeconds ?? null)}</dd></div>
+            <div><dt>해상도</dt><dd>{metadata ? `${metadata.width} x ${metadata.height}` : "-"}</dd></div>
+            <div><dt>FPS</dt><dd>{metadata?.fps?.toFixed(3) ?? "-"}</dd></div>
+            <div><dt>코덱</dt><dd>{metadata?.codecName?.toUpperCase() ?? "-"}</dd></div>
+          </dl>
 
           <details className="diagnostics" open>
             <summary>진단</summary>
@@ -1908,51 +1984,45 @@ export function App() {
               <div><dt>Zoom</dt><dd>{viewTransform ? `${(viewTransform.zoom * 100).toFixed(0)}%` : "-"}</dd></div>
               <div><dt>View center</dt><dd>{viewTransform ? `${viewTransform.center.x.toFixed(1)}, ${viewTransform.center.y.toFixed(1)}` : "-"}</dd></div>
               <div><dt>View revision</dt><dd>{viewTransform?.revision ?? "-"}</dd></div>
+            </dl>
+          </details>
+          <section className="display-information" aria-label="표시 정보">
+            <h2>표시</h2>
+            <dl>
               <div><dt>Display</dt><dd>{displayState.presetId}</dd></div>
               <div><dt>L / W</dt><dd>{displayState.level.toFixed(2)} / {displayState.width.toFixed(2)}</dd></div>
               <div><dt>Gamma / Sharp</dt><dd>{displayState.gamma.toFixed(2)} / {displayState.sharpAmount.toFixed(2)}</dd></div>
               <div><dt>Display revision</dt><dd>{displayState.revision}</dd></div>
             </dl>
-          </details>
+          </section>
           {error && <p className="error-message">{error}</p>}
         </aside>
       </section>
 
       <footer className="navigation-footer">
-        <AnnotatedTimeline
-          ref={timelineRef}
-          annotations={annotationSession.annotations}
-          frameIndex={frameIndex}
-          frameCount={metadata?.frameCount ?? 1}
-          disabled={!metadata}
-          onPointerDown={onTimelinePointerDown}
-          onPointerMove={onTimelinePointerMove}
-          onPointerEnd={onTimelinePointerEnd}
-          onPointerCancel={() => cancelPointerGesture()}
-          onMarkerSelect={onTimelineMarkerSelect}
-        />
-        <nav className="frame-toolbar" aria-label="프레임 탐색">
-        <button type="button" title="첫 프레임" onClick={() => goToFrame(0)} disabled={!metadata}>|&lt;</button>
-        <button type="button" title="5프레임 이전" onClick={() => goToFrame(desiredFrameRef.current - 5)} disabled={!metadata}>-5</button>
-        <button type="button" title="이전 프레임" onClick={() => goToFrame(desiredFrameRef.current - 1)} disabled={!metadata}>&lt;</button>
-        <div className="frame-input-group">
-          <input
-            aria-label="프레임 번호"
-            type="number"
-            min={1}
-            max={metadata?.frameCount ?? 1}
-            value={frameInput}
-            disabled={!metadata || (metadata.productCache === true && metadata.analysisReady === false)}
-            onChange={(event) => setFrameInput(event.target.value)}
-            onBlur={submitFrameInput}
-            onKeyDown={onFrameInputKeyDown}
-          />
-          <span>/ {metadata?.frameCount.toLocaleString() ?? "-"}</span>
-        </div>
-        <button type="button" title="다음 프레임" onClick={() => goToFrame(desiredFrameRef.current + 1)} disabled={!metadata}>&gt;</button>
-        <button type="button" title="5프레임 다음" onClick={() => goToFrame(desiredFrameRef.current + 5)} disabled={!metadata}>+5</button>
-        <button type="button" title="마지막 프레임" onClick={() => metadata && goToFrame(metadata.frameCount - 1)} disabled={!metadata || (metadata.productCache === true && metadata.analysisReady === false)}>&gt;|</button>
-        <button type="button" title="디코딩 취소" onClick={cancel} disabled={status !== "decoding" && status !== "probing"}>취소</button>
+        <nav className="frame-navigation-bar" aria-label="프레임 탐색">
+          <div className="precision-controls" role="group" aria-label="정밀 프레임 이동">
+            <button className="frame-nav-button is-edge" type="button" aria-label="첫 프레임" title="첫 프레임" onClick={() => goToFrame(0)} disabled={!metadata}><Icon src={firstFrameIcon} /></button>
+            <button className="frame-nav-button is-skip" type="button" aria-label="5프레임 이전" title="5프레임 이전" onClick={() => goToFrame(desiredFrameRef.current - 5)} disabled={!metadata}><Icon src={chevronLeftIcon} /><span>−5</span></button>
+            <button className="frame-nav-button" type="button" aria-label="이전 프레임" title="이전 프레임" onClick={() => goToFrame(desiredFrameRef.current - 1)} disabled={!metadata}><Icon src={chevronLeftIcon} /></button>
+            <div className="frame-input-group">
+              <input
+                aria-label="프레임 번호"
+                type="number"
+                min={1}
+                max={metadata?.frameCount ?? 1}
+                value={frameInput}
+                disabled={!metadata || (metadata.productCache === true && metadata.analysisReady === false)}
+                onChange={(event) => setFrameInput(event.target.value)}
+                onBlur={submitFrameInput}
+                onKeyDown={onFrameInputKeyDown}
+              />
+              <span>/ {metadata?.frameCount.toLocaleString() ?? "-"}</span>
+            </div>
+            <button className="frame-nav-button" type="button" aria-label="다음 프레임" title="다음 프레임" onClick={() => goToFrame(desiredFrameRef.current + 1)} disabled={!metadata}><Icon src={chevronRightIcon} /></button>
+            <button className="frame-nav-button is-skip" type="button" aria-label="5프레임 다음" title="5프레임 다음" onClick={() => goToFrame(desiredFrameRef.current + 5)} disabled={!metadata}><span>+5</span><Icon src={chevronRightIcon} /></button>
+            <button className="frame-nav-button is-edge" type="button" aria-label="마지막 프레임" title="마지막 프레임" onClick={() => metadata && goToFrame(metadata.frameCount - 1)} disabled={!metadata || (metadata.productCache === true && metadata.analysisReady === false)}><Icon src={lastFrameIcon} /></button>
+          </div>
         </nav>
       </footer>
     </main>

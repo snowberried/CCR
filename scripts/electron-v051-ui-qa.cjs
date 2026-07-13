@@ -106,6 +106,11 @@ async function main() {
         crosshairDisabled:crosshair.disabled,
         crosshairTitle:crosshair.title,
         zoomValueCommand:Boolean(document.querySelector('.zoom-value-button[title="원본 픽셀 100%로 복귀"]')),
+        mediaControlCount:document.querySelectorAll('.media-controls').length,
+        hasCancel:[...document.querySelectorAll('button')].some((button)=>button.textContent.trim()==='취소'||button.title==='디코딩 취소'),
+        sideColumns:[...document.querySelectorAll('.inspection-panel,.information-panel')].map((panel)=>panel.getAttribute('aria-label')),
+        frameTimeText:document.querySelector('.frame-time-readout')?.textContent.replace(/\s/g,''),
+        precisionLabels:[...document.querySelectorAll('.precision-controls button')].map((button)=>button.getAttribute('aria-label')),
       };
     })()`, true);
 
@@ -202,16 +207,16 @@ async function main() {
     window.setContentSize(1440, 900);
     await delay(200);
     const desktopLayout = await window.webContents.executeJavaScript(`(() => {
-      const root=document.documentElement, inspector=document.querySelector(".inspection-panel");
-      return {width:root.clientWidth,scrollWidth:root.scrollWidth,inspectorWidth:inspector.getBoundingClientRect().width,metadataVisible:getComputedStyle(document.querySelector(".source-summary")).display!=="none"};
+      const root=document.documentElement, inspector=document.querySelector(".inspection-panel"), info=document.querySelector(".information-panel");
+      return {width:root.clientWidth,scrollWidth:root.scrollWidth,inspectorWidth:inspector.getBoundingClientRect().width,infoWidth:info.getBoundingClientRect().width,separate:info.getBoundingClientRect().left>inspector.getBoundingClientRect().right,metadataVisible:getComputedStyle(document.querySelector(".source-summary")).display!=="none"};
     })()`, true);
     window.setContentSize(720, 600);
     await delay(200);
     const compactLayout = await window.webContents.executeJavaScript(`(() => {
       const root=document.documentElement, labels=["파일 열기","단일 보기","비교 보기"];
       const controls=labels.map((label)=>{const button=document.querySelector('[aria-label="'+label+'"]'),r=button.getBoundingClientRect();return{label,left:r.left,right:r.right,top:r.top,bottom:r.bottom,visible:getComputedStyle(button).display!=="none"}});
-      const inspector=document.querySelector(".inspection-panel"), topbar=document.querySelector(".topbar").getBoundingClientRect();
-      return {width:root.clientWidth,scrollWidth:root.scrollWidth,controls,inspectorWidth:inspector.getBoundingClientRect().width,topbarHeight:topbar.height,dpr:devicePixelRatio};
+      const inspector=document.querySelector(".inspection-panel"), info=document.querySelector(".information-panel"), topbar=document.querySelector(".topbar").getBoundingClientRect();
+      return {width:root.clientWidth,scrollWidth:root.scrollWidth,controls,inspectorWidth:inspector.getBoundingClientRect().width,infoWidth:info.getBoundingClientRect().width,separate:info.getBoundingClientRect().left>inspector.getBoundingClientRect().right,topbarHeight:topbar.height,dpr:devicePixelRatio};
     })()`, true);
 
     result = {
@@ -248,6 +253,11 @@ async function main() {
       && result.initialUi.crosshairDisabled
       && result.initialUi.crosshairTitle === "비교 보기에서 사용할 수 있습니다"
       && result.initialUi.zoomValueCommand
+      && result.initialUi.mediaControlCount === 0
+      && !result.initialUi.hasCancel
+      && JSON.stringify(result.initialUi.sideColumns) === JSON.stringify(["조정", "정보"])
+      && result.initialUi.frameTimeText === "--:--:--/--:--:--"
+      && JSON.stringify(result.initialUi.precisionLabels) === JSON.stringify(["첫 프레임", "5프레임 이전", "5프레임 다음", "마지막 프레임"])
       && Object.values(result.shortcuts).every(Boolean)
       && result.crosshairPolicy.defaultOn.dual
       && result.crosshairPolicy.defaultOn.crosshairPressed === "true"
@@ -258,10 +268,10 @@ async function main() {
       && result.crosshairPolicy.final.tool === "pan"
       && result.crosshairPolicy.final.crosshairPressed === "true"
       && result.desktopLayout.width === result.desktopLayout.scrollWidth
-      && result.desktopLayout.inspectorWidth > 0
+      && result.desktopLayout.inspectorWidth > 0 && result.desktopLayout.infoWidth > 0 && result.desktopLayout.separate
       && result.desktopLayout.metadataVisible
       && result.compactLayout.width === result.compactLayout.scrollWidth
-      && result.compactLayout.inspectorWidth > 0
+      && result.compactLayout.inspectorWidth > 0 && result.compactLayout.infoWidth > 0 && result.compactLayout.separate
       && result.compactLayout.topbarHeight <= 44
       && result.compactLayout.controls.every((control) => control.visible && control.left >= 0 && control.right <= result.compactLayout.width);
 
