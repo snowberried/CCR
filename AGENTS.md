@@ -24,10 +24,12 @@
 3. 검증: 가능한 명령, 테스트, 파일 확인으로 결과를 확인한다.
 4. 요약: 변경 내용과 남은 위험을 짧게 보고한다.
 
-## 현재 단계: Phase 5 Linked Dual View & Crosshair 통합·검증
+## 현재 단계: v0.5.1 UI Polish — Navigation Hierarchy & Korean Labels
 
 - Phase 0 기획은 완료됐다.
-- `HANDOFF_PHASE5.md`와 `docs/19_PHASE5_LINKED_DUAL_VIEW.md`를 먼저 읽고 비교 뷰·crosshair와 성능 검증 상태를 확인한다.
+- 기능 기준 커밋 `ae70761a098ce69cc47228881d3be08c348f0fd1`의 decoder/cache/navigation, View Transform, annotation, export와 crosshair 의미는 동결한다.
+- `HANDOFF_PHASE5.md`, `docs/19_PHASE5_LINKED_DUAL_VIEW.md`와 `docs/20_V051_UI_POLISH.md`를 먼저 읽고 기능 동결과 UI 배치 계약을 확인한다.
+- v0.5.1은 Electron 기본 메뉴 제거, navigation hierarchy와 한국어 표시 명칭만 정리하며 새 기능을 추가하지 않는다.
 - Phase 1 기술 스파이크와 Phase 2 최소 실사용 뷰어 범위는 승인됐고 완료됐다.
 - 파일 열기, Canvas 표시, 정확한 프레임 탐색, 상태·진단 표시와 방향성 RAM cache를 구현했다.
 - FFmpeg는 Phase 1B에서 승인된 BtbN Windows x64 LGPL shared 고정 자산만 사용하며 `scripts/setup-ffmpeg.ps1`의 checksum 검증을 거쳐 로컬 배치한다.

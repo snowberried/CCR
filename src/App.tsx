@@ -1566,8 +1566,8 @@ export function App() {
   };
   const displayActive = !videoDisplayEqual(displayState, originalVideoDisplay());
   const displayLabel = comparingOriginal
-    ? "Original 비교"
-    : displayActive ? "보정 적용" : "Original";
+    ? "원본 비교"
+    : displayActive ? "보정 적용" : "원본";
   const frameAnnotations = annotationsForFrame(annotationSession, frameIndex);
   const selectedAnnotation = annotationSession.annotations.find((annotation) => annotation.id === annotationSession.selectedId) ?? null;
   const exportAvailable = Boolean(metadata && viewTransform && lastFrameRef.current?.descriptor) && isStableExportFrame({
@@ -1600,16 +1600,50 @@ export function App() {
             : "영상 없음"}
         </div>
         <div className="topbar-actions">
-          <div className="view-toolbar" aria-label="화면 조작">
+          <div className="zoom-control-group" role="group" aria-label="확대 및 축소">
             <button type="button" title="10%p 축소 (-)" onClick={() => zoomByStep(-1)} disabled={!metadata}>−</button>
-            <output aria-label="현재 확대율">{formatZoomPercent(viewTransform?.zoom ?? 1)}</output>
+            <button
+              type="button"
+              className="zoom-value-button"
+              aria-label={`현재 확대율 ${formatZoomPercent(viewTransform?.zoom ?? 1)} · 원본 픽셀 100%로 복귀`}
+              title="원본 픽셀 100%로 복귀"
+              onClick={actualSizeView}
+              disabled={!metadata}
+            >{formatZoomPercent(viewTransform?.zoom ?? 1)}</button>
             <button type="button" title="10%p 확대 (+)" onClick={() => zoomByStep(1)} disabled={!metadata}>+</button>
-            <button type="button" title="화면 맞춤 (0)" onClick={fitView} disabled={!metadata}>Fit</button>
-            <button type="button" title="전체화면 (F)" onClick={toggleFullscreen}>{isFullscreen ? "창" : "전체"}</button>
-            <button type="button" className={dualView ? "is-active" : ""} aria-pressed={dualView} title="동일 프레임을 두 화면에서 독립 보정" onClick={toggleDualView} disabled={!metadata}>비교 뷰</button>
-            {dualView && <button type="button" className={crosshairEnabled ? "is-active" : ""} aria-pressed={crosshairEnabled} title="Image pixel 연동 crosshair" onClick={toggleCrosshair}>십자선</button>}
           </div>
-          <button className="primary-button" type="button" onClick={openVideo}>열기</button>
+          <div className="view-command-group" role="group" aria-label="화면 명령">
+            <button type="button" title="화면 맞춤 (0)" onClick={fitView} disabled={!metadata}>화면 맞춤</button>
+            <button
+              type="button"
+              aria-label={isFullscreen ? "창 모드" : "전체 화면"}
+              title={isFullscreen ? "창 모드 (F)" : "전체 화면 (F)"}
+              onClick={toggleFullscreen}
+            >{isFullscreen ? "창 모드" : "전체 화면"}</button>
+          </div>
+          <div className="view-mode-control" role="group" aria-label="보기 모드">
+            <button
+              type="button"
+              className={!dualView ? "is-active" : ""}
+              aria-label="단일 보기"
+              aria-pressed={!dualView}
+              onClick={() => { if (dualView) toggleDualView(); }}
+              disabled={!metadata}
+            >단일 보기</button>
+            <button
+              type="button"
+              className={dualView ? "is-active" : ""}
+              aria-label="비교 보기"
+              aria-pressed={dualView}
+              title="동일 프레임을 두 화면에서 독립 보정"
+              onClick={() => { if (!dualView) toggleDualView(); }}
+              disabled={!metadata}
+            >비교 보기</button>
+          </div>
+          <button className="primary-button" type="button" onClick={openVideo} aria-label="파일 열기">
+            <span aria-hidden="true">📁</span>
+            <span>파일 열기</span>
+          </button>
         </div>
       </header>
 
@@ -1619,6 +1653,27 @@ export function App() {
             {([
               ["pan", "✥", "Pan 도구", "Pan: 좌클릭 드래그로 영상 이동"],
               ["zoom", "⌕", "Zoom 도구", "Zoom: 좌클릭 후 위/아래 드래그"],
+            ] as const).map(([tool, icon, label, title]) => <button
+              key={tool}
+              type="button"
+              className={viewTool === tool ? "is-active" : ""}
+              aria-label={label}
+              aria-pressed={viewTool === tool}
+              title={title}
+              onClick={() => setViewTool(tool)}
+              disabled={!metadata}
+            ><span aria-hidden="true">{icon}</span></button>)}
+            <button
+              type="button"
+              className={`crosshair-tool${dualView && crosshairEnabled ? " is-active" : ""}`}
+              aria-label="연결 십자선"
+              aria-pressed={dualView && crosshairEnabled}
+              title={dualView ? "연결 십자선" : "비교 보기에서 사용할 수 있습니다"}
+              onClick={toggleCrosshair}
+              disabled={!metadata || !dualView}
+            ><span aria-hidden="true">⌖</span></button>
+            <span className="tool-separator" aria-hidden="true" />
+            {([
               ["select", "↖", "Select 도구", "Select: 주석 선택·이동·크기 조절"],
               ["arrow", "→", "Arrow 도구", "Arrow: 좌클릭 드래그로 화살표 생성"],
               ["text", "T", "Text 도구", "Text: 영상 위를 클릭해 한 줄 입력"],
@@ -1634,8 +1689,6 @@ export function App() {
               onClick={() => setViewTool(tool)}
               disabled={!metadata}
             ><span aria-hidden="true">{icon}</span></button>)}
-            <button type="button" aria-label="화면 맞춤" title="Fit: 화면 맞춤" onClick={fitView} disabled={!metadata}>Fit</button>
-            <button type="button" aria-label="원본 픽셀 100%" title="100%: 원본 픽셀 1:1" onClick={actualSizeView} disabled={!metadata}>100%</button>
           </div>
           <div className={`viewer-panes${dualView ? " is-dual" : " is-single"}`}>
             {displayedPaneIds.map((paneId) => {
@@ -1656,9 +1709,9 @@ export function App() {
                 onLostPointerCapture={() => { hideCrosshairs(); if (activePointerRef.current) cancelPointerGesture(); }}
                 onDoubleClick={(event) => onViewerDoubleClick(paneId, event)}
                 onContextMenu={(event) => event.preventDefault()}
-                aria-label={dualView ? `View ${paneId.toUpperCase()}` : "CT cine frame"}
+                aria-label={dualView ? `뷰 ${paneId.toUpperCase()}` : "CT cine frame"}
               >
-                {dualView && <span className="pane-label">View {paneId.toUpperCase()}</span>}
+                {dualView && <span className="pane-label">뷰 {paneId.toUpperCase()}</span>}
                 <canvas
                   ref={(element) => { canvasRefs.current[paneId] = element; }}
                   className={metadata ? "frame-canvas" : "frame-canvas empty"}
@@ -1698,16 +1751,16 @@ export function App() {
 
           <details className="display-panel" open>
             <summary>
-              <span>Video Display{dualView ? ` · View ${activePane.toUpperCase()}` : ""}</span>
+              <span>화면 보정 · 뷰 {activePane.toUpperCase()}</span>
               <small className={displayActive ? "display-active" : ""}>{displayLabel}</small>
             </summary>
             <p className="display-help" title="MP4 화면 픽셀 보정이며 DICOM HU Window가 아닙니다.">
               MP4 화면 픽셀 보정 · HU Window 아님
             </p>
             <label>
-              <span>Preset</span>
+              <span>프리셋</span>
               <select
-                aria-label="Display Preset"
+                aria-label="화면 보정 프리셋"
                 value={displayState.presetId}
                 disabled={!metadata}
                 onChange={(event) => {
@@ -1715,20 +1768,20 @@ export function App() {
                   if (presetId !== "custom") setDisplayState((current) => applyVideoDisplayPreset(current, presetId));
                 }}
               >
-                {VIDEO_DISPLAY_PRESETS.map((preset) => <option key={preset.presetId} value={preset.presetId}>{preset.label}</option>)}
+                {VIDEO_DISPLAY_PRESETS.map((preset) => <option key={preset.presetId} value={preset.presetId}>{preset.presetId === "original" ? "원본" : preset.label}</option>)}
                 <option value="custom" disabled>Custom</option>
               </select>
             </label>
             {([
-              ["level", "Level", 0, 1, 0.01],
-              ["width", "Width", 0.02, 2, 0.01],
-              ["gamma", "Gamma", 0.25, 4, 0.05],
-              ["sharpAmount", "Sharp", 0, 1, 0.05],
+              ["level", "레벨", 0, 1, 0.01],
+              ["width", "폭", 0.02, 2, 0.01],
+              ["gamma", "감마", 0.25, 4, 0.05],
+              ["sharpAmount", "선명도", 0, 1, 0.05],
             ] as const).map(([key, label, min, max, step]) => (
               <label key={key}>
                 <span>{label}<output>{displayState[key].toFixed(2)}</output></span>
                 <input
-                  aria-label={`Video ${label}`}
+                  aria-label={`화면 보정 ${label}`}
                   type="range"
                   min={min}
                   max={max}
@@ -1740,8 +1793,8 @@ export function App() {
               </label>
             ))}
             <div className="display-buttons">
-              <button type="button" onClick={() => setDisplayState(toggleVideoDisplayInvert)} disabled={!metadata} aria-pressed={displayState.invert}>Inverse</button>
-              <button type="button" onClick={() => setDisplayState((current) => applyVideoDisplayPreset(current, "original"))} disabled={!metadata}>Original</button>
+              <button type="button" onClick={() => setDisplayState(toggleVideoDisplayInvert)} disabled={!metadata} aria-pressed={displayState.invert}>반전</button>
+              <button type="button" onClick={() => setDisplayState((current) => applyVideoDisplayPreset(current, "original"))} disabled={!metadata}>원본</button>
               <button
                 type="button"
                 className={comparingOriginal ? "is-comparing" : ""}
@@ -1756,7 +1809,7 @@ export function App() {
 
           <details className="annotation-panel" open>
             <summary>
-              <span>Annotation</span>
+              <span>주석</span>
               <small>{frameAnnotations.length}개</small>
             </summary>
             <label>
@@ -1851,7 +1904,7 @@ export function App() {
               <div><dt>요청</dt><dd>{requestMs === null ? "-" : `${requestMs.toFixed(1)} ms`}</dd></div>
               <div><dt>Probe</dt><dd>{metadata ? `${metadata.probeMs.toFixed(1)} ms` : "-"}</dd></div>
               <div><dt>세션 / 세대</dt><dd>{diagnostics ? `${diagnostics.session} / ${diagnostics.generation}` : "-"}</dd></div>
-              <div><dt>비교 뷰</dt><dd>{dualView ? `ON · View ${activePane.toUpperCase()}` : "OFF"}</dd></div>
+              <div><dt>비교 보기</dt><dd>{dualView ? `ON · 뷰 ${activePane.toUpperCase()}` : "OFF"}</dd></div>
               <div><dt>Zoom</dt><dd>{viewTransform ? `${(viewTransform.zoom * 100).toFixed(0)}%` : "-"}</dd></div>
               <div><dt>View center</dt><dd>{viewTransform ? `${viewTransform.center.x.toFixed(1)}, ${viewTransform.center.y.toFixed(1)}` : "-"}</dd></div>
               <div><dt>View revision</dt><dd>{viewTransform?.revision ?? "-"}</dd></div>

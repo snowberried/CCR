@@ -163,7 +163,7 @@ const paneFrameReady = (frameIndex) => `(() => { const q=JSON.parse(document.doc
     await waitFor(window, `document.querySelector('[aria-label="프레임 번호"]').value === "1"`, 10_000, "home");
 
     const singleMemory = processMemory();
-    await window.webContents.executeJavaScript(`document.querySelector('[title*="동일 프레임"]').click()`, true);
+    await window.webContents.executeJavaScript(`document.querySelector('[aria-label="비교 보기"]').click()`, true);
     await waitFor(window, `document.querySelectorAll(".viewer-pane").length===2 && document.documentElement.dataset.qaDualView==="true"`, 5_000, "dual-on");
     const initialFrames = await waitFor(window, paneFrameReady(0), 5_000, "initial-sync");
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -178,7 +178,7 @@ const paneFrameReady = (frameIndex) => `(() => { const q=JSON.parse(document.doc
 
     click(window, paneRects[0].center);
     await waitFor(window, `document.documentElement.dataset.qaActivePane === "a"`, 5_000, "active-a");
-    await window.webContents.executeJavaScript(`(() => { const input=document.querySelector('[aria-label="Video Gamma"]'); const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set; setter.call(input,"1.5"); input.dispatchEvent(new Event("input",{bubbles:true})); })()`, true);
+    await window.webContents.executeJavaScript(`(() => { const input=document.querySelector('[aria-label="화면 보정 감마"]'); const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set; setter.call(input,"1.5"); input.dispatchEvent(new Event("input",{bubbles:true})); })()`, true);
     const aDisplay = await waitFor(window, `(() => { const s=JSON.parse(document.documentElement.dataset.qaPaneStates); return s.a.display.gamma===1.5 && s.b.display.gamma===1?s:null; })()`, 5_000, "a-display");
 
     click(window, paneRects[1].center);
@@ -287,14 +287,14 @@ const paneFrameReady = (frameIndex) => `(() => { const q=JSON.parse(document.doc
     }
 
     const beforeToggle = await window.webContents.executeJavaScript(`JSON.parse(document.documentElement.dataset.qaPaneStates)`, true);
-    await window.webContents.executeJavaScript(`document.querySelector('[title*="동일 프레임"]').click()`, true);
+    await window.webContents.executeJavaScript(`document.querySelector('[aria-label="단일 보기"]').click()`, true);
     await waitFor(window, `document.querySelectorAll(".viewer-pane").length===1`, 5_000, "dual-off");
-    await window.webContents.executeJavaScript(`document.querySelector('[title*="동일 프레임"]').click()`, true);
+    await window.webContents.executeJavaScript(`document.querySelector('[aria-label="비교 보기"]').click()`, true);
     await waitFor(window, `document.querySelectorAll(".viewer-pane").length===2`, 5_000, "dual-restore");
     const afterToggle = await window.webContents.executeJavaScript(`JSON.parse(document.documentElement.dataset.qaPaneStates)`, true);
 
     const desktop = await window.webContents.executeJavaScript(`({ width:document.documentElement.clientWidth, scrollWidth:document.documentElement.scrollWidth, paneWidths:[...document.querySelectorAll(".viewer-pane")].map((pane)=>pane.getBoundingClientRect().width) })`, true);
-    await window.webContents.executeJavaScript(`document.querySelector('button[title="전체화면 (F)"]').click()`, true);
+    await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="전체 화면"]').click()`, true);
     await waitForMain(() => window.isFullScreen(), 5_000, "fullscreen-enter");
     const fullscreenPoint = await window.webContents.executeJavaScript(`(() => { const r=document.querySelectorAll(".viewer-pane")[0].getBoundingClientRect(); return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}; })()`, true);
     window.webContents.sendInputEvent({ type: "mouseMove", ...fullscreenPoint });

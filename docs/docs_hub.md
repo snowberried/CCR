@@ -35,6 +35,7 @@
 | Phase 4A Frame Annotation MVP | `17_PHASE4A_FRAME_ANNOTATION.md` | image pixel 주석, Undo/Redo, annotated timeline과 렌더링 회귀 |
 | Phase 4B-1 Frame Export & Clipboard | `18_PHASE4B1_FRAME_EXPORT.md` | displayed-frame snapshot, 전체/현재 보기 PNG와 OS clipboard |
 | Phase 5 Linked Dual View & Crosshair | `19_PHASE5_LINKED_DUAL_VIEW.md` | 동일 frame A/B, pane별 상태, image-space crosshair와 성능 QA |
+| v0.5.1 UI Polish | `20_V051_UI_POLISH.md` | Electron 메뉴 제거, 전역 명령 계층, 한국어 label과 반응형 QA |
 | Phase 2.2 Handoff | `../HANDOFF_PHASE2_2.md` | 최종 검증 상태와 제품 통합 전 승인 사항 |
 | Phase 2.3 Handoff | `../HANDOFF_PHASE2_3.md` | 제품 통합 최종 상태와 Phase 3 진입 조건 |
 | Phase 3A Handoff | `../HANDOFF_PHASE3A.md` | View Transform 최종 상태와 Phase 3B 진입 조건 |
@@ -59,6 +60,7 @@
 - Phase 4A 세션 전용 주석과 annotated timeline을 구현하고 WebGL/RGBA·cached navigation 회귀를 완료했다.
 - Phase 4B-1 displayed-frame PNG 저장과 clipboard 복사를 구현하고 양 renderer·privacy 회귀를 완료했다.
 - Phase 5에서 같은 frame/pixels를 공유하는 View A/B 비교 뷰와 image-space linked crosshair를 구현했다.
+- v0.5.1에서 기능 의미를 유지한 채 Electron 기본 메뉴, toolbar 계층과 한국어 표시 명칭을 정리했다.
 - 사용자 승인 전 자동 재생, 프로젝트 저장, 마스크와 DICOM/PACS를 시작하지 않는다.
 
 ## 갱신 규칙
