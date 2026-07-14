@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 contextBridge.exposeInMainWorld("ccr", {
   getRuntimeStatus: () => ipcRenderer.invoke("runtime:getStatus"),
+  checkForUpdates: () => ipcRenderer.invoke("update:check"),
   getFullscreen: () => ipcRenderer.invoke("window:getFullscreen"),
   setFullscreen: (value: boolean) => ipcRenderer.invoke("window:setFullscreen", value),
   toggleFullscreen: () => ipcRenderer.invoke("window:toggleFullscreen"),

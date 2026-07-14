@@ -1,6 +1,6 @@
 {
   "name": "ct-cine-reviewer",
-  "version": "0.5.2",
+  "version": "0.5.4",
   "private": true,
   "author": "snowberried",
   "description": "Local CT cine MP4 frame review viewer.",
@@ -94,6 +94,7 @@
       }
     ],
     "win": {
+      "icon": "build/app.ico",
       "target": [
         {
           "target": "nsis",
@@ -105,6 +106,9 @@
       "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
+      "include": "build/installer.nsh",
+      "installerIcon": "build/app.ico",
+      "uninstallerIcon": "build/app.ico",
       "oneClick": false,
       "perMachine": false,
       "allowElevation": false,

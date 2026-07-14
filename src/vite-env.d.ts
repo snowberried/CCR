@@ -114,6 +114,11 @@ interface Window {
       decoderMode: "i420-cache" | "rgba-rollback";
       ffmpegConfigured: boolean;
     }>;
+    checkForUpdates: () => Promise<{
+      currentVersion: string;
+      latestVersion: string;
+      status: "current" | "available" | "ahead";
+    }>;
     getFullscreen: () => Promise<boolean>;
     setFullscreen: (value: boolean) => Promise<boolean>;
     toggleFullscreen: () => Promise<boolean>;

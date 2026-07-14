@@ -8,6 +8,7 @@ import { registerCacheFrameIpc, shutdownCacheFrameIpcResources } from "./cache/c
 import { resolveFfmpegRuntimePaths } from "./runtimePaths.js";
 import { attachFullscreenEvents, registerFullscreenIpc } from "./fullscreenIpc.js";
 import { registerExportIpc } from "./exportIpc.js";
+import { registerUpdateIpc } from "./updateIpc.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -55,6 +56,7 @@ ipcMain.handle("runtime:getStatus", () => {
 
 registerFullscreenIpc();
 registerExportIpc();
+registerUpdateIpc();
 
 if (forceRgba) registerFrameIpc();
 else registerCacheFrameIpc();

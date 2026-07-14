@@ -156,3 +156,31 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ffmpeg.p
 
 - `src/App.tsx`
 - `docs/13_PHASE2_3_PRODUCT_CACHE_INTEGRATION.md`
+
+## 2026-07-14 NSIS 3.0.4.1에서 `!pragma codepage` 경고로 패키징 실패
+
+상태: 검증 완료
+
+### 증상
+
+- `build/installer.nsh`를 추가한 뒤 `npm run package:win`이 `warning 6100: Unknown pragma`로 실패했다.
+- electron-builder 기본값인 `warningsAsErrors` 때문에 경고가 패키징 오류로 처리됐다.
+
+### 원인
+
+번들된 NSIS 3.0.4.1은 `!pragma codepage 65001`을 지원하지 않았다. electron-builder 로그에서는 입력 스크립트가 이미 `UTF8`로 처리되고 있었다.
+
+### 해결 절차
+
+- `build/installer.nsh`에서 지원되지 않는 codepage pragma만 제거한다.
+- 한글 `MUI_WELCOMEPAGE_TEXT`와 `customWelcomePage`는 유지한다.
+
+### 검증 방법
+
+- `npm run package:win`이 NSIS installer와 blockmap 생성을 완료하는지 확인한다.
+- `npm run verify:package`에서 unpacked 파일 수, privacy inspection과 SHA-256을 확인한다.
+
+### 관련 변경
+
+- `build/installer.nsh`
+- `package.json`

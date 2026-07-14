@@ -125,6 +125,7 @@ import singleViewIcon from "./assets/icons/single-view.svg";
 import textIcon from "./assets/icons/text.svg";
 import undoIcon from "./assets/icons/undo.svg";
 import zoomIcon from "./assets/icons/zoom.svg";
+import packageMetadata from "../package.json";
 
 const paneRegionLabel = (paneId: PaneId) => paneId === "a" ? "왼쪽 영역" : "오른쪽 영역";
 
@@ -278,6 +279,9 @@ export function App() {
   const [exportBusy, setExportBusy] = useState(false);
   const [exportMessage, setExportMessage] = useState<string | null>(null);
   const [rightPanelTab, setRightPanelTab] = useState<"adjustment" | "information">("adjustment");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
 
   const activePaneState = paneStates[activePane];
   const viewTransform = activePaneState.viewTransform;
@@ -1282,7 +1286,10 @@ export function App() {
       const editing = isTextEntryElement(event.target);
       if (event.key === "Escape" && !editing) {
         hideCrosshairs();
-        if (originalHoldPaneRef.current) {
+        if (settingsOpen) {
+          event.preventDefault();
+          setSettingsOpen(false);
+        } else if (originalHoldPaneRef.current) {
           event.preventDefault();
           releaseOriginalHold();
         } else if (activePointerRef.current) {
@@ -1405,7 +1412,7 @@ export function App() {
       window.removeEventListener("blur", onWindowBlur);
       window.removeEventListener("pointerup", onWindowPointerUp);
     };
-  }, [beginOriginalHold, cancel, cancelPointerGesture, exitFullscreen, finishPointerGesture, fitView, goToFrame, hideCrosshairs, isFullscreen, metadata, openVideo, pump, releaseOriginalHold, setAnnotationSession, toggleFullscreen, zoomByStep]);
+  }, [beginOriginalHold, cancel, cancelPointerGesture, exitFullscreen, finishPointerGesture, fitView, goToFrame, hideCrosshairs, isFullscreen, metadata, openVideo, pump, releaseOriginalHold, setAnnotationSession, settingsOpen, toggleFullscreen, zoomByStep]);
 
   useEffect(() => {
     const paneIds: PaneId[] = dualView ? ["a", "b"] : [activePane];
@@ -1595,6 +1602,31 @@ export function App() {
     }
   }, [exportBusy, exportMode, includeExportAnnotations, metadata, status, viewTransform]);
 
+  const checkForUpdates = async () => {
+    if (updateBusy) return;
+    if (!window.ccr?.checkForUpdates) {
+      setUpdateMessage("업데이트 확인은 설치된 앱에서 사용할 수 있습니다.");
+      return;
+    }
+
+    setUpdateBusy(true);
+    setUpdateMessage(null);
+    try {
+      const result = await window.ccr.checkForUpdates();
+      if (result.status === "available") {
+        setUpdateMessage(`새 버전 ${result.latestVersion}을 사용할 수 있습니다. · 현재 ${result.currentVersion}`);
+      } else if (result.status === "ahead") {
+        setUpdateMessage(`현재 ${result.currentVersion} · 공개 최신 ${result.latestVersion}보다 앞선 개발 버전입니다.`);
+      } else {
+        setUpdateMessage(`최신 버전 ${result.currentVersion}을 사용 중입니다.`);
+      }
+    } catch {
+      setUpdateMessage("업데이트를 확인하지 못했습니다. 인터넷 연결을 확인하세요.");
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
   const frameDisplay = metadata
     ? `${internalToDisplayFrame(frameIndex).toLocaleString()} / ${metadata.frameCount.toLocaleString()}`
     : "-";
@@ -1635,6 +1667,7 @@ export function App() {
         <div className="brand-block">
           <Icon src={ccrLogoIcon} className="brand-mark" />
           <h1>CT Cine Reviewer</h1>
+          <span className="brand-version">ver. {packageMetadata.version}</span>
           <span className={`status-indicator status-${status}`}>{STATUS_LABELS[status]}</span>
         </div>
         <div className="source-summary">
@@ -2022,13 +2055,41 @@ export function App() {
         </aside>
       </section>
 
+      {settingsOpen && (
+        <div
+          className="settings-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSettingsOpen(false);
+          }}
+        >
+          <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+            <header className="settings-dialog-header">
+              <h2 id="settings-title">설정</h2>
+              <button type="button" aria-label="설정 닫기" onClick={() => setSettingsOpen(false)}>×</button>
+            </header>
+            <div className="settings-dialog-content">
+              <div className="settings-row">
+                <div>
+                  <strong>최신 업데이트 확인</strong>
+                  <p>GitHub에서 공개된 최신 버전을 수동으로 확인합니다.</p>
+                </div>
+                <button type="button" onClick={() => void checkForUpdates()} disabled={updateBusy}>
+                  {updateBusy ? "확인 중…" : "확인"}
+                </button>
+              </div>
+              {updateMessage && <p className="update-result" role="status">{updateMessage}</p>}
+            </div>
+          </section>
+        </div>
+      )}
+
       <footer className="navigation-footer">
         <button
-          className={`footer-settings-button${rightPanelTab === "adjustment" ? " is-active" : ""}`}
+          className={`footer-settings-button${settingsOpen ? " is-active" : ""}`}
           type="button"
-          aria-label="조정 설정 열기"
-          aria-pressed={rightPanelTab === "adjustment"}
-          onClick={() => setRightPanelTab("adjustment")}
+          aria-label="설정 열기"
+          aria-pressed={settingsOpen}
+          onClick={() => setSettingsOpen(true)}
         ><Icon src={settingsIcon} /><span>설정</span></button>
         <span className="footer-section-divider" aria-hidden="true" />
         <nav className="frame-navigation-bar" aria-label="프레임 탐색">
