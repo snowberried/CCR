@@ -48,12 +48,10 @@ import { frameIndexFromTimelinePosition, nearestAnnotatedFrame, type TimelineMar
 import {
   beginPan,
   beginZoomDrag,
-  fullscreenShortcut,
   movePan,
   viewWheelIntent,
   WheelZoomAccumulator,
   zoomForVerticalDrag,
-  zoomShortcut,
   type PanGesture,
   type ZoomDragGesture,
 } from "./domain/viewInteraction";
@@ -66,7 +64,6 @@ import {
   toggleVideoDisplayInvert,
   updateVideoDisplay,
   videoDisplayEqual,
-  videoDisplayShortcut,
   type DisplayDragGesture,
   type VideoDisplayState,
 } from "./domain/videoDisplay";
@@ -76,14 +73,30 @@ import {
   clampFrameIndex,
   displayToInternalFrame,
   internalToDisplayFrame,
-  isOpenVideoShortcut,
   isTextEntryElement,
-  navigationTargetForKey,
+  navigationTargetForAction,
 } from "./ui/frameNavigation";
+import {
+  FAST_FRAME_STEP_PRESETS,
+  isFastFrameStepPreset,
+  loadFastFrameStep,
+  parseFastFrameStep,
+  saveFastFrameStep,
+  type FastFrameStepStorage,
+} from "./ui/fastFrameStep";
+import {
+  formatShortcutBinding,
+  loadShortcutPreferences,
+  matchShortcutAction,
+  saveShortcutPreferences,
+  type ShortcutPreferences,
+  type ShortcutStorage,
+} from "./ui/shortcuts";
 import { releaseCanvas } from "./ui/viewerGeometry";
 import { I420WebglRenderer } from "./ui/I420WebglRenderer";
 import { AnnotationOverlay, type TextEditorState } from "./ui/AnnotationOverlay";
 import { AnnotatedTimeline } from "./ui/AnnotatedTimeline";
+import { ShortcutSettingsDialog } from "./ui/ShortcutSettingsDialog";
 import { defaultPngFileName, isStableExportFrame, type FrameExportMode } from "./domain/frameExport";
 import { canvasToPngBytes, captureDisplayedFrameCanvas, renderFrameExport } from "./ui/frameExport";
 import {
@@ -133,6 +146,7 @@ type SessionMetadata = NonNullable<CcrOpenVideoResponse["metadata"]>;
 
 type KeyboardHoldIntent = {
   direction: -1 | 1;
+  triggerCode: string;
   targetFrame: number;
   startedAt: number;
   holdDurationMs: number;
@@ -221,6 +235,22 @@ function exportFailureMessage(error: unknown, action: "save" | "copy"): string {
   return "시스템 클립보드에 이미지를 복사하지 못했습니다.";
 }
 
+function browserFastFrameStepStorage(): FastFrameStepStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function browserShortcutStorage(): ShortcutStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
 export function App() {
   const canvasRefs = useRef<Record<PaneId, HTMLCanvasElement | null>>({ a: null, b: null });
   const viewerSurfaceRefs = useRef<Record<PaneId, HTMLElement | null>>({ a: null, b: null });
@@ -244,6 +274,7 @@ export function App() {
   const crosshairAnimationRef = useRef<number | null>(null);
   const pendingCrosshairRef = useRef<{ sourcePane: PaneId; point: { x: number; y: number } } | null>(null);
   const originalHoldPaneRef = useRef<PaneId | null>(null);
+  const originalHoldShortcutCodeRef = useRef<string | null>(null);
   const dualInitializedRef = useRef(false);
   const rgbaDisplayProcessCountRef = useRef(0);
   const dualViewRef = useRef(false);
@@ -278,6 +309,12 @@ export function App() {
   const [exportMessage, setExportMessage] = useState<string | null>(null);
   const [rightPanelTab, setRightPanelTab] = useState<"adjustment" | "information">("adjustment");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shortcutSettingsOpen, setShortcutSettingsOpen] = useState(false);
+  const [shortcutPreferences, setShortcutPreferences] = useState(() => loadShortcutPreferences(browserShortcutStorage()));
+  const [fastFrameStep, setFastFrameStep] = useState(() => loadFastFrameStep(browserFastFrameStepStorage()));
+  const [customFastFrameStepSelected, setCustomFastFrameStepSelected] = useState(false);
+  const [customFastFrameStepInput, setCustomFastFrameStepInput] = useState(() => String(fastFrameStep));
+  const [fastFrameStepError, setFastFrameStepError] = useState<string | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
 
@@ -286,6 +323,53 @@ export function App() {
   const viewTool = activePaneState.tool;
   const displayState = activePaneState.display;
   const comparingOriginal = activePaneState.comparingOriginal;
+  const fastFrameStepSelectValue = customFastFrameStepSelected || !isFastFrameStepPreset(fastFrameStep)
+    ? "custom"
+    : String(fastFrameStep);
+
+  const applyFastFrameStep = (value: number) => {
+    setFastFrameStep(value);
+    saveFastFrameStep(browserFastFrameStepStorage(), value);
+  };
+
+  const commitCustomFastFrameStep = () => {
+    const value = parseFastFrameStep(customFastFrameStepInput);
+    if (value === null) {
+      setCustomFastFrameStepInput(String(fastFrameStep));
+      setFastFrameStepError("2~999 사이의 정수를 입력하세요.");
+      return;
+    }
+    applyFastFrameStep(value);
+    setCustomFastFrameStepSelected(!isFastFrameStepPreset(value));
+    setCustomFastFrameStepInput(String(value));
+    setFastFrameStepError(null);
+  };
+
+  const openSettings = () => {
+    setCustomFastFrameStepSelected(!isFastFrameStepPreset(fastFrameStep));
+    setCustomFastFrameStepInput(String(fastFrameStep));
+    setFastFrameStepError(null);
+    setShortcutSettingsOpen(false);
+    setSettingsOpen(true);
+  };
+
+  const openShortcutSettings = () => {
+    setSettingsOpen(false);
+    setShortcutSettingsOpen(true);
+  };
+
+  const closeShortcutSettings = () => {
+    setShortcutSettingsOpen(false);
+    setSettingsOpen(true);
+  };
+
+  const commitShortcutPreferences = (preferences: ShortcutPreferences) => {
+    if (!saveShortcutPreferences(browserShortcutStorage(), preferences)) return false;
+    setShortcutPreferences(preferences);
+    setShortcutSettingsOpen(false);
+    setSettingsOpen(true);
+    return true;
+  };
 
   const setActivePane = useCallback((paneId: PaneId) => {
     activePaneRef.current = paneId;
@@ -380,6 +464,7 @@ export function App() {
     wheelRef.current.reset();
     zoomWheelRef.current.reset();
     originalHoldPaneRef.current = null;
+    originalHoldShortcutCodeRef.current = null;
     rgbaDisplayProcessCountRef.current = 0;
     hideCrosshairs();
     i420RendererRef.current?.dispose();
@@ -693,6 +778,7 @@ export function App() {
     setCrosshairEnabled(true);
     crosshairEnabledRef.current = true;
     originalHoldPaneRef.current = null;
+    originalHoldShortcutCodeRef.current = null;
     const imageSize = { width: opened.metadata.width, height: opened.metadata.height };
     const createPane = (paneId: PaneId): PaneState => {
       const viewport = viewerSurfaceRefs.current[paneId]?.getBoundingClientRect();
@@ -837,8 +923,9 @@ export function App() {
     });
   }, [hideCrosshairs]);
 
-  const beginOriginalHold = useCallback((paneId: PaneId) => {
+  const beginOriginalHold = useCallback((paneId: PaneId, shortcutCode: string | null = null) => {
     originalHoldPaneRef.current = paneId;
+    originalHoldShortcutCodeRef.current = shortcutCode;
     setActivePane(paneId);
     setComparingOriginal(true, paneId);
   }, [setActivePane, setComparingOriginal]);
@@ -846,6 +933,7 @@ export function App() {
   const releaseOriginalHold = useCallback(() => {
     const paneId = originalHoldPaneRef.current;
     originalHoldPaneRef.current = null;
+    originalHoldShortcutCodeRef.current = null;
     if (paneId) setComparingOriginal(false, paneId);
   }, [setComparingOriginal]);
 
@@ -1276,11 +1364,7 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (isOpenVideoShortcut(event)) {
-        event.preventDefault();
-        openVideo();
-        return;
-      }
+      if (shortcutSettingsOpen) return;
       const editing = isTextEntryElement(event.target);
       if (event.key === "Escape" && !editing) {
         hideCrosshairs();
@@ -1301,7 +1385,14 @@ export function App() {
         }
         return;
       }
-      if (fullscreenShortcut({ key: event.key, editing })) {
+      if (editing) return;
+      const shortcutAction = matchShortcutAction(event, shortcutPreferences);
+      if (shortcutAction === "openVideo") {
+        event.preventDefault();
+        openVideo();
+        return;
+      }
+      if (shortcutAction === "toggleFullscreen") {
         event.preventDefault();
         toggleFullscreen();
         return;
@@ -1309,16 +1400,18 @@ export function App() {
       if (!metadata) {
         return;
       }
-      const historyShortcut = event.ctrlKey && !event.altKey && !editing && (
-        event.key.toLowerCase() === "z" || event.key.toLowerCase() === "y"
+      const historyShortcut = event.ctrlKey && !event.altKey && !event.metaKey && (
+        (event.code === "KeyZ" && !event.shiftKey) ||
+        (event.code === "KeyY" && !event.shiftKey) ||
+        (event.code === "KeyZ" && event.shiftKey)
       );
       if (historyShortcut) {
         event.preventDefault();
-        const redo = event.key.toLowerCase() === "y" || (event.key.toLowerCase() === "z" && event.shiftKey);
+        const redo = event.code === "KeyY" || (event.code === "KeyZ" && event.shiftKey);
         applyHistoryResult(redo ? redoAnnotation(annotationSessionRef.current) : undoAnnotation(annotationSessionRef.current));
         return;
       }
-      if (!editing && (event.key === "Delete" || event.key === "Backspace")) {
+      if (event.key === "Delete" || event.key === "Backspace") {
         const selected = annotationSessionRef.current.annotations.find((annotation) => annotation.id === annotationSessionRef.current.selectedId);
         if (selected) {
           event.preventDefault();
@@ -1326,42 +1419,44 @@ export function App() {
           return;
         }
       }
-      const displayShortcut = videoDisplayShortcut({ key: event.key, editing });
-      if (displayShortcut) {
+      if (shortcutAction === "resetDisplay" || shortcutAction === "toggleInvert" || shortcutAction === "compareOriginal") {
         event.preventDefault();
-        if (displayShortcut === "reset") {
+        if (shortcutAction === "resetDisplay") {
           setDisplayState(resetVideoDisplay);
-        } else if (displayShortcut === "invert") {
+        } else if (shortcutAction === "toggleInvert") {
           setDisplayState(toggleVideoDisplayInvert);
         } else if (!event.repeat) {
-          beginOriginalHold(activePaneRef.current);
+          beginOriginalHold(activePaneRef.current, event.code);
         }
         return;
       }
-      const viewShortcut = zoomShortcut({ key: event.key, editing });
-      if (viewShortcut !== 0) {
+      if (shortcutAction === "zoomIn" || shortcutAction === "zoomOut" || shortcutAction === "fitView") {
         event.preventDefault();
-        if (viewShortcut === "fit") fitView();
-        else zoomByStep(viewShortcut);
+        if (shortcutAction === "fitView") fitView();
+        else zoomByStep(shortcutAction === "zoomIn" ? 1 : -1);
         return;
       }
-      if (metadata.productCache && metadata.analysisReady === false && event.key === "End") {
+      if (metadata.productCache && metadata.analysisReady === false && shortcutAction === "lastFrame") {
         event.preventDefault();
         return;
       }
-      const target = navigationTargetForKey(
-        event,
+      if (!shortcutAction) return;
+      const target = navigationTargetForAction(
+        shortcutAction,
         desiredFrameRef.current,
         metadata.frameCount,
-        editing,
+        fastFrameStep,
       );
       if (target !== null) {
         event.preventDefault();
-        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-          const direction = event.key === "ArrowLeft" ? -1 : 1;
-          if (!event.repeat || keyboardHoldRef.current?.direction !== direction) {
+        const direction = shortcutAction === "previousFrame" || shortcutAction === "fastPreviousFrame" ? -1 : 1;
+        const repeatsNavigation = shortcutAction === "previousFrame" || shortcutAction === "nextFrame" ||
+          shortcutAction === "fastPreviousFrame" || shortcutAction === "fastNextFrame";
+        if (repeatsNavigation) {
+          if (!event.repeat || keyboardHoldRef.current?.direction !== direction || keyboardHoldRef.current.triggerCode !== event.code) {
             keyboardHoldRef.current = {
               direction,
+              triggerCode: event.code,
               targetFrame: target,
               startedAt: performance.now(),
               holdDurationMs: 0,
@@ -1375,8 +1470,8 @@ export function App() {
       }
     };
     const onKeyUp = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() === "o") releaseOriginalHold();
-      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      if (originalHoldShortcutCodeRef.current === event.code) releaseOriginalHold();
+      if (keyboardHoldRef.current?.triggerCode === event.code) {
         if (keyboardHoldRef.current) {
           keyboardHoldRef.current.targetFrame = desiredFrameRef.current;
           keyboardHoldRef.current.holdDurationMs = performance.now() - keyboardHoldRef.current.startedAt;
@@ -1410,7 +1505,7 @@ export function App() {
       window.removeEventListener("blur", onWindowBlur);
       window.removeEventListener("pointerup", onWindowPointerUp);
     };
-  }, [beginOriginalHold, cancel, cancelPointerGesture, exitFullscreen, finishPointerGesture, fitView, goToFrame, hideCrosshairs, isFullscreen, metadata, openVideo, pump, releaseOriginalHold, setAnnotationSession, settingsOpen, toggleFullscreen, zoomByStep]);
+  }, [beginOriginalHold, cancel, cancelPointerGesture, exitFullscreen, fastFrameStep, finishPointerGesture, fitView, goToFrame, hideCrosshairs, isFullscreen, metadata, openVideo, pump, releaseOriginalHold, setAnnotationSession, settingsOpen, shortcutPreferences, shortcutSettingsOpen, toggleFullscreen, zoomByStep]);
 
   useEffect(() => {
     const paneIds: PaneId[] = dualView ? ["a", "b"] : [activePane];
@@ -1650,6 +1745,18 @@ export function App() {
     viewerStatus: status,
     pumping: pumpingRef.current,
   });
+  const fullscreenShortcutHint = shortcutPreferences.toggleFullscreen
+    ? ` (${formatShortcutBinding(shortcutPreferences.toggleFullscreen)})`
+    : "";
+  const compareOriginalShortcutHint = shortcutPreferences.compareOriginal
+    ? ` (${formatShortcutBinding(shortcutPreferences.compareOriginal)})`
+    : "";
+  const zoomOutShortcutHint = shortcutPreferences.zoomOut
+    ? ` (${formatShortcutBinding(shortcutPreferences.zoomOut)})`
+    : "";
+  const zoomInShortcutHint = shortcutPreferences.zoomIn
+    ? ` (${formatShortcutBinding(shortcutPreferences.zoomIn)})`
+    : "";
 
   return (
     <main
@@ -1678,7 +1785,7 @@ export function App() {
             <button
               type="button"
               aria-label={isFullscreen ? "창 모드" : "전체 화면"}
-              title={isFullscreen ? "창 모드 (F)" : "전체 화면 (F)"}
+              title={`${isFullscreen ? "창 모드" : "전체 화면"}${fullscreenShortcutHint}`}
               onClick={toggleFullscreen}
             ><Icon src={fullscreenIcon} /><span>{isFullscreen ? "창 모드" : "전체 화면"}</span></button>
           </div>
@@ -1760,7 +1867,7 @@ export function App() {
               return <section
                 key={paneId}
                 ref={(element) => { viewerSurfaceRefs.current[paneId] = element; }}
-                className={`viewer-surface viewer-pane tool-${pane.tool}${activePane === paneId ? " is-active-pane" : ""}${paneGesture === "pan" ? " is-panning" : ""}${paneGesture === "zoom" ? " is-zooming" : ""}${paneGesture === "display" ? " is-display-dragging" : ""}`}
+                className={`viewer-surface viewer-pane tool-${pane.tool}${activePane === paneId ? " is-active-pane" : ""}${!metadata ? " is-empty" : ""}${paneGesture === "pan" ? " is-panning" : ""}${paneGesture === "zoom" ? " is-zooming" : ""}${paneGesture === "display" ? " is-display-dragging" : ""}`}
                 onWheel={(event) => onWheel(paneId, event)}
                 onPointerDown={(event) => onPointerDown(paneId, event)}
                 onPointerMove={(event) => onPointerMove(paneId, event)}
@@ -1769,8 +1876,17 @@ export function App() {
                 onPointerLeave={hideCrosshairs}
                 onLostPointerCapture={() => { hideCrosshairs(); if (activePointerRef.current) cancelPointerGesture(); }}
                 onDoubleClick={(event) => onViewerDoubleClick(paneId, event)}
+                onClick={() => { if (!metadata) openVideo(); }}
+                onKeyDown={(event) => {
+                  if (!metadata && (event.key === "Enter" || event.key === " ")) {
+                    event.preventDefault();
+                    openVideo();
+                  }
+                }}
                 onContextMenu={(event) => event.preventDefault()}
-                aria-label={dualView ? paneRegionLabel(paneId) : "CT cine frame"}
+                role={!metadata ? "button" : undefined}
+                tabIndex={!metadata ? 0 : undefined}
+                aria-label={!metadata ? "클릭 또는 드래그로 동영상 파일 열기" : dualView ? paneRegionLabel(paneId) : "CT cine frame"}
               >
                 {dualView && <span className="pane-label">{paneRegionLabel(paneId)}</span>}
                 <canvas
@@ -1789,7 +1905,10 @@ export function App() {
                   onTextCancel={() => { setTextEditor(null); setTextEditorPane(null); }}
                 />}
                 <div ref={(element) => { crosshairRefs.current[paneId] = element; }} className="linked-crosshair" hidden aria-hidden="true" />
-                {!metadata && <span className="empty-label">CT Cine Reviewer</span>}
+                {!metadata && <div className="empty-state">
+                  <strong>동영상 파일 열기</strong>
+                  <span>클릭 또는 드래그로 파일을 입력하세요</span>
+                </div>}
                 {status === "decoding" && <span className="loading-label">디코딩 중</span>}
                 {dragging && <div className="drop-overlay">동영상 놓기</div>}
               </section>;
@@ -1895,7 +2014,7 @@ export function App() {
                 onPointerUp={releaseOriginalHold}
                 onPointerLeave={releaseOriginalHold}
                 onPointerCancel={releaseOriginalHold}
-              >원본 비교 (O)</button>
+              >원본 비교{compareOriginalShortcutHint}</button>
             </div>
           </details>
 
@@ -2052,6 +2171,64 @@ export function App() {
             <div className="settings-dialog-content">
               <div className="settings-row">
                 <div>
+                  <strong>빠른 프레임 이동</strong>
+                  <p>빠른 이동 버튼과 {formatShortcutBinding(shortcutPreferences.fastPreviousFrame)}/{formatShortcutBinding(shortcutPreferences.fastNextFrame)} 단축키에 적용됩니다.</p>
+                </div>
+                <div className="settings-control-stack">
+                  <select
+                    aria-label="빠른 프레임 이동 간격"
+                    value={fastFrameStepSelectValue}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      setFastFrameStepError(null);
+                      if (value === "custom") {
+                        setCustomFastFrameStepSelected(true);
+                        setCustomFastFrameStepInput(String(fastFrameStep));
+                        return;
+                      }
+                      const parsed = parseFastFrameStep(value);
+                      if (parsed === null) return;
+                      applyFastFrameStep(parsed);
+                      setCustomFastFrameStepSelected(false);
+                      setCustomFastFrameStepInput(String(parsed));
+                    }}
+                  >
+                    {FAST_FRAME_STEP_PRESETS.map((value) => (
+                      <option key={value} value={value}>{value}프레임</option>
+                    ))}
+                    <option value="custom">직접 입력</option>
+                  </select>
+                  {fastFrameStepSelectValue === "custom" && (
+                    <input
+                      aria-label="빠른 이동 프레임 수"
+                      aria-invalid={fastFrameStepError ? "true" : "false"}
+                      type="number"
+                      min={2}
+                      max={999}
+                      step={1}
+                      value={customFastFrameStepInput}
+                      onChange={(event) => {
+                        setCustomFastFrameStepInput(event.currentTarget.value);
+                        setFastFrameStepError(null);
+                      }}
+                      onBlur={commitCustomFastFrameStep}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                      }}
+                    />
+                  )}
+                </div>
+              </div>
+              {fastFrameStepError && <p className="settings-validation-error" role="alert">{fastFrameStepError}</p>}
+              <div className="settings-row">
+                <div>
+                  <strong>단축키</strong>
+                  <p>파일, 프레임, 화면과 표시 보정 단축키를 설정합니다.</p>
+                </div>
+                <button type="button" aria-label="단축키 설정 열기" onClick={openShortcutSettings}>설정</button>
+              </div>
+              <div className="settings-row">
+                <div>
                   <strong>최신 업데이트 확인</strong>
                   <p>GitHub에서 공개된 최신 버전을 수동으로 확인합니다.</p>
                 </div>
@@ -2065,19 +2242,27 @@ export function App() {
         </div>
       )}
 
+      {shortcutSettingsOpen && (
+        <ShortcutSettingsDialog
+          preferences={shortcutPreferences}
+          onCancel={closeShortcutSettings}
+          onSave={commitShortcutPreferences}
+        />
+      )}
+
       <footer className="navigation-footer">
         <button
-          className={`footer-settings-button${settingsOpen ? " is-active" : ""}`}
+          className={`footer-settings-button${settingsOpen || shortcutSettingsOpen ? " is-active" : ""}`}
           type="button"
           aria-label="설정 열기"
-          aria-pressed={settingsOpen}
-          onClick={() => setSettingsOpen(true)}
+          aria-pressed={settingsOpen || shortcutSettingsOpen}
+          onClick={openSettings}
         ><Icon src={settingsIcon} /><span>설정</span></button>
         <span className="footer-section-divider" aria-hidden="true" />
         <nav className="frame-navigation-bar" aria-label="프레임 탐색">
           <div className="precision-controls" role="group" aria-label="정밀 프레임 이동">
             <button className="frame-nav-button is-edge" type="button" aria-label="첫 프레임" title="첫 프레임" onClick={() => goToFrame(0)} disabled={!metadata}><Icon src={firstFrameIcon} /></button>
-            <button className="frame-nav-button is-skip" type="button" aria-label="5프레임 이전" title="5프레임 이전" onClick={() => goToFrame(desiredFrameRef.current - 5)} disabled={!metadata}><Icon src={chevronLeftIcon} /><span>−5</span></button>
+            <button className="frame-nav-button is-skip" type="button" aria-label={`${fastFrameStep}프레임 이전`} title={`${fastFrameStep}프레임 이전`} onClick={() => goToFrame(desiredFrameRef.current - fastFrameStep)} disabled={!metadata}><Icon src={chevronLeftIcon} /><span>−{fastFrameStep}</span></button>
             <button className="frame-nav-button" type="button" aria-label="이전 프레임" title="이전 프레임" onClick={() => goToFrame(desiredFrameRef.current - 1)} disabled={!metadata}><Icon src={chevronLeftIcon} /></button>
             <div className="frame-input-group">
               <input
@@ -2094,14 +2279,14 @@ export function App() {
               <span>/ {metadata?.frameCount.toLocaleString() ?? "-"}</span>
             </div>
             <button className="frame-nav-button" type="button" aria-label="다음 프레임" title="다음 프레임" onClick={() => goToFrame(desiredFrameRef.current + 1)} disabled={!metadata}><Icon src={chevronRightIcon} /></button>
-            <button className="frame-nav-button is-skip" type="button" aria-label="5프레임 다음" title="5프레임 다음" onClick={() => goToFrame(desiredFrameRef.current + 5)} disabled={!metadata}><span>+5</span><Icon src={chevronRightIcon} /></button>
+            <button className="frame-nav-button is-skip" type="button" aria-label={`${fastFrameStep}프레임 다음`} title={`${fastFrameStep}프레임 다음`} onClick={() => goToFrame(desiredFrameRef.current + fastFrameStep)} disabled={!metadata}><span>+{fastFrameStep}</span><Icon src={chevronRightIcon} /></button>
             <button className="frame-nav-button is-edge" type="button" aria-label="마지막 프레임" title="마지막 프레임" onClick={() => metadata && goToFrame(metadata.frameCount - 1)} disabled={!metadata || (metadata.productCache === true && metadata.analysisReady === false)}><Icon src={lastFrameIcon} /></button>
           </div>
         </nav>
         <span className="footer-section-divider" aria-hidden="true" />
         <div className="footer-view-controls" role="group" aria-label="화면 크기 설정">
           <div className="zoom-control-group" role="group" aria-label="확대 및 축소">
-            <button type="button" title="10%p 축소 (-)" onClick={() => zoomByStep(-1)} disabled={!metadata}><Icon src={minusIcon} /></button>
+            <button type="button" title={`10%p 축소${zoomOutShortcutHint}`} onClick={() => zoomByStep(-1)} disabled={!metadata}><Icon src={minusIcon} /></button>
             <select
               className="zoom-value-select"
               aria-label={`현재 확대율 ${currentZoomLabel} · 확대율 선택`}
@@ -2117,7 +2302,7 @@ export function App() {
               <option value="fit">화면 맞춤</option>
               {ZOOM_PERCENT_OPTIONS.map((percent) => <option key={percent} value={percent}>{percent}%</option>)}
             </select>
-            <button type="button" title="10%p 확대 (+)" onClick={() => zoomByStep(1)} disabled={!metadata}><Icon src={plusIcon} /></button>
+            <button type="button" title={`10%p 확대${zoomInShortcutHint}`} onClick={() => zoomByStep(1)} disabled={!metadata}><Icon src={plusIcon} /></button>
           </div>
         </div>
       </footer>

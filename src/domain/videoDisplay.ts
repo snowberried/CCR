@@ -94,12 +94,3 @@ export function moveDisplayDrag(gesture: DisplayDragGesture, pointerId: number, 
     ? applyLevelWidthDrag(gesture.startState, { x: x - gesture.startX, y: y - gesture.startY })
     : null;
 }
-
-export function videoDisplayShortcut(input: { key: string; editing: boolean }): "reset" | "invert" | "compare" | null {
-  if (input.editing) return null;
-  const key = input.key.toLowerCase();
-  if (key === "r") return "reset";
-  if (key === "i") return "invert";
-  if (key === "o") return "compare";
-  return null;
-}

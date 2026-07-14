@@ -1,13 +1,5 @@
-export type NavigationKeyInput = {
-  key: string;
-  shiftKey: boolean;
-  ctrlKey?: boolean;
-  metaKey?: boolean;
-};
-
-export function isOpenVideoShortcut(input: NavigationKeyInput): boolean {
-  return Boolean(input.ctrlKey || input.metaKey) && input.key.toLowerCase() === "o";
-}
+import { DEFAULT_FAST_FRAME_STEP, parseFastFrameStep } from "./fastFrameStep";
+import type { ShortcutAction } from "./shortcuts";
 
 export function clampFrameIndex(frameIndex: number, frameCount: number): number {
   if (!Number.isFinite(frameIndex) || !Number.isInteger(frameCount) || frameCount <= 0) {
@@ -24,25 +16,19 @@ export function displayToInternalFrame(displayFrame: number, frameCount: number)
   return clampFrameIndex(Math.trunc(displayFrame) - 1, frameCount);
 }
 
-export function navigationTargetForKey(
-  input: NavigationKeyInput,
+export function navigationTargetForAction(
+  action: ShortcutAction,
   currentFrameIndex: number,
   frameCount: number,
-  editing: boolean,
+  fastFrameStep = DEFAULT_FAST_FRAME_STEP,
 ): number | null {
-  if (editing) {
-    return null;
-  }
-  if (input.key === "ArrowLeft" || input.key === "ArrowRight") {
-    const direction = input.key === "ArrowLeft" ? -1 : 1;
-    return clampFrameIndex(currentFrameIndex + direction * (input.shiftKey ? 5 : 1), frameCount);
-  }
-  if (input.key === "Home") {
-    return 0;
-  }
-  if (input.key === "End") {
-    return Math.max(0, frameCount - 1);
-  }
+  const fastStep = parseFastFrameStep(fastFrameStep) ?? DEFAULT_FAST_FRAME_STEP;
+  if (action === "previousFrame") return clampFrameIndex(currentFrameIndex - 1, frameCount);
+  if (action === "nextFrame") return clampFrameIndex(currentFrameIndex + 1, frameCount);
+  if (action === "fastPreviousFrame") return clampFrameIndex(currentFrameIndex - fastStep, frameCount);
+  if (action === "fastNextFrame") return clampFrameIndex(currentFrameIndex + fastStep, frameCount);
+  if (action === "firstFrame") return 0;
+  if (action === "lastFrame") return Math.max(0, frameCount - 1);
   return null;
 }
 

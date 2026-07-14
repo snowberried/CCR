@@ -4,10 +4,16 @@ import {
   WheelFrameAccumulator,
   displayToInternalFrame,
   internalToDisplayFrame,
-  isOpenVideoShortcut,
   isTextEntryElement,
-  navigationTargetForKey,
+  navigationTargetForAction,
 } from "../src/ui/frameNavigation";
+import {
+  DEFAULT_FAST_FRAME_STEP,
+  FAST_FRAME_STEP_STORAGE_KEY,
+  loadFastFrameStep,
+  parseFastFrameStep,
+  saveFastFrameStep,
+} from "../src/ui/fastFrameStep";
 import { calculateContainedSize, releaseCanvas } from "../src/ui/viewerGeometry";
 
 test("converts internal zero-based frames to one-based UI frames", () => {
@@ -18,15 +24,43 @@ test("converts internal zero-based frames to one-based UI frames", () => {
   assert.equal(displayToInternalFrame(999, 100), 99);
 });
 
-test("maps arrows, Shift, Home, and End while suppressing text entry", () => {
-  assert.equal(isOpenVideoShortcut({ key: "o", shiftKey: false, ctrlKey: true }), true);
-  assert.equal(navigationTargetForKey({ key: "ArrowRight", shiftKey: false }, 10, 100, false), 11);
-  assert.equal(navigationTargetForKey({ key: "ArrowLeft", shiftKey: true }, 10, 100, false), 5);
-  assert.equal(navigationTargetForKey({ key: "Home", shiftKey: false }, 10, 100, false), 0);
-  assert.equal(navigationTargetForKey({ key: "End", shiftKey: false }, 10, 100, false), 99);
-  assert.equal(navigationTargetForKey({ key: "ArrowRight", shiftKey: false }, 10, 100, true), null);
+test("maps configured navigation actions with fast-step boundary clamping", () => {
+  assert.equal(navigationTargetForAction("nextFrame", 10, 100, 20), 11);
+  assert.equal(navigationTargetForAction("previousFrame", 30, 100, 20), 29);
+  assert.equal(navigationTargetForAction("fastNextFrame", 10, 100, 2), 12);
+  assert.equal(navigationTargetForAction("fastNextFrame", 10, 100, 20), 30);
+  assert.equal(navigationTargetForAction("fastPreviousFrame", 30, 100, 20), 10);
+  assert.equal(navigationTargetForAction("fastNextFrame", 10, 100, 37), 47);
+  assert.equal(navigationTargetForAction("fastNextFrame", 98, 100, 50), 99);
+  assert.equal(navigationTargetForAction("fastPreviousFrame", 1, 100, 50), 0);
+  assert.equal(navigationTargetForAction("firstFrame", 10, 100), 0);
+  assert.equal(navigationTargetForAction("lastFrame", 10, 100), 99);
+  assert.equal(navigationTargetForAction("openVideo", 10, 100, 20), null);
   assert.equal(isTextEntryElement({ tagName: "input" } as unknown as EventTarget), true);
+  assert.equal(isTextEntryElement({ tagName: "select" } as unknown as EventTarget), true);
   assert.equal(isTextEntryElement({ tagName: "div" } as unknown as EventTarget), false);
+});
+
+test("validates and persists fast frame step preferences", () => {
+  assert.equal(parseFastFrameStep(2), 2);
+  assert.equal(parseFastFrameStep("999"), 999);
+  assert.equal(parseFastFrameStep(""), null);
+  assert.equal(parseFastFrameStep(1), null);
+  assert.equal(parseFastFrameStep(1000), null);
+  assert.equal(parseFastFrameStep(2.5), null);
+
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+  };
+  assert.equal(loadFastFrameStep(storage), DEFAULT_FAST_FRAME_STEP);
+  assert.equal(saveFastFrameStep(storage, 37), true);
+  assert.equal(values.get(FAST_FRAME_STEP_STORAGE_KEY), "37");
+  assert.equal(loadFastFrameStep(storage), 37);
+  values.set(FAST_FRAME_STEP_STORAGE_KEY, "invalid");
+  assert.equal(loadFastFrameStep(storage), DEFAULT_FAST_FRAME_STEP);
+  assert.equal(saveFastFrameStep(storage, 1000), false);
 });
 
 test("stabilizes wheel notches and trackpad deltas", () => {

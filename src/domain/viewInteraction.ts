@@ -43,14 +43,6 @@ export class WheelZoomAccumulator {
   }
 }
 
-export function zoomShortcut(input: { key: string; editing: boolean }): -1 | 0 | 1 | "fit" {
-  if (input.editing) return 0;
-  if (["+", "=", "Add"].includes(input.key)) return 1;
-  if (["-", "_", "Subtract"].includes(input.key)) return -1;
-  if (input.key === "0") return "fit";
-  return 0;
-}
-
 export function beginPan(pointerId: number, x: number, y: number): PanGesture {
   return { pointerId, lastX: x, lastY: y };
 }
@@ -80,8 +72,4 @@ export function zoomForVerticalDrag(gesture: ZoomDragGesture, pointerId: number,
   return gesture.pointerId === pointerId
     ? gesture.startZoom * Math.exp(-(y - gesture.startY) * 0.003)
     : null;
-}
-
-export function fullscreenShortcut(input: { key: string; editing: boolean }): "toggle" | null {
-  return !input.editing && input.key.toLowerCase() === "f" ? "toggle" : null;
 }

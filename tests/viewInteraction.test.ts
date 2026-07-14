@@ -6,11 +6,9 @@ import {
   beginPan,
   beginZoomDrag,
   endsPan,
-  fullscreenShortcut,
   movePan,
   viewWheelIntent,
   zoomForVerticalDrag,
-  zoomShortcut,
 } from "../src/domain/viewInteraction";
 
 test("separates Ctrl+wheel zoom from ordinary frame wheel", () => {
@@ -26,15 +24,6 @@ test("accumulates trackpad deltas into discrete zoom steps", () => {
   assert.equal(wheel.consume(-100, 0), -1);
   wheel.reset();
   assert.equal(wheel.consume(-4, 1), -1);
-});
-
-test("suppresses view shortcuts while editing", () => {
-  assert.equal(zoomShortcut({ key: "+", editing: true }), 0);
-  assert.equal(zoomShortcut({ key: "+", editing: false }), 1);
-  assert.equal(zoomShortcut({ key: "-", editing: false }), -1);
-  assert.equal(zoomShortcut({ key: "0", editing: false }), "fit");
-  assert.equal(fullscreenShortcut({ key: "f", editing: true }), null);
-  assert.equal(fullscreenShortcut({ key: "F", editing: false }), "toggle");
 });
 
 test("tracks a single pointer pan lifecycle", () => {

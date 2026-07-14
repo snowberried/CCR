@@ -13,7 +13,6 @@ import {
   toggleVideoDisplayInvert,
   updateVideoDisplay,
   videoDisplayEqual,
-  videoDisplayShortcut,
 } from "../src/domain/videoDisplay";
 import { applyVideoDisplayToRgba } from "../src/domain/videoDisplayReference";
 
@@ -64,13 +63,6 @@ test("right drag maps horizontal Width and vertical Level from its start state",
   const gesture = beginDisplayDrag(7, 10, 20, start);
   assert.deepEqual(moveDisplayDrag(gesture, 8, 110, -30), null);
   assert.deepEqual(moveDisplayDrag(gesture, 7, 110, -30), direct);
-});
-
-test("suppresses display shortcuts while editing", () => {
-  assert.equal(videoDisplayShortcut({ key: "R", editing: false }), "reset");
-  assert.equal(videoDisplayShortcut({ key: "i", editing: false }), "invert");
-  assert.equal(videoDisplayShortcut({ key: "o", editing: false }), "compare");
-  assert.equal(videoDisplayShortcut({ key: "r", editing: true }), null);
 });
 
 test("RGBA reference keeps Original bytes exact and preserves alpha", () => {
