@@ -3,6 +3,12 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 contextBridge.exposeInMainWorld("ccr", {
   getRuntimeStatus: () => ipcRenderer.invoke("runtime:getStatus"),
   checkForUpdates: () => ipcRenderer.invoke("update:check"),
+  installUpdate: () => ipcRenderer.invoke("update:install"),
+  onUpdateProgress: (callback: (value: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: unknown) => callback(value);
+    ipcRenderer.on("update:progress", listener);
+    return () => ipcRenderer.removeListener("update:progress", listener);
+  },
   getFullscreen: () => ipcRenderer.invoke("window:getFullscreen"),
   setFullscreen: (value: boolean) => ipcRenderer.invoke("window:setFullscreen", value),
   toggleFullscreen: () => ipcRenderer.invoke("window:toggleFullscreen"),

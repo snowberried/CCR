@@ -316,6 +316,8 @@ export function App() {
   const [customFastFrameStepInput, setCustomFastFrameStepInput] = useState(() => String(fastFrameStep));
   const [fastFrameStepError, setFastFrameStepError] = useState<string | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateInstallBusy, setUpdateInstallBusy] = useState(false);
+  const [updateAvailableVersion, setUpdateAvailableVersion] = useState<string | null>(null);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
 
   const activePaneState = paneStates[activePane];
@@ -1695,18 +1697,31 @@ export function App() {
     }
   }, [exportBusy, exportMode, includeExportAnnotations, metadata, status, viewTransform]);
 
+  useEffect(() => window.ccr?.onUpdateProgress?.((progress) => {
+    if (progress.stage === "downloading") {
+      const percent = Number.isFinite(progress.percent) ? Math.round(progress.percent ?? 0) : 0;
+      setUpdateMessage(`업데이트 다운로드 중… ${percent}%`);
+    } else if (progress.stage === "installing") {
+      setUpdateMessage("다운로드 완료 · 앱을 종료하고 업데이트를 설치합니다.");
+    } else {
+      setUpdateMessage("업데이트 설치를 완료하지 못했습니다. 잠시 후 다시 시도하세요.");
+    }
+  }), []);
+
   const checkForUpdates = async () => {
-    if (updateBusy) return;
+    if (updateBusy || updateInstallBusy) return;
     if (!window.ccr?.checkForUpdates) {
       setUpdateMessage("업데이트 확인은 설치된 앱에서 사용할 수 있습니다.");
       return;
     }
 
     setUpdateBusy(true);
+    setUpdateAvailableVersion(null);
     setUpdateMessage(null);
     try {
       const result = await window.ccr.checkForUpdates();
       if (result.status === "available") {
+        setUpdateAvailableVersion(result.latestVersion);
         setUpdateMessage(`새 버전 ${result.latestVersion}을 사용할 수 있습니다. · 현재 ${result.currentVersion}`);
       } else if (result.status === "ahead") {
         setUpdateMessage(`현재 ${result.currentVersion} · 공개 최신 ${result.latestVersion}보다 앞선 개발 버전입니다.`);
@@ -1717,6 +1732,24 @@ export function App() {
       setUpdateMessage("업데이트를 확인하지 못했습니다. 인터넷 연결을 확인하세요.");
     } finally {
       setUpdateBusy(false);
+    }
+  };
+
+  const installUpdate = async () => {
+    if (updateInstallBusy || !updateAvailableVersion) return;
+    if (!window.ccr?.installUpdate) {
+      setUpdateMessage("업데이트 설치는 설치된 앱에서 사용할 수 있습니다.");
+      return;
+    }
+
+    setUpdateInstallBusy(true);
+    setUpdateMessage(`업데이트 ${updateAvailableVersion} 다운로드를 시작합니다…`);
+    try {
+      const result = await window.ccr.installUpdate();
+      setUpdateMessage(`업데이트 ${result.latestVersion} 설치를 시작합니다…`);
+    } catch {
+      setUpdateMessage("업데이트 설치를 완료하지 못했습니다. 잠시 후 다시 시도하세요.");
+      setUpdateInstallBusy(false);
     }
   };
 
@@ -2230,11 +2263,21 @@ export function App() {
               <div className="settings-row">
                 <div>
                   <strong>최신 업데이트 확인</strong>
-                  <p>GitHub에서 공개된 최신 버전을 수동으로 확인합니다.</p>
+                  <p>{updateAvailableVersion ? "설치를 누르면 다운로드 후 앱을 종료하고 자동으로 업데이트합니다." : "GitHub에서 공개된 최신 버전을 수동으로 확인합니다."}</p>
                 </div>
-                <button type="button" onClick={() => void checkForUpdates()} disabled={updateBusy}>
-                  {updateBusy ? "확인 중…" : "확인"}
-                </button>
+                <div className="settings-update-actions">
+                  <button type="button" onClick={() => void checkForUpdates()} disabled={updateBusy || updateInstallBusy}>
+                    {updateBusy ? "확인 중…" : "확인"}
+                  </button>
+                  {updateAvailableVersion && (
+                    <button
+                      type="button"
+                      className="settings-install-button"
+                      onClick={() => void installUpdate()}
+                      disabled={updateInstallBusy}
+                    >{updateInstallBusy ? "설치 준비 중…" : "업데이트 설치"}</button>
+                  )}
+                </div>
               </div>
               {updateMessage && <p className="update-result" role="status">{updateMessage}</p>}
             </div>

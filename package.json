@@ -44,6 +44,7 @@
     "verify:package": "node --import tsx scripts/finalize-windows-package.ts --verify-only"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -68,6 +69,13 @@
       "output": "artifacts"
     },
     "electronDist": "node_modules/electron/dist",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "snowberried",
+        "repo": "CCR"
+      }
+    ],
     "files": [
       "dist/**/*",
       "dist-electron/**/*",

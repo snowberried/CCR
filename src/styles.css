@@ -309,6 +309,9 @@ dd { margin: 0; overflow-wrap: anywhere; color: var(--text-secondary); text-alig
 .settings-row strong { display: block; color: var(--text); font-size: 14px; }
 .settings-row p { margin-top: 6px; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 .settings-row button { flex: 0 0 auto; min-width: 76px; }
+.settings-update-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.settings-install-button { border-color: var(--accent); background: var(--accent); color: #fff; font-weight: 700; }
+.settings-install-button:hover:not(:disabled) { background: var(--accent-hover); }
 .settings-control-stack { flex: 0 0 144px; display: grid; gap: 8px; }
 .settings-control-stack select, .settings-control-stack input { width: 100%; padding: 0 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
 .settings-control-stack input { text-align: right; }

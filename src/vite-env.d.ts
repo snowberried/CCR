@@ -119,6 +119,14 @@ interface Window {
       latestVersion: string;
       status: "current" | "available" | "ahead";
     }>;
+    installUpdate: () => Promise<{
+      started: boolean;
+      latestVersion: string;
+    }>;
+    onUpdateProgress: (callback: (value: {
+      stage: "downloading" | "installing" | "error";
+      percent?: number;
+    }) => void) => () => void;
     getFullscreen: () => Promise<boolean>;
     setFullscreen: (value: boolean) => Promise<boolean>;
     toggleFullscreen: () => Promise<boolean>;

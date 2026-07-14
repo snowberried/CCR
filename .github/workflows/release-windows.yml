@@ -88,15 +88,16 @@ jobs:
           $package = Get-Content -Raw -Encoding UTF8 -LiteralPath package.json | ConvertFrom-Json
           $setup = "artifacts/CT-Cine-Reviewer-Setup-$($package.version).exe"
           $checksum = "$setup.sha256"
+          $blockmap = "$setup.blockmap"
+          $metadata = "artifacts/latest.yml"
 
-          if (-not (Test-Path -LiteralPath $setup)) {
-            throw "Installer is missing: $setup"
-          }
-          if (-not (Test-Path -LiteralPath $checksum)) {
-            throw "Checksum is missing: $checksum"
+          foreach ($asset in @($setup, $checksum, $blockmap, $metadata)) {
+            if (-not (Test-Path -LiteralPath $asset)) {
+              throw "Release asset is missing: $asset"
+            }
           }
 
-          gh release create $env:RELEASE_TAG $setup $checksum `
+          gh release create $env:RELEASE_TAG $setup $checksum $blockmap $metadata `
             --verify-tag `
             --title "CT Cine Reviewer $env:RELEASE_TAG" `
             --generate-notes `
