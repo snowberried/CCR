@@ -12,12 +12,13 @@ import {
   type WheelEvent,
 } from "react";
 import {
-  actualSizeViewTransform,
   createViewTransform,
+  effectiveScale,
   fitViewTransform,
   viewportToImage,
   panByViewportDelta,
   resizeViewTransform,
+  scaleViewTransform,
   stepViewZoom,
   viewPlacement,
   zoomAtViewportPoint,
@@ -106,7 +107,6 @@ import copyIcon from "./assets/icons/copy.svg";
 import dualViewIcon from "./assets/icons/dual-view.svg";
 import ellipseIcon from "./assets/icons/ellipse.svg";
 import firstFrameIcon from "./assets/icons/first-frame.svg";
-import fitIcon from "./assets/icons/fit.svg";
 import folderOpenIcon from "./assets/icons/folder-open.svg";
 import fullscreenIcon from "./assets/icons/fullscreen.svg";
 import inverseIcon from "./assets/icons/inverse.svg";
@@ -212,6 +212,8 @@ function formatBytes(bytes: number): string {
 function formatZoomPercent(zoom: number): string {
   return `${Number((zoom * 100).toFixed(2))}%`;
 }
+
+const ZOOM_PERCENT_OPTIONS = [50, 75, 100, 125, 150, 175, 200] as const;
 
 function exportFailureMessage(error: unknown, action: "save" | "copy"): string {
   const code = error instanceof Error ? error.message : "";
@@ -809,8 +811,11 @@ export function App() {
     setViewTransform((current) => current ? fitViewTransform(current) : current);
   }, []);
 
-  const actualSizeView = useCallback(() => {
-    setViewTransform((current) => current ? actualSizeViewTransform(current) : current);
+  const selectViewScale = useCallback((scale: number) => {
+    setViewTransform((current) => current ? scaleViewTransform(current, scale, {
+      x: current.viewportSize.width / 2,
+      y: current.viewportSize.height / 2,
+    }) : current);
   }, []);
 
   const toggleFullscreen = useCallback(() => {
@@ -1593,6 +1598,7 @@ export function App() {
   const frameDisplay = metadata
     ? `${internalToDisplayFrame(frameIndex).toLocaleString()} / ${metadata.frameCount.toLocaleString()}`
     : "-";
+  const currentZoomLabel = formatZoomPercent(viewTransform ? effectiveScale(viewTransform) : 1);
   const displayedPaneIds: PaneId[] = dualView ? ["a", "b"] : [activePane];
   const canvasStyleForPane = (paneId: PaneId) => {
     const transform = paneStates[paneId].viewTransform;
@@ -1997,7 +2003,7 @@ export function App() {
               <div><dt>Probe</dt><dd>{metadata ? `${metadata.probeMs.toFixed(1)} ms` : "-"}</dd></div>
               <div><dt>세션 / 세대</dt><dd>{diagnostics ? `${diagnostics.session} / ${diagnostics.generation}` : "-"}</dd></div>
               <div><dt>비교 보기</dt><dd>{dualView ? `ON · ${paneRegionLabel(activePane)}` : "OFF"}</dd></div>
-              <div><dt>Zoom</dt><dd>{viewTransform ? `${(viewTransform.zoom * 100).toFixed(0)}%` : "-"}</dd></div>
+              <div><dt>Zoom</dt><dd>{viewTransform ? currentZoomLabel : "-"}</dd></div>
               <div><dt>View center</dt><dd>{viewTransform ? `${viewTransform.center.x.toFixed(1)}, ${viewTransform.center.y.toFixed(1)}` : "-"}</dd></div>
               <div><dt>View revision</dt><dd>{viewTransform?.revision ?? "-"}</dd></div>
             </dl>
@@ -2053,19 +2059,23 @@ export function App() {
         <div className="footer-view-controls" role="group" aria-label="화면 크기 설정">
           <div className="zoom-control-group" role="group" aria-label="확대 및 축소">
             <button type="button" title="10%p 축소 (-)" onClick={() => zoomByStep(-1)} disabled={!metadata}><Icon src={minusIcon} /></button>
-            <button
-              type="button"
-              className="zoom-value-button"
-              aria-label={`현재 확대율 ${formatZoomPercent(viewTransform?.zoom ?? 1)} · 원본 픽셀 100%로 복귀`}
-              title="원본 픽셀 100%로 복귀"
-              onClick={actualSizeView}
+            <select
+              className="zoom-value-select"
+              aria-label={`현재 확대율 ${currentZoomLabel} · 확대율 선택`}
+              title="확대율 선택"
+              value="current"
+              onChange={(event) => {
+                if (event.currentTarget.value === "fit") fitView();
+                else selectViewScale(Number(event.currentTarget.value) / 100);
+              }}
               disabled={!metadata}
-            >{formatZoomPercent(viewTransform?.zoom ?? 1)}</button>
+            >
+              <option value="current" hidden>{currentZoomLabel}</option>
+              <option value="fit">화면 맞춤</option>
+              {ZOOM_PERCENT_OPTIONS.map((percent) => <option key={percent} value={percent}>{percent}%</option>)}
+            </select>
             <button type="button" title="10%p 확대 (+)" onClick={() => zoomByStep(1)} disabled={!metadata}><Icon src={plusIcon} /></button>
           </div>
-          <button className="footer-fit-button" type="button" title="화면 맞춤 (0)" onClick={fitView} disabled={!metadata}>
-            <Icon src={fitIcon} /><span>화면 맞춤</span>
-          </button>
         </div>
       </footer>
     </main>

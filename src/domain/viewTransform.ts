@@ -9,12 +9,15 @@ export type ViewTransform = {
   minZoom: number;
   maxZoom: number;
   fitMode: "contain";
+  scaleMode: "fit" | "manual";
   revision: number;
 };
 
 export const VIEW_ZOOM_MIN = 1;
 export const VIEW_ZOOM_MAX = 10;
-export const VIEW_ZOOM_STEP = 0.1;
+export const VIEW_SCALE_STEP = 0.1;
+const VIEW_SCALE_PRESET_MIN = 0.5;
+const VIEW_SCALE_PRESET_MAX = 2;
 
 function validSize(size: Size): boolean {
   return Number.isFinite(size.width) && Number.isFinite(size.height) && size.width > 0 && size.height > 0;
@@ -27,6 +30,15 @@ export function fitScale(imageSize: Size, viewportSize: Size): number {
 
 export function effectiveScale(transform: ViewTransform): number {
   return fitScale(transform.imageSize, transform.viewportSize) * transform.zoom;
+}
+
+function zoomBounds(imageSize: Size, viewportSize: Size) {
+  const scale = fitScale(imageSize, viewportSize);
+  if (scale <= 0) return { minZoom: VIEW_ZOOM_MIN, maxZoom: VIEW_ZOOM_MAX };
+  return {
+    minZoom: Math.min(VIEW_ZOOM_MIN, VIEW_SCALE_PRESET_MIN / scale),
+    maxZoom: Math.max(VIEW_ZOOM_MAX, VIEW_SCALE_PRESET_MAX / scale),
+  };
 }
 
 function clampCenter(transform: ViewTransform, center: Point): Point {
@@ -47,18 +59,18 @@ function clampCenter(transform: ViewTransform, center: Point): Point {
 export function createViewTransform(
   imageSize: Size,
   viewportSize: Size,
-  minZoom = VIEW_ZOOM_MIN,
-  maxZoom = VIEW_ZOOM_MAX,
 ): ViewTransform {
-  if (!validSize(imageSize) || minZoom <= 0 || maxZoom < minZoom) throw new RangeError("INVALID_VIEW_TRANSFORM");
+  if (!validSize(imageSize)) throw new RangeError("INVALID_VIEW_TRANSFORM");
+  const { minZoom, maxZoom } = zoomBounds(imageSize, viewportSize);
   const transform: ViewTransform = {
     imageSize,
     viewportSize,
     center: { x: imageSize.width / 2, y: imageSize.height / 2 },
-    zoom: minZoom,
+    zoom: 1,
     minZoom,
     maxZoom,
     fitMode: "contain",
+    scaleMode: "fit",
     revision: 0,
   };
   return { ...transform, center: clampCenter(transform, transform.center) };
@@ -83,9 +95,13 @@ export function viewportToImage(transform: ViewTransform, point: Point): Point {
 
 export function zoomAtViewportPoint(transform: ViewTransform, nextZoom: number, anchor: Point): ViewTransform {
   const zoom = Math.max(transform.minZoom, Math.min(transform.maxZoom, nextZoom));
-  if (zoom === transform.zoom) return transform;
+  if (zoom === transform.zoom) {
+    return transform.scaleMode === "manual"
+      ? transform
+      : { ...transform, scaleMode: "manual", revision: transform.revision + 1 };
+  }
   const anchoredImagePoint = viewportToImage(transform, anchor);
-  const next = { ...transform, zoom, revision: transform.revision + 1 };
+  const next: ViewTransform = { ...transform, zoom, scaleMode: "manual", revision: transform.revision + 1 };
   const scale = effectiveScale(next);
   const center = {
     x: anchoredImagePoint.x - (anchor.x - next.viewportSize.width / 2) / scale,
@@ -94,15 +110,19 @@ export function zoomAtViewportPoint(transform: ViewTransform, nextZoom: number, 
   return { ...next, center: clampCenter(next, center) };
 }
 
+export function scaleViewTransform(transform: ViewTransform, nextScale: number, anchor: Point): ViewTransform {
+  const scale = fitScale(transform.imageSize, transform.viewportSize);
+  if (scale <= 0 || !Number.isFinite(nextScale) || nextScale <= 0) return transform;
+  return zoomAtViewportPoint(transform, nextScale / scale, anchor);
+}
+
 export function stepViewZoom(transform: ViewTransform, direction: -1 | 1, anchor: Point): ViewTransform {
-  const nextZoom = Math.round((transform.zoom + direction * VIEW_ZOOM_STEP) * 1_000_000) / 1_000_000;
-  return zoomAtViewportPoint(transform, nextZoom, anchor);
+  const nextScale = Math.round((effectiveScale(transform) + direction * VIEW_SCALE_STEP) * 1_000_000) / 1_000_000;
+  return scaleViewTransform(transform, nextScale, anchor);
 }
 
 export function actualSizeViewTransform(transform: ViewTransform): ViewTransform {
-  const scale = fitScale(transform.imageSize, transform.viewportSize);
-  if (scale <= 0) return transform;
-  return zoomAtViewportPoint(transform, 1 / scale, {
+  return scaleViewTransform(transform, 1, {
     x: transform.viewportSize.width / 2,
     y: transform.viewportSize.height / 2,
   });
@@ -125,16 +145,33 @@ export function resizeViewTransform(transform: ViewTransform, viewportSize: Size
   if (viewportSize.width === transform.viewportSize.width && viewportSize.height === transform.viewportSize.height) {
     return transform;
   }
-  const next = { ...transform, viewportSize, revision: transform.revision + 1 };
-  return { ...next, center: clampCenter(next, transform.center) };
+  const currentScale = effectiveScale(transform);
+  const nextFitScale = fitScale(transform.imageSize, viewportSize);
+  const { minZoom, maxZoom } = zoomBounds(transform.imageSize, viewportSize);
+  const zoom = transform.scaleMode === "fit" || nextFitScale <= 0
+    ? 1
+    : Math.max(minZoom, Math.min(maxZoom, currentScale / nextFitScale));
+  const center = transform.scaleMode === "fit"
+    ? { x: transform.imageSize.width / 2, y: transform.imageSize.height / 2 }
+    : transform.center;
+  const next: ViewTransform = {
+    ...transform,
+    viewportSize,
+    zoom,
+    minZoom,
+    maxZoom,
+    center,
+    revision: transform.revision + 1,
+  };
+  return { ...next, center: clampCenter(next, center) };
 }
 
 export function fitViewTransform(transform: ViewTransform): ViewTransform {
   const center = { x: transform.imageSize.width / 2, y: transform.imageSize.height / 2 };
-  if (transform.zoom === transform.minZoom && transform.center.x === center.x && transform.center.y === center.y) {
+  if (transform.scaleMode === "fit" && transform.zoom === 1 && transform.center.x === center.x && transform.center.y === center.y) {
     return transform;
   }
-  return { ...transform, zoom: transform.minZoom, center, revision: transform.revision + 1 };
+  return { ...transform, zoom: 1, center, scaleMode: "fit", revision: transform.revision + 1 };
 }
 
 export function viewPlacement(transform: ViewTransform) {

@@ -19,7 +19,7 @@
 
 ## Comparison findings
 
-1. Resolved — compact topbar icons were initially reduced with their visually hidden labels. The compact selector now excludes `.ui-icon`; supplied Fit, Fullscreen, Single View, Dual View and Folder Open SVGs remain visible at 720×600.
+1. Resolved — compact topbar icons were initially reduced with their visually hidden labels. The compact selector now excludes `.ui-icon`; supplied Fullscreen, Single View, Dual View and Folder Open SVGs remain visible at 720×600.
 2. Passed — the right tab panel measures 294px on desktop and 180px at the compact viewport. `조정` is selected by default; clicking `정보` shows only the read-only information content and switching back restores the adjustment content.
 3. Passed — the footer has exactly seven children in `3 + frame + 3` order. Mirrored button widths match at both viewports.
 4. Passed — timeline, annotation markers, progress and borderless millisecond readout stay inside the viewer workspace; the footer contains navigation only.
@@ -41,5 +41,8 @@
 - Pass 8: the seven navigation cells are centered in the space between the unequal-width utility groups; left/right breathing room matches and subtle divider lines separate all three footer regions.
 - Pass 9: a matching SVG gear precedes the Settings label without changing footer spacing or introducing an icon dependency.
 - Pass 10: each footer divider is centered in the responsive blank space between a utility group and the navigation controls.
+- Pass 11: both footer dividers use the annotation yellow `#FFD54F` as a restrained Polestar-inspired accent.
+- Pass 12: both dividers use the same 2px raster-stable width and opacity. The borderless Settings shortcut uses the same muted color as the zoom control and the user-approved 13px label at both QA viewports.
+- Pass 13: the zoom cell continuously shows the current original-pixel percentage; its menu contains Fit and seven 50–200% presets. Automated interaction verified `71.48% → 50% → 60% → 71.48%`, and the separate Fit button is absent.
 
 Result: passed

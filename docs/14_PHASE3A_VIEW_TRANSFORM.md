@@ -12,6 +12,17 @@ Phase 2.3 decoder/cache/색 경로를 변경하지 않고 Zoom, Pan, Fit과 Elec
 - 10분 반복 조작: 통과
 - NSIS·실제 설치 앱: 통과(Explorer cross-window drop만 별도 실기 확인 필요)
 
+## v0.5.2 사용자 승인 확대율 표시 변경
+
+Phase 3A의 image pixel center 좌표식과 내부 `zoom = 실제 scale / fitScale` 의미는 유지한다. 다만 v0.5.2 UI에서는 사용자 승인에 따라 다음 동작이 Phase 3A의 과거 `Fit보다 작은 축소 금지` 정책보다 우선한다.
+
+- 사용자에게 보이는 `%`는 Fit 대비가 아니라 원본 픽셀 대비 `effectiveScale × 100`이다.
+- 새 영상은 contain 화면 맞춤으로 시작하지만 확대율 셀에는 계산된 현재 `%`를 표시한다.
+- 선택 메뉴는 `화면 맞춤, 50%, 75%, 100%, 125%, 150%, 175%, 200%`를 제공한다.
+- 버튼·키보드·Ctrl+wheel의 고정 step은 현재 원본 픽셀 배율에서 10%p다.
+- 수동 배율은 창 크기가 바뀌어도 실제 scale을 유지하고, 화면 맞춤 상태는 새 viewport의 contain Fit을 다시 계산한다.
+- 기존 Fit 대비 1~10배 범위는 보존하되 50~200% 선택 항목이 항상 도달 가능하도록 내부 clamp 범위를 필요한 만큼 확장한다.
+
 Video Level/Width, Gamma, preset, Sharp, 자동 재생, 주석, 이미지 저장과 DICOM/PACS는 시작하지 않았다.
 
 ## 목적과 구조

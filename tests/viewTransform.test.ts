@@ -9,6 +9,7 @@ import {
   imageToViewport,
   panByViewportDelta,
   resizeViewTransform,
+  scaleViewTransform,
   stepViewZoom,
   viewportToImage,
   zoomAtViewportPoint,
@@ -53,16 +54,25 @@ test("clamps zoom and pan while centering undersized axes", () => {
   assert.equal(fit.zoom, 1);
 });
 
-test("preserves the viewed image center across resize and frame reuse", () => {
+test("preserves manual pixel scale and viewed image center across resize and frame reuse", () => {
   const transform = panByViewportDelta(
-    zoomAtViewportPoint(createViewTransform({ width: 1000, height: 800 }, { width: 800, height: 600 }), 2, { x: 400, y: 300 }),
+    scaleViewTransform(createViewTransform({ width: 1000, height: 800 }, { width: 800, height: 600 }), 1.5, { x: 400, y: 300 }),
     { x: -80, y: 40 },
   );
   const resized = resizeViewTransform(transform, { width: 1200, height: 700 });
   close(resized.center.x, transform.center.x);
   close(resized.center.y, transform.center.y);
-  assert.equal(resized.zoom, transform.zoom);
+  close(effectiveScale(resized), effectiveScale(transform));
+  assert.equal(resized.scaleMode, "manual");
   assert.equal(resized, resizeViewTransform(resized, resized.viewportSize));
+});
+
+test("keeps contain fit selected across resize", () => {
+  const transform = createViewTransform({ width: 1000, height: 800 }, { width: 800, height: 600 });
+  const resized = resizeViewTransform(transform, { width: 1200, height: 700 });
+  assert.equal(resized.zoom, 1);
+  assert.equal(resized.scaleMode, "fit");
+  close(effectiveScale(resized), fitScale(resized.imageSize, resized.viewportSize));
 });
 
 test("repeated inverse zooms do not drift at the viewport center", () => {
@@ -77,17 +87,18 @@ test("repeated inverse zooms do not drift at the viewport center", () => {
   assert.equal(transform.zoom, 1);
 });
 
-test("steps zoom by fixed ten percentage points instead of multiplying", () => {
+test("steps original-pixel scale by fixed ten percentage points", () => {
   const anchor = { x: 400, y: 300 };
   let transform = createViewTransform({ width: 1000, height: 800 }, { width: 800, height: 600 });
+  close(effectiveScale(transform), 0.75);
   transform = stepViewZoom(transform, 1, anchor);
-  assert.equal(transform.zoom, 1.1);
+  close(effectiveScale(transform), 0.85);
   transform = stepViewZoom(transform, 1, anchor);
-  assert.equal(transform.zoom, 1.2);
+  close(effectiveScale(transform), 0.95);
   transform = stepViewZoom(transform, -1, anchor);
-  assert.equal(transform.zoom, 1.1);
+  close(effectiveScale(transform), 0.85);
   transform = stepViewZoom(fitViewTransform(transform), -1, anchor);
-  assert.equal(transform.zoom, 1);
+  close(effectiveScale(transform), 0.65);
   const maximum = zoomAtViewportPoint(transform, 10, anchor);
   assert.equal(stepViewZoom(maximum, 1, anchor), maximum);
 });
@@ -103,7 +114,16 @@ test("keeps fixed-step cursor anchor stable without round-trip drift", () => {
   const after = viewportToImage(transform, anchor);
   close(after.x, before.x);
   close(after.y, before.y);
-  assert.equal(transform.zoom, 1);
+  close(effectiveScale(transform), 0.75);
+});
+
+test("selects the requested original-pixel scale and keeps the viewport center anchored", () => {
+  const transform = createViewTransform({ width: 1000, height: 800 }, { width: 800, height: 600 });
+  const anchor = { x: 400, y: 300 };
+  const scaled = scaleViewTransform(transform, 0.5, anchor);
+  close(effectiveScale(scaled), 0.5);
+  assert.equal(scaled.scaleMode, "manual");
+  close(effectiveScale(scaleViewTransform(scaled, 2, anchor)), 2);
 });
 
 test("sets original pixel size while preserving the viewed center", () => {

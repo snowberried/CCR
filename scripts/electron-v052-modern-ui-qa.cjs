@@ -20,6 +20,20 @@ const expectedNavigation = ["첫 프레임", "5프레임 이전", "이전 프레
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+async function withTimeout(promise, timeoutMs, label) {
+  let timeout;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function firstMediaFile() {
   const entries = await readdir(sampleDirectory, { withFileTypes: true });
   const entry = entries.find((candidate) => candidate.isFile() && [".mp4", ".mov", ".avi", ".mkv"].includes(path.extname(candidate.name).toLowerCase()));
@@ -65,6 +79,9 @@ async function inspectLayout(window) {
     const footerViewRect=footerViewControls?.getBoundingClientRect();
     const controlsRect=controls.getBoundingClientRect();
     const dividers=[...footer.querySelectorAll('.footer-section-divider')];
+    const settingsStyle=settingsButton?getComputedStyle(settingsButton):null;
+    const zoomValueSelect=footerViewControls?.querySelector('.zoom-value-select');
+    const zoomValueStyle=zoomValueSelect?getComputedStyle(zoomValueSelect):null;
     const dividerCenters=dividers.map((divider)=>{const value=divider.getBoundingClientRect();return (value.left+value.right)/2;});
     const controlChildren=[...controls.children].map((node)=>({tag:node.tagName,className:node.className,rect:{left:node.getBoundingClientRect().left,right:node.getBoundingClientRect().right,width:node.getBoundingClientRect().width}}));
     return {
@@ -79,6 +96,9 @@ async function inspectLayout(window) {
         topbarFitCount:[...document.querySelectorAll('.topbar button')].filter((button)=>button.title.startsWith('화면 맞춤')).length,
         footerZoomCount:footerViewControls?.querySelectorAll('.zoom-control-group').length??0,
         footerFitCount:[...(footerViewControls?.querySelectorAll('button')??[])].filter((button)=>button.title.startsWith('화면 맞춤')).length,
+        zoomSelectCount:footerViewControls?.querySelectorAll('.zoom-value-select').length??0,
+        zoomCurrentText:zoomValueSelect?.selectedOptions[0]?.textContent.trim(),
+        zoomOptionLabels:zoomValueSelect?[...zoomValueSelect.options].filter((option)=>!option.hidden).map((option)=>option.textContent.trim()):[],
         navigationCenterOffset:Math.abs((controlsRect.left+controlsRect.right)/2-(footer.getBoundingClientRect().left+footer.getBoundingClientRect().right)/2),
         utilityGapDelta:settingsRect&&footerViewRect?Math.abs((controlsRect.left-settingsRect.right)-(footerViewRect.left-controlsRect.right)):null,
         dividerCount:dividers.length,
@@ -87,6 +107,13 @@ async function inspectLayout(window) {
           Math.abs(dividerCenters[1]-(controlsRect.right+footerViewRect.left)/2),
         ):null,
         dividersVisible:dividers.every((divider)=>Number.parseFloat(getComputedStyle(divider).width)>0),
+        dividerColors:dividers.map((divider)=>getComputedStyle(divider).backgroundColor),
+        dividerWidths:dividers.map((divider)=>getComputedStyle(divider).width),
+        dividerOpacities:dividers.map((divider)=>getComputedStyle(divider).opacity),
+        settingsBorderWidth:settingsStyle?.borderTopWidth,
+        settingsFontSize:settingsStyle?.fontSize,
+        settingsColor:settingsStyle?.color,
+        zoomValueColor:zoomValueStyle?.color,
         settingsClear:Boolean(settingsRect&&settingsRect.right<=controlsRect.left),
         viewControlsClear:Boolean(footerViewRect&&controlsRect.right<=footerViewRect.left),
       },
@@ -192,6 +219,29 @@ async function main() {
       return {before,after:{gamma:gamma.value,preset:preset.value}};
     })()`, true);
 
+    const zoomContract = await withTimeout(window.webContents.executeJavaScript(`(async () => {
+      const state=()=>{
+        const select=document.querySelector('.zoom-value-select');
+        return {
+          label:select?.selectedOptions[0]?.textContent.trim(),
+          options:select?[...select.options].filter((option)=>!option.hidden).map((option)=>option.textContent.trim()):[],
+        };
+      };
+      const select=document.querySelector('.zoom-value-select');
+      const initial=state();
+      select.value='50';
+      select.dispatchEvent(new Event('change',{bubbles:true}));
+      await new Promise((resolve)=>setTimeout(resolve,25));
+      const fifty=state();
+      document.querySelectorAll('.zoom-control-group button')[1].click();
+      await new Promise((resolve)=>setTimeout(resolve,25));
+      const sixty=state();
+      select.value='fit';
+      select.dispatchEvent(new Event('change',{bubbles:true}));
+      await new Promise((resolve)=>setTimeout(resolve,25));
+      return {initial,fifty,sixty,fit:state()};
+    })()`, true), 5_000, "zoom selector contract");
+
     const beforeNext = Number(await window.webContents.executeJavaScript(`document.querySelector('[aria-label="프레임 번호"]').value`, true));
     await window.webContents.executeJavaScript(`document.querySelector('[aria-label="다음 프레임"]').click()`, true);
     const afterNext = Number(await waitFor(window, `(() => { const value=Number(document.querySelector('[aria-label="프레임 번호"]').value); return value>${beforeNext}?value:null; })()`, 5_000, "next frame"));
@@ -228,6 +278,7 @@ async function main() {
       frameNavigation: { beforeNext, afterNext, passed: afterNext > beforeNext },
       tabContract,
       displayResetContract,
+      zoomContract,
       desktop,
       compact,
       desktopSymmetry,
@@ -250,11 +301,20 @@ async function main() {
       && layout.footerUtilityLayout.topbarZoomCount === 0
       && layout.footerUtilityLayout.topbarFitCount === 0
       && layout.footerUtilityLayout.footerZoomCount === 1
-      && layout.footerUtilityLayout.footerFitCount === 1
+      && layout.footerUtilityLayout.footerFitCount === 0
+      && layout.footerUtilityLayout.zoomSelectCount === 1
+      && layout.footerUtilityLayout.zoomCurrentText.endsWith('%')
+      && JSON.stringify(layout.footerUtilityLayout.zoomOptionLabels) === JSON.stringify(['화면 맞춤','50%','75%','100%','125%','150%','175%','200%'])
       && layout.footerUtilityLayout.utilityGapDelta <= 1
       && layout.footerUtilityLayout.dividerCount === 2
       && layout.footerUtilityLayout.dividerMidpointDelta <= 1
       && layout.footerUtilityLayout.dividersVisible
+      && layout.footerUtilityLayout.dividerColors.every((color)=>color === "rgb(255, 213, 79)")
+      && layout.footerUtilityLayout.dividerWidths.every((width)=>Number.parseFloat(width)>1)
+      && layout.footerUtilityLayout.dividerOpacities.every((opacity)=>opacity === "0.8")
+      && layout.footerUtilityLayout.settingsBorderWidth === "0px"
+      && layout.footerUtilityLayout.settingsFontSize === "13px"
+      && layout.footerUtilityLayout.settingsColor === layout.footerUtilityLayout.zoomValueColor
       && layout.footerUtilityLayout.settingsClear
       && layout.footerUtilityLayout.viewControlsClear
       && JSON.stringify(layout.toolOrder) === JSON.stringify(expectedTools)
@@ -288,6 +348,11 @@ async function main() {
       && result.displayResetContract.before.preset === "custom"
       && result.displayResetContract.after.gamma === "1"
       && result.displayResetContract.after.preset === "original"
+      && result.zoomContract.initial.label.endsWith('%')
+      && JSON.stringify(result.zoomContract.initial.options) === JSON.stringify(['화면 맞춤','50%','75%','100%','125%','150%','175%','200%'])
+      && result.zoomContract.fifty.label === "50%"
+      && result.zoomContract.sixty.label === "60%"
+      && result.zoomContract.fit.label === result.zoomContract.initial.label
       && commonContract(desktop)
       && commonContract(compact)
       && desktopSymmetry

@@ -7,7 +7,7 @@
 | 문서 | 위치 | 용도 |
 | --- | --- | --- |
 | 프로젝트 개요 | `../README.md` | CT Cine Reviewer 명칭, 현재 단계, v0.1 범위와 제외 범위 |
-| Latest Project Handoff | `../HANDOFF_PHASE5.md` | Phase 5 비교 뷰·crosshair와 0.5.0 설치본 상태 |
+| Latest Project Handoff | `../HANDOFF_V052_MODERN_DARK.md` | v0.5.2 Modern Dark UI, 확대율 계약, 검증과 설치본 대기 상태 |
 | Phase 1 Handoff | `../HANDOFF_PHASE1.md` | Phase 1~2 구현 과정과 이전 기준선 |
 | 프로젝트 작업 지침 | `../AGENTS.md` | 중요한 결정 전 사용자 확인, 의료·보안 경계, 단계별 검증 원칙 |
 
@@ -39,6 +39,7 @@
 | Frame Navigation & Right Panel Tabs | `21_FRAME_NAVIGATION_LAYOUT.md` | 프레임 시간 표시, 시각적 타임라인과 조정·정보 탭 패널 |
 | v0.5.2 Modern Dark Professional | `22_V052_MODERN_DARK_PROFESSIONAL.md` | 기능 동결을 유지한 Modern Dark UI, SVG 자산, 3:1:3 탐색과 시각 QA |
 | v0.5.2 Design QA | `../design-qa.md` | 최종 시안과 1440×900·720×600 구현 비교 및 판정 |
+| v0.5.2 Modern Dark Handoff | `../HANDOFF_V052_MODERN_DARK.md` | 최신 UI·확대율 의미, 검증 결과, 설치본과 후속 작업 상태 |
 | Phase 2.2 Handoff | `../HANDOFF_PHASE2_2.md` | 최종 검증 상태와 제품 통합 전 승인 사항 |
 | Phase 2.3 Handoff | `../HANDOFF_PHASE2_3.md` | 제품 통합 최종 상태와 Phase 3 진입 조건 |
 | Phase 3A Handoff | `../HANDOFF_PHASE3A.md` | View Transform 최종 상태와 Phase 3B 진입 조건 |
@@ -66,6 +67,7 @@
 - v0.5.1에서 기능 의미를 유지한 채 Electron 기본 메뉴, toolbar 계층과 한국어 표시 명칭을 정리했다.
 - 프레임 시간 표시와 시각적 타임라인, 기본 조정 상태의 조정·정보 탭 패널을 추가했다. 동영상 자동 재생은 사용자 결정으로 폐기했다.
 - v0.5.2에서 Modern Dark Professional 리디자인, 제공 SVG 아이콘과 3:1:3 대칭 프레임 탐색을 적용했다.
+- 확대율 셀은 원본 픽셀 기준 현재 `%`를 표시하고 Fit·50~200% 선택과 실제 배율 10%p step을 제공한다.
 - 사용자 승인 전 프로젝트 저장, 마스크와 DICOM/PACS를 시작하지 않는다.
 
 ## 갱신 규칙

@@ -187,9 +187,11 @@ const clipboardPng = () => clipboard.readImage().toPNG();
     await window.webContents.executeJavaScript(`(() => { const input=document.querySelector('[aria-label="화면 보정 감마"]'); const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set; setter.call(input,"1.5"); input.dispatchEvent(new Event("input",{bubbles:true})); })()`, true);
     await waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).gamma === 1.5`, 5_000, "display-restored");
 
-    await window.webContents.executeJavaScript(`document.querySelector('input[value="current-view"]').click(); document.querySelector('[title^="화면 맞춤"]').click()`, true);
+    await window.webContents.executeJavaScript(`(() => { document.querySelector('input[value="current-view"]').click(); const select=document.querySelector('.zoom-value-select'); select.value='fit'; select.dispatchEvent(new Event('change',{bubbles:true})); })()`, true);
+    await waitFor(window, `document.querySelector('.zoom-value-select').selectedOptions[0].textContent.trim().endsWith('%')`, 5_000, "fit zoom");
     const fitCurrent = await copy(4, "current-fit");
-    await window.webContents.executeJavaScript(`document.querySelector('.zoom-value-button').click()`, true);
+    await window.webContents.executeJavaScript(`(() => { const select=document.querySelector('.zoom-value-select'); select.value='100'; select.dispatchEvent(new Event('change',{bubbles:true})); })()`, true);
+    await waitFor(window, `document.querySelector('.zoom-value-select').selectedOptions[0].textContent.trim()==='100%'`, 5_000, "100 percent zoom");
     const actualCurrent = await copy(4, "current-actual");
     await window.webContents.executeJavaScript(`(() => { const plus=document.querySelector('[title="10%p 확대 (+)"]'); for(let i=0;i<10;i+=1)plus.click(); document.querySelector('[aria-label="Pan 도구"]').click(); })()`, true);
     const panGeometry = await window.webContents.executeJavaScript(`(() => { const r=document.querySelector(".viewer-surface").getBoundingClientRect(); return {a:{x:Math.round(r.left+r.width*.5),y:Math.round(r.top+r.height*.65)},b:{x:Math.round(r.left+r.width*.5),y:Math.round(r.top+r.height*.45)}}; })()`, true);
