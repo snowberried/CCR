@@ -1,6 +1,6 @@
 {
   "name": "ct-cine-reviewer",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "private": true,
   "author": "snowberried",
   "description": "Local CT cine MP4 frame review viewer.",
@@ -41,7 +41,7 @@
     "soak:phase2.2": "node --expose-gc --import tsx scripts/soak-phase22.ts --minutes=30",
     "start": "npm run build && electron .",
     "package:unpacked": "npm run build && electron-builder --win dir --x64",
-    "package:win": "npm run build && electron-builder --win nsis --x64 && node --import tsx scripts/finalize-windows-package.ts",
+    "package:win": "npm run build && electron-builder --win nsis --x64 --publish never && node --import tsx scripts/finalize-windows-package.ts",
     "verify:package": "node --import tsx scripts/finalize-windows-package.ts --verify-only"
   },
   "dependencies": {

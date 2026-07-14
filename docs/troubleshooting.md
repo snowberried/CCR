@@ -184,3 +184,28 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ffmpeg.p
 
 - `build/installer.nsh`
 - `package.json`
+
+## 2026-07-14 GitHub Windows 러너에서 Electron 배포본 누락으로 패키징 실패
+
+상태: 해결 후 재검증 진행
+
+### 증상
+
+- 태그 기반 `CCR Windows Release`가 테스트까지 통과한 뒤 `The specified electronDist does not exist`로 실패했다.
+- 누락 경로는 `node_modules/electron/dist`였고 공개 GitHub Release는 생성되지 않았다.
+
+### 원인
+
+Electron 43.1.0 npm 패키지에는 자동 `postinstall` 스크립트가 없다. 기존 로컬 환경에는 Electron 배포본이 이미 있어 문제가 드러나지 않았지만, GitHub의 깨끗한 `npm ci` 환경에는 해당 디렉터리가 생성되지 않았다. 또한 태그 환경의 electron-builder는 명시하지 않으면 암묵적 publish를 시도할 수 있다.
+
+### 해결 절차
+
+- 의존성 설치 후 `node node_modules/electron/install.js`를 실행한다.
+- `node_modules/electron/dist/electron.exe`가 실제 존재하는지 검사한다.
+- 패키징 명령에 `--publish never`를 지정하고 GitHub Release 생성은 별도 GitHub CLI 단계에서만 수행한다.
+- 패키징과 `verify:package`를 별도 Actions 단계로 분리한다.
+
+### 검증 방법
+
+- Actions에서 Electron 설치 단계, 전체 테스트, 패키징, 검증, Release 생성 단계가 순서대로 통과하는지 확인한다.
+- Latest Release의 설치 파일과 `.sha256` 자산을 확인한다.
