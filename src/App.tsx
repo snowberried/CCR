@@ -120,10 +120,13 @@ import redoIcon from "./assets/icons/redo.svg";
 import resetIcon from "./assets/icons/reset.svg";
 import savePngIcon from "./assets/icons/save-png.svg";
 import selectIcon from "./assets/icons/select.svg";
+import settingsIcon from "./assets/icons/settings.svg";
 import singleViewIcon from "./assets/icons/single-view.svg";
 import textIcon from "./assets/icons/text.svg";
 import undoIcon from "./assets/icons/undo.svg";
 import zoomIcon from "./assets/icons/zoom.svg";
+
+const paneRegionLabel = (paneId: PaneId) => paneId === "a" ? "왼쪽 영역" : "오른쪽 영역";
 
 type ViewerStatus = "idle" | "probing" | "ready" | "decoding" | "cancelled" | "error";
 
@@ -272,6 +275,7 @@ export function App() {
   const [includeExportAnnotations, setIncludeExportAnnotations] = useState(true);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportMessage, setExportMessage] = useState<string | null>(null);
+  const [rightPanelTab, setRightPanelTab] = useState<"adjustment" | "information">("adjustment");
 
   const activePaneState = paneStates[activePane];
   const viewTransform = activePaneState.viewTransform;
@@ -1633,22 +1637,7 @@ export function App() {
             : "영상 없음"}
         </div>
         <div className="topbar-actions">
-          <div className="zoom-control-group" role="group" aria-label="확대 및 축소">
-            <button type="button" title="10%p 축소 (-)" onClick={() => zoomByStep(-1)} disabled={!metadata}><Icon src={minusIcon} /></button>
-            <button
-              type="button"
-              className="zoom-value-button"
-              aria-label={`현재 확대율 ${formatZoomPercent(viewTransform?.zoom ?? 1)} · 원본 픽셀 100%로 복귀`}
-              title="원본 픽셀 100%로 복귀"
-              onClick={actualSizeView}
-              disabled={!metadata}
-            >{formatZoomPercent(viewTransform?.zoom ?? 1)}</button>
-            <button type="button" title="10%p 확대 (+)" onClick={() => zoomByStep(1)} disabled={!metadata}><Icon src={plusIcon} /></button>
-          </div>
           <div className="view-command-group" role="group" aria-label="화면 명령">
-            <button type="button" title="화면 맞춤 (0)" onClick={fitView} disabled={!metadata}>
-              <Icon src={fitIcon} /><span>화면 맞춤</span>
-            </button>
             <button
               type="button"
               aria-label={isFullscreen ? "창 모드" : "전체 화면"}
@@ -1744,9 +1733,9 @@ export function App() {
                 onLostPointerCapture={() => { hideCrosshairs(); if (activePointerRef.current) cancelPointerGesture(); }}
                 onDoubleClick={(event) => onViewerDoubleClick(paneId, event)}
                 onContextMenu={(event) => event.preventDefault()}
-                aria-label={dualView ? `뷰 ${paneId.toUpperCase()}` : "CT cine frame"}
+                aria-label={dualView ? paneRegionLabel(paneId) : "CT cine frame"}
               >
-                {dualView && <span className="pane-label">뷰 {paneId.toUpperCase()}</span>}
+                {dualView && <span className="pane-label">{paneRegionLabel(paneId)}</span>}
                 <canvas
                   ref={(element) => { canvasRefs.current[paneId] = element; }}
                   className={metadata ? "frame-canvas" : "frame-canvas empty"}
@@ -1790,15 +1779,39 @@ export function App() {
           </div>
         </section>
 
-        <aside className="inspection-panel" aria-label="조정">
-          <div className="side-panel-heading">
-            <strong>조정</strong>
-            <span>선택한 뷰</span>
+        <aside className="right-sidebar" aria-label="조정 및 정보">
+          <div className="right-panel-tabs" role="tablist" aria-label="오른쪽 패널">
+            <button
+              type="button"
+              role="tab"
+              id="adjustment-tab"
+              aria-controls="adjustment-panel"
+              aria-selected={rightPanelTab === "adjustment"}
+              className={rightPanelTab === "adjustment" ? "is-active" : ""}
+              onClick={() => setRightPanelTab("adjustment")}
+            >조정</button>
+            <button
+              type="button"
+              role="tab"
+              id="information-tab"
+              aria-controls="information-panel"
+              aria-selected={rightPanelTab === "information"}
+              className={rightPanelTab === "information" ? "is-active" : ""}
+              onClick={() => setRightPanelTab("information")}
+            >정보</button>
           </div>
 
+          <section
+            className="inspection-panel"
+            id="adjustment-panel"
+            role="tabpanel"
+            aria-labelledby="adjustment-tab"
+            aria-label="조정"
+            hidden={rightPanelTab !== "adjustment"}
+          >
           <details className="display-panel" open>
             <summary>
-              <span>화면 보정 · 뷰 {activePane.toUpperCase()}</span>
+              <span>화면 보정 · {paneRegionLabel(activePane)}</span>
               <button
                 type="button"
                 className={displayActive ? "panel-reset-button display-active" : "panel-reset-button"}
@@ -1808,8 +1821,9 @@ export function App() {
                   setDisplayState((current) => applyVideoDisplayPreset(current, "original"));
                 }}
                 disabled={!metadata}
-                title="화면 보정 재설정"
-              ><Icon src={resetIcon} /><span>재설정</span></button>
+                aria-label="화면 보정 초기 설정"
+                title="화면 보정 초기 설정"
+              ><Icon src={resetIcon} /><span>초기 설정</span></button>
             </summary>
             <p className="display-help" title="MP4 화면 픽셀 보정이며 DICOM HU Window가 아닙니다.">
               MP4 화면 픽셀 보정 · HU Window 아님
@@ -1851,7 +1865,6 @@ export function App() {
             ))}
             <div className="display-buttons">
               <button type="button" onClick={() => setDisplayState(toggleVideoDisplayInvert)} disabled={!metadata} aria-pressed={displayState.invert}><Icon src={inverseIcon} />반전</button>
-              <button type="button" onClick={() => setDisplayState((current) => applyVideoDisplayPreset(current, "original"))} disabled={!metadata}>원본</button>
               <button
                 type="button"
                 className={comparingOriginal ? "is-comparing" : ""}
@@ -1947,13 +1960,16 @@ export function App() {
             <p className="export-result" aria-live="polite">{exportMessage ?? " "}</p>
           </details>
 
-        </aside>
+          </section>
 
-        <aside className="information-panel" aria-label="정보">
-          <div className="side-panel-heading">
-            <strong>정보</strong>
-            <span>영상 · 상태</span>
-          </div>
+          <section
+            className="information-panel"
+            id="information-panel"
+            role="tabpanel"
+            aria-labelledby="information-tab"
+            aria-label="정보"
+            hidden={rightPanelTab !== "information"}
+          >
           <div className="primary-readout">
             <span>프레임</span>
             <strong>{frameDisplay}</strong>
@@ -1980,7 +1996,7 @@ export function App() {
               <div><dt>요청</dt><dd>{requestMs === null ? "-" : `${requestMs.toFixed(1)} ms`}</dd></div>
               <div><dt>Probe</dt><dd>{metadata ? `${metadata.probeMs.toFixed(1)} ms` : "-"}</dd></div>
               <div><dt>세션 / 세대</dt><dd>{diagnostics ? `${diagnostics.session} / ${diagnostics.generation}` : "-"}</dd></div>
-              <div><dt>비교 보기</dt><dd>{dualView ? `ON · 뷰 ${activePane.toUpperCase()}` : "OFF"}</dd></div>
+              <div><dt>비교 보기</dt><dd>{dualView ? `ON · ${paneRegionLabel(activePane)}` : "OFF"}</dd></div>
               <div><dt>Zoom</dt><dd>{viewTransform ? `${(viewTransform.zoom * 100).toFixed(0)}%` : "-"}</dd></div>
               <div><dt>View center</dt><dd>{viewTransform ? `${viewTransform.center.x.toFixed(1)}, ${viewTransform.center.y.toFixed(1)}` : "-"}</dd></div>
               <div><dt>View revision</dt><dd>{viewTransform?.revision ?? "-"}</dd></div>
@@ -1996,10 +2012,19 @@ export function App() {
             </dl>
           </section>
           {error && <p className="error-message">{error}</p>}
+          </section>
         </aside>
       </section>
 
       <footer className="navigation-footer">
+        <button
+          className={`footer-settings-button${rightPanelTab === "adjustment" ? " is-active" : ""}`}
+          type="button"
+          aria-label="조정 설정 열기"
+          aria-pressed={rightPanelTab === "adjustment"}
+          onClick={() => setRightPanelTab("adjustment")}
+        ><Icon src={settingsIcon} /><span>설정</span></button>
+        <span className="footer-section-divider" aria-hidden="true" />
         <nav className="frame-navigation-bar" aria-label="프레임 탐색">
           <div className="precision-controls" role="group" aria-label="정밀 프레임 이동">
             <button className="frame-nav-button is-edge" type="button" aria-label="첫 프레임" title="첫 프레임" onClick={() => goToFrame(0)} disabled={!metadata}><Icon src={firstFrameIcon} /></button>
@@ -2024,6 +2049,24 @@ export function App() {
             <button className="frame-nav-button is-edge" type="button" aria-label="마지막 프레임" title="마지막 프레임" onClick={() => metadata && goToFrame(metadata.frameCount - 1)} disabled={!metadata || (metadata.productCache === true && metadata.analysisReady === false)}><Icon src={lastFrameIcon} /></button>
           </div>
         </nav>
+        <span className="footer-section-divider" aria-hidden="true" />
+        <div className="footer-view-controls" role="group" aria-label="화면 크기 설정">
+          <div className="zoom-control-group" role="group" aria-label="확대 및 축소">
+            <button type="button" title="10%p 축소 (-)" onClick={() => zoomByStep(-1)} disabled={!metadata}><Icon src={minusIcon} /></button>
+            <button
+              type="button"
+              className="zoom-value-button"
+              aria-label={`현재 확대율 ${formatZoomPercent(viewTransform?.zoom ?? 1)} · 원본 픽셀 100%로 복귀`}
+              title="원본 픽셀 100%로 복귀"
+              onClick={actualSizeView}
+              disabled={!metadata}
+            >{formatZoomPercent(viewTransform?.zoom ?? 1)}</button>
+            <button type="button" title="10%p 확대 (+)" onClick={() => zoomByStep(1)} disabled={!metadata}><Icon src={plusIcon} /></button>
+          </div>
+          <button className="footer-fit-button" type="button" title="화면 맞춤 (0)" onClick={fitView} disabled={!metadata}>
+            <Icon src={fitIcon} /><span>화면 맞춤</span>
+          </button>
+        </div>
       </footer>
     </main>
   );

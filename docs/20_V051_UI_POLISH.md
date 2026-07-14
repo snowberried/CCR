@@ -33,11 +33,11 @@ v0.5.1은 v0.5.0 기능 동결 기준선 위에서 메뉴, 명칭, 도구 배치
 - 전체 → 전체 화면, fullscreen 진입 후 창 모드
 - 비교 뷰 → 비교 보기
 - 열기 → 파일 열기
-- View A/B → 뷰 A/B
+- View A/B → 왼쪽 영역/오른쪽 영역(v0.5.2 사용자 표시 명칭)
 - Video Display → 화면 보정
 - Annotation → 주석
 - Preset / Level / Width / Gamma / Sharp → 프리셋 / 레벨 / 폭 / 감마 / 선명도
-- Inverse / Original → 반전 / 원본
+- Inverse / Original reset → 반전 / 초기 설정(v0.5.2에서 중복 원본 reset 버튼 제거)
 
 Preset id와 domain label 의미는 바꾸지 않는다. `original` option의 UI 표시만 원본으로 분리한다. “MP4 화면 픽셀 보정 · HU Window 아님” 설명은 유지한다.
 

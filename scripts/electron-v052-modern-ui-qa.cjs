@@ -51,23 +51,55 @@ async function inspectLayout(window) {
   return window.webContents.executeJavaScript(`(() => {
     const rect=(selector)=>{const value=document.querySelector(selector)?.getBoundingClientRect();return value?{left:value.left,right:value.right,top:value.top,bottom:value.bottom,width:value.width,height:value.height}:null};
     const root=document.documentElement;
-    const adjustment=rect('.inspection-panel');
-    const information=rect('.information-panel');
+    const adjustment=document.querySelector('.inspection-panel');
+    const information=document.querySelector('.information-panel');
     const navigation=[...document.querySelectorAll('.precision-controls > button')];
     const allIcons=[...document.querySelectorAll('.ui-icon')];
     const timeline=document.querySelector('.viewer-timeline');
     const time=document.querySelector('.frame-time-readout');
     const footer=document.querySelector('.navigation-footer');
     const controls=document.querySelector('.precision-controls');
+    const settingsButton=document.querySelector('.footer-settings-button');
+    const footerViewControls=document.querySelector('.footer-view-controls');
+    const settingsRect=settingsButton?.getBoundingClientRect();
+    const footerViewRect=footerViewControls?.getBoundingClientRect();
+    const controlsRect=controls.getBoundingClientRect();
+    const dividers=[...footer.querySelectorAll('.footer-section-divider')];
+    const dividerCenters=dividers.map((divider)=>{const value=divider.getBoundingClientRect();return (value.left+value.right)/2;});
     const controlChildren=[...controls.children].map((node)=>({tag:node.tagName,className:node.className,rect:{left:node.getBoundingClientRect().left,right:node.getBoundingClientRect().right,width:node.getBoundingClientRect().width}}));
     return {
       viewport:{width:root.clientWidth,height:root.clientHeight,scrollWidth:root.scrollWidth,scrollHeight:root.scrollHeight},
       topbar:rect('.topbar'),
       footer:rect('.navigation-footer'),
+      footerUtilityLayout:{
+        settingsLabel:settingsButton?.textContent.trim(),
+        settingsPressed:settingsButton?.getAttribute('aria-pressed'),
+        settingsIconCount:settingsButton?.querySelectorAll('.ui-icon').length??0,
+        topbarZoomCount:document.querySelectorAll('.topbar .zoom-control-group').length,
+        topbarFitCount:[...document.querySelectorAll('.topbar button')].filter((button)=>button.title.startsWith('화면 맞춤')).length,
+        footerZoomCount:footerViewControls?.querySelectorAll('.zoom-control-group').length??0,
+        footerFitCount:[...(footerViewControls?.querySelectorAll('button')??[])].filter((button)=>button.title.startsWith('화면 맞춤')).length,
+        navigationCenterOffset:Math.abs((controlsRect.left+controlsRect.right)/2-(footer.getBoundingClientRect().left+footer.getBoundingClientRect().right)/2),
+        utilityGapDelta:settingsRect&&footerViewRect?Math.abs((controlsRect.left-settingsRect.right)-(footerViewRect.left-controlsRect.right)):null,
+        dividerCount:dividers.length,
+        dividerMidpointDelta:settingsRect&&footerViewRect&&dividerCenters.length===2?Math.max(
+          Math.abs(dividerCenters[0]-(settingsRect.right+controlsRect.left)/2),
+          Math.abs(dividerCenters[1]-(controlsRect.right+footerViewRect.left)/2),
+        ):null,
+        dividersVisible:dividers.every((divider)=>Number.parseFloat(getComputedStyle(divider).width)>0),
+        settingsClear:Boolean(settingsRect&&settingsRect.right<=controlsRect.left),
+        viewControlsClear:Boolean(footerViewRect&&controlsRect.right<=footerViewRect.left),
+      },
       toolRail:rect('.viewer-tool-rail'),
-      adjustment,
-      information,
-      columnsSeparate:Boolean(adjustment&&information&&information.left>adjustment.right),
+      rightSidebar:rect('.right-sidebar'),
+      selectedTab:document.querySelector('.right-panel-tabs [aria-selected="true"]')?.textContent.trim(),
+      adjustmentHidden:adjustment.hidden,
+      informationHidden:information.hidden,
+      redundantPanelHeadings:document.querySelectorAll('.side-panel-heading').length,
+      paneLabels:[...document.querySelectorAll('.pane-label')].map((label)=>label.textContent.trim()),
+      adjustmentRegion:document.querySelector('.display-panel summary span')?.textContent.trim(),
+      displayResetLabel:document.querySelector('.panel-reset-button')?.textContent.trim(),
+      duplicateOriginalButtons:[...document.querySelectorAll('.display-buttons button')].filter((button)=>button.textContent.trim()==='원본').length,
       sourceVisible:getComputedStyle(document.querySelector('.source-summary')).display!=='none',
       toolLabelsVisible:[...document.querySelectorAll('.tool-label')].some((label)=>getComputedStyle(label).display!=='none'),
       toolOrder:[...document.querySelectorAll('.viewer-tool-rail button')].map((button)=>button.getAttribute('aria-label')),
@@ -121,11 +153,44 @@ async function main() {
     await app.whenReady();
     const window = await waitForMain(() => BrowserWindow.getAllWindows()[0], 5_000, "main window");
     if (window.webContents.isLoading()) await new Promise((resolve) => window.webContents.once("did-finish-load", resolve));
+    const initialWindowBounds = window.getBounds();
 
     await window.webContents.executeJavaScript(`document.querySelector('[aria-label="파일 열기"]').click()`, true);
     await waitFor(window, `document.querySelector('.status-ready')&&!document.querySelector('[aria-label="비교 보기"]').disabled`, 30_000, "ready media");
     await window.webContents.executeJavaScript(`document.querySelector('[aria-label="비교 보기"]').click()`, true);
     await waitFor(window, `document.querySelectorAll('.viewer-pane').length===2`, 5_000, "dual view");
+
+    const tabContract = await window.webContents.executeJavaScript(`(async () => {
+      const informationTab=document.querySelector('#information-tab');
+      const settingsButton=document.querySelector('.footer-settings-button');
+      const adjustmentPanel=document.querySelector('#adjustment-panel');
+      const informationPanel=document.querySelector('#information-panel');
+      const state=()=>({
+        selected:document.querySelector('.right-panel-tabs [aria-selected="true"]')?.textContent.trim(),
+        adjustmentHidden:adjustmentPanel.hidden,
+        informationHidden:informationPanel.hidden,
+      });
+      const initial=state();
+      informationTab.click();
+      await new Promise((resolve)=>requestAnimationFrame(resolve));
+      const information=state();
+      settingsButton.click();
+      await new Promise((resolve)=>requestAnimationFrame(resolve));
+      return {initial,information,restored:state()};
+    })()`, true);
+
+    const displayResetContract = await window.webContents.executeJavaScript(`(async () => {
+      const gamma=document.querySelector('[aria-label="화면 보정 감마"]');
+      const preset=document.querySelector('[aria-label="화면 보정 프리셋"]');
+      const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+      setter.call(gamma,'1.5');
+      gamma.dispatchEvent(new Event('input',{bubbles:true}));
+      await new Promise((resolve)=>requestAnimationFrame(resolve));
+      const before={gamma:gamma.value,preset:preset.value};
+      document.querySelector('.panel-reset-button').click();
+      await new Promise((resolve)=>requestAnimationFrame(resolve));
+      return {before,after:{gamma:gamma.value,preset:preset.value}};
+    })()`, true);
 
     const beforeNext = Number(await window.webContents.executeJavaScript(`document.querySelector('[aria-label="프레임 번호"]').value`, true));
     await window.webContents.executeJavaScript(`document.querySelector('[aria-label="다음 프레임"]').click()`, true);
@@ -159,7 +224,10 @@ async function main() {
         nativeHandle: window.getNativeWindowHandle().length > 0,
         title: window.getTitle(),
       },
+      initialWindowBounds,
       frameNavigation: { beforeNext, afterNext, passed: afterNext > beforeNext },
+      tabContract,
+      displayResetContract,
       desktop,
       compact,
       desktopSymmetry,
@@ -168,7 +236,27 @@ async function main() {
     };
 
     const commonContract = (layout) => layout.viewport.width === layout.viewport.scrollWidth
-      && layout.columnsSeparate
+      && layout.selectedTab === "조정"
+      && !layout.adjustmentHidden
+      && layout.informationHidden
+      && layout.redundantPanelHeadings === 0
+      && JSON.stringify(layout.paneLabels) === JSON.stringify(["왼쪽 영역", "오른쪽 영역"])
+      && layout.adjustmentRegion === "화면 보정 · 왼쪽 영역"
+      && layout.displayResetLabel === "초기 설정"
+      && layout.duplicateOriginalButtons === 0
+      && layout.footerUtilityLayout.settingsLabel === "설정"
+      && layout.footerUtilityLayout.settingsPressed === "true"
+      && layout.footerUtilityLayout.settingsIconCount === 1
+      && layout.footerUtilityLayout.topbarZoomCount === 0
+      && layout.footerUtilityLayout.topbarFitCount === 0
+      && layout.footerUtilityLayout.footerZoomCount === 1
+      && layout.footerUtilityLayout.footerFitCount === 1
+      && layout.footerUtilityLayout.utilityGapDelta <= 1
+      && layout.footerUtilityLayout.dividerCount === 2
+      && layout.footerUtilityLayout.dividerMidpointDelta <= 1
+      && layout.footerUtilityLayout.dividersVisible
+      && layout.footerUtilityLayout.settingsClear
+      && layout.footerUtilityLayout.viewControlsClear
       && JSON.stringify(layout.toolOrder) === JSON.stringify(expectedTools)
       && JSON.stringify(layout.navigationLabels) === JSON.stringify(expectedNavigation)
       && layout.navigationChildCount === 7
@@ -186,21 +274,32 @@ async function main() {
       && result.windowChrome.menuBarHidden
       && result.windowChrome.nativeHandle
       && result.windowChrome.title === "CT Cine Reviewer"
+      && closeTo(result.initialWindowBounds.width, 1360, 1)
+      && closeTo(result.initialWindowBounds.height, 820, 1)
       && result.frameNavigation.passed
+      && result.tabContract.initial.selected === "조정"
+      && !result.tabContract.initial.adjustmentHidden
+      && result.tabContract.initial.informationHidden
+      && result.tabContract.information.selected === "정보"
+      && result.tabContract.information.adjustmentHidden
+      && !result.tabContract.information.informationHidden
+      && result.tabContract.restored.selected === "조정"
+      && result.displayResetContract.before.gamma === "1.5"
+      && result.displayResetContract.before.preset === "custom"
+      && result.displayResetContract.after.gamma === "1"
+      && result.displayResetContract.after.preset === "original"
       && commonContract(desktop)
       && commonContract(compact)
       && desktopSymmetry
       && compactSymmetry
       && closeTo(desktop.topbar.height, 66)
       && closeTo(desktop.footer.height, 84)
-      && closeTo(desktop.adjustment.width, 294)
-      && closeTo(desktop.information.width, 244)
+      && closeTo(desktop.rightSidebar.width, 294)
       && desktop.sourceVisible
       && desktop.toolLabelsVisible
       && closeTo(compact.topbar.height, 66)
       && closeTo(compact.footer.height, 84)
-      && closeTo(compact.adjustment.width, 180)
-      && closeTo(compact.information.width, 160)
+      && closeTo(compact.rightSidebar.width, 180)
       && !compact.sourceVisible
       && !compact.toolLabelsVisible;
 

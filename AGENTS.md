@@ -29,7 +29,7 @@
 - Phase 0 기획은 완료됐다.
 - 기능 기준 커밋 `ae70761a098ce69cc47228881d3be08c348f0fd1`의 decoder/cache/navigation, View Transform, annotation, export와 crosshair 의미는 동결한다.
 - `HANDOFF_PHASE5.md`, `docs/19_PHASE5_LINKED_DUAL_VIEW.md`, `docs/20_V051_UI_POLISH.md`, `docs/21_FRAME_NAVIGATION_LAYOUT.md`와 `docs/22_V052_MODERN_DARK_PROFESSIONAL.md`를 먼저 읽고 기능 동결과 UI 배치 계약을 확인한다.
-- v0.5.2에서 Modern Dark Professional 시각 체계, 제공 SVG, 시각적 타임라인, 조정·정보 분리 컬럼과 3:1:3 대칭 프레임 탐색을 적용했다. 동영상 자동 재생과 오디오는 사용자 결정으로 계속 제외한다.
+- v0.5.2에서 Modern Dark Professional 시각 체계, 제공 SVG, 시각적 타임라인, 조정·정보 탭 패널(기본 조정)과 3:1:3 대칭 프레임 탐색을 적용했다. 동영상 자동 재생과 오디오는 사용자 결정으로 계속 제외한다.
 - Phase 1 기술 스파이크와 Phase 2 최소 실사용 뷰어 범위는 승인됐고 완료됐다.
 - 파일 열기, Canvas 표시, 정확한 프레임 탐색, 상태·진단 표시와 방향성 RAM cache를 구현했다.
 - FFmpeg는 Phase 1B에서 승인된 BtbN Windows x64 LGPL shared 고정 자산만 사용하며 `scripts/setup-ffmpeg.ps1`의 checksum 검증을 거쳐 로컬 배치한다.

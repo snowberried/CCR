@@ -16,8 +16,8 @@ const forceRgba = decoderMode === "rgba-rollback";
 
 function createWindow() {
   const window = new BrowserWindow({
-    width: 1120,
-    height: 760,
+    width: 1360,
+    height: 820,
     minWidth: 720,
     minHeight: 600,
     title: "CT Cine Reviewer",
