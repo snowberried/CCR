@@ -1,27 +1,11 @@
-export type VideoDisplayPresetId =
-  | "original"
-  | "lung-like"
-  | "mediastinum-like"
-  | "abdomen-like"
-  | "brain-like"
-  | "bone-like"
-  | "high-contrast"
-  | "inverse"
-  | "custom";
-
 export type VideoDisplayState = {
   level: number;
   width: number;
   gamma: number;
   invert: boolean;
   sharpAmount: number;
-  presetId: VideoDisplayPresetId;
+  presetId: "original" | "custom";
   revision: number;
-};
-
-export type VideoDisplayPreset = Omit<VideoDisplayState, "revision" | "presetId"> & {
-  presetId: Exclude<VideoDisplayPresetId, "custom">;
-  label: string;
 };
 
 export const VIDEO_DISPLAY_LIMITS = {
@@ -31,17 +15,6 @@ export const VIDEO_DISPLAY_LIMITS = {
   sharpAmount: { min: 0, max: 1 },
 } as const;
 
-export const VIDEO_DISPLAY_PRESETS: readonly VideoDisplayPreset[] = [
-  { presetId: "original", label: "Original", level: 0.5, width: 1, gamma: 1, invert: false, sharpAmount: 0 },
-  { presetId: "lung-like", label: "Lung-like", level: 0.46, width: 0.72, gamma: 1.05, invert: false, sharpAmount: 0.15 },
-  { presetId: "mediastinum-like", label: "Mediastinum-like", level: 0.52, width: 0.45, gamma: 0.95, invert: false, sharpAmount: 0.08 },
-  { presetId: "abdomen-like", label: "Abdomen-like", level: 0.5, width: 0.6, gamma: 1, invert: false, sharpAmount: 0.08 },
-  { presetId: "brain-like", label: "Brain-like", level: 0.54, width: 0.4, gamma: 0.9, invert: false, sharpAmount: 0.1 },
-  { presetId: "bone-like", label: "Bone-like", level: 0.62, width: 0.65, gamma: 1, invert: false, sharpAmount: 0.25 },
-  { presetId: "high-contrast", label: "High Contrast", level: 0.5, width: 0.32, gamma: 1, invert: false, sharpAmount: 0.2 },
-  { presetId: "inverse", label: "Inverse", level: 0.5, width: 1, gamma: 1, invert: true, sharpAmount: 0 },
-] as const;
-
 const comparableKeys = ["level", "width", "gamma", "invert", "sharpAmount"] as const;
 
 function clamp(value: number, min: number, max: number): number {
@@ -49,8 +22,7 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 export function originalVideoDisplay(revision = 0): VideoDisplayState {
-  const { label: _label, ...original } = VIDEO_DISPLAY_PRESETS[0];
-  return { ...original, revision };
+  return { presetId: "original", level: 0.5, width: 1, gamma: 1, invert: false, sharpAmount: 0, revision };
 }
 
 export function clampVideoDisplay(state: VideoDisplayState): VideoDisplayState {
@@ -67,15 +39,8 @@ export function videoDisplayEqual(left: VideoDisplayState, right: VideoDisplaySt
   return comparableKeys.every((key) => left[key] === right[key]);
 }
 
-export function identifyVideoDisplayPreset(state: VideoDisplayState): VideoDisplayPresetId {
-  return VIDEO_DISPLAY_PRESETS.find((preset) => comparableKeys.every((key) => preset[key] === state[key]))?.presetId ?? "custom";
-}
-
-export function applyVideoDisplayPreset(state: VideoDisplayState, presetId: Exclude<VideoDisplayPresetId, "custom">): VideoDisplayState {
-  const preset = VIDEO_DISPLAY_PRESETS.find((candidate) => candidate.presetId === presetId);
-  if (!preset) return state;
-  const { label: _label, ...values } = preset;
-  return { ...values, revision: state.revision + 1 };
+export function resetVideoDisplay(state: VideoDisplayState): VideoDisplayState {
+  return originalVideoDisplay(state.revision + 1);
 }
 
 export function updateVideoDisplay(
@@ -88,7 +53,7 @@ export function updateVideoDisplay(
 
 export function toggleVideoDisplayInvert(state: VideoDisplayState): VideoDisplayState {
   const next = { ...state, invert: !state.invert, revision: state.revision + 1 };
-  return { ...next, presetId: identifyVideoDisplayPreset(next) };
+  return { ...next, presetId: videoDisplayEqual(next, originalVideoDisplay()) ? "original" : "custom" };
 }
 
 export function applyLevelWidthDrag(

@@ -12,7 +12,6 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "analyze:sample-a": "tsx scripts/analyze-sample-a.ts",
     "analyze:phase2.2": "node --import tsx scripts/analyze-phase22-samples.ts",
-    "analyze:phase3b": "node --import tsx scripts/analyze-phase3b-display.ts",
     "benchmark:phase1c": "node --expose-gc --import tsx scripts/benchmark-phase1c.ts",
     "benchmark:ipc": "electron scripts/electron-ipc-benchmark.cjs",
     "benchmark:phase2": "node --import tsx scripts/benchmark-phase2-cache.ts",

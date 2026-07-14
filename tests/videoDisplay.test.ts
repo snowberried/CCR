@@ -3,12 +3,12 @@ import test from "node:test";
 import {
   VIDEO_DISPLAY_LIMITS,
   applyLevelWidthDrag,
-  applyVideoDisplayPreset,
   beginDisplayDrag,
   clampVideoDisplay,
   mapDisplayLuminance,
   moveDisplayDrag,
   originalVideoDisplay,
+  resetVideoDisplay,
   temporaryOriginalDisplay,
   toggleVideoDisplayInvert,
   updateVideoDisplay,
@@ -40,18 +40,19 @@ test("maps Level/Width, brightening gamma, and inverse consistently", () => {
   assert.equal(mapDisplayLuminance(0.25, toggleVideoDisplayInvert(originalVideoDisplay())), 0.75);
 });
 
-test("applies presets and marks manual adjustments Custom", () => {
-  const lung = applyVideoDisplayPreset(originalVideoDisplay(), "lung-like");
-  assert.equal(lung.presetId, "lung-like");
-  assert.equal(updateVideoDisplay(lung, { width: 0.8 }).presetId, "custom");
-  assert.equal(applyVideoDisplayPreset(lung, "original").presetId, "original");
+test("marks manual adjustments Custom and resets to Original", () => {
+  const adjusted = updateVideoDisplay(originalVideoDisplay(), { width: 0.8 });
+  assert.equal(adjusted.presetId, "custom");
+  assert.deepEqual(resetVideoDisplay(adjusted), {
+    presetId: "original", level: 0.5, width: 1, gamma: 1, invert: false, sharpAmount: 0, revision: 2,
+  });
 });
 
 test("temporary Original comparison preserves the stored state", () => {
-  const adjusted = applyVideoDisplayPreset(originalVideoDisplay(), "bone-like");
+  const adjusted = updateVideoDisplay(originalVideoDisplay(), { level: 0.62, width: 0.65, sharpAmount: 0.25 });
   assert.equal(temporaryOriginalDisplay(adjusted, true).presetId, "original");
   assert.equal(temporaryOriginalDisplay(adjusted, false), adjusted);
-  assert.equal(adjusted.presetId, "bone-like");
+  assert.equal(adjusted.presetId, "custom");
   assert.equal(videoDisplayEqual(adjusted, temporaryOriginalDisplay(adjusted, true)), false);
 });
 
@@ -75,7 +76,7 @@ test("suppresses display shortcuts while editing", () => {
 test("RGBA reference keeps Original bytes exact and preserves alpha", () => {
   const source = new Uint8Array([20, 40, 80, 17, 180, 120, 60, 99]);
   assert.deepEqual(applyVideoDisplayToRgba(source, 2, 1, originalVideoDisplay()), new Uint8ClampedArray(source));
-  const adjusted = applyVideoDisplayToRgba(source, 2, 1, applyVideoDisplayPreset(originalVideoDisplay(), "high-contrast"));
+  const adjusted = applyVideoDisplayToRgba(source, 2, 1, updateVideoDisplay(originalVideoDisplay(), { width: 0.32, sharpAmount: 0.2 }));
   assert.equal(adjusted[3], 17);
   assert.equal(adjusted[7], 99);
 });
@@ -91,11 +92,11 @@ test("sharp amount is bounded and does not alter a flat field", () => {
 
 test("synthetic grayscale, colored overlay, and edge patterns stay bounded", () => {
   const ramp = new Uint8Array([0, 0, 0, 255, 128, 128, 128, 255, 255, 255, 255, 255]);
-  const inverse = applyVideoDisplayToRgba(ramp, 3, 1, applyVideoDisplayPreset(originalVideoDisplay(), "inverse"));
+  const inverse = applyVideoDisplayToRgba(ramp, 3, 1, toggleVideoDisplayInvert(originalVideoDisplay()));
   assert.deepEqual([...inverse.filter((_, index) => index % 4 === 0)], [255, 127, 0]);
 
   const color = new Uint8Array([220, 40, 40, 255]);
-  const adjustedColor = applyVideoDisplayToRgba(color, 1, 1, applyVideoDisplayPreset(originalVideoDisplay(), "lung-like"));
+  const adjustedColor = applyVideoDisplayToRgba(color, 1, 1, updateVideoDisplay(originalVideoDisplay(), { level: 0.35, width: 1.07, sharpAmount: 1 }));
   assert.ok(Math.max(adjustedColor[0], adjustedColor[1], adjustedColor[2]) - Math.min(adjustedColor[0], adjustedColor[1], adjustedColor[2]) > 100);
 
   const edge = new Uint8Array([20, 20, 20, 255, 20, 20, 20, 255, 220, 220, 220, 255, 220, 220, 220, 255]);

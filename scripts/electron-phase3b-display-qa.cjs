@@ -59,13 +59,29 @@ function slope(samples) {
   ) / denominator;
 }
 
-async function selectPreset(window, presetId) {
+async function setDisplayAdjustments(window, patch) {
+  const selectors = {
+    level: '.display-panel input[type="range"][min="0"][max="1"][step="0.01"]',
+    width: '.display-panel input[type="range"][min="0.02"][max="2"]',
+    gamma: '.display-panel input[type="range"][min="0.25"][max="4"]',
+    sharpAmount: '.display-panel input[type="range"][min="0"][max="1"][step="0.05"]',
+  };
   await window.webContents.executeJavaScript(`(() => {
-    const select = document.querySelector('select[aria-label="Display Preset"]');
-    select.value = ${JSON.stringify(presetId)};
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+    const patch = ${JSON.stringify(patch)};
+    const selectors = ${JSON.stringify(selectors)};
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    for (const [field, value] of Object.entries(patch)) {
+      const input = document.querySelector(selectors[field]);
+      setter.call(input, String(value));
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
   })()`, true);
-  return waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).presetId === ${JSON.stringify(presetId)}`, 5_000, `preset-${presetId}`);
+  return waitFor(window, `(() => { const state=JSON.parse(document.documentElement.dataset.qaDisplayState); return Object.entries(${JSON.stringify(patch)}).every(([key,value]) => state[key] === value) ? state : null; })()`, 5_000, "display-adjustments");
+}
+
+async function resetDisplay(window) {
+  await window.webContents.executeJavaScript(`document.querySelector(".panel-reset-button").click()`, true);
+  return waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).presetId === "original"`, 5_000, "display-reset");
 }
 
 (async () => {
@@ -115,8 +131,8 @@ async function selectPreset(window, presetId) {
       };
     })()`, true);
 
-    await selectPreset(window, "lung-like");
-    const preset = await window.webContents.executeJavaScript(`({
+    await setDisplayAdjustments(window, { width: 0.8 });
+    const adjusted = await window.webContents.executeJavaScript(`({
       state: JSON.parse(document.documentElement.dataset.qaDisplayState),
       uploads: Number(document.documentElement.dataset.qaTextureUploads),
       seek: Number(document.documentElement.dataset.qaSeekDecodeCount),
@@ -124,7 +140,7 @@ async function selectPreset(window, presetId) {
       view: [document.documentElement.dataset.qaViewZoom, document.documentElement.dataset.qaViewCenter],
     })`, true);
 
-    await selectPreset(window, "original");
+    await resetDisplay(window);
     const originalEquality = await window.webContents.executeJavaScript(`(() => {
       const canvas = document.querySelector("canvas");
       const current = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
@@ -167,7 +183,7 @@ async function selectPreset(window, presetId) {
 
     sendKey(window, "LEFT");
     await waitFor(window, `document.querySelector(".primary-readout strong").textContent.trim().startsWith("1 /")`, 5_000, "frame-one");
-    await selectPreset(window, "lung-like");
+    await setDisplayAdjustments(window, { level: 0.45, width: 0.8, gamma: 1.1, sharpAmount: 0.2 });
     await window.webContents.executeJavaScript(`(() => {
       const canvas=document.querySelector("canvas");
       window.__phase3bWebgl = new Uint8Array(canvas.getContext("2d").getImageData(0,0,canvas.width,canvas.height).data);
@@ -198,7 +214,7 @@ async function selectPreset(window, presetId) {
     if (!window.isFullScreen()) throw new Error("PHASE3B_FULLSCREEN_ENTER_FAILED");
     window.setFullScreen(false);
 
-    const drawSamples = [preset.drawMs];
+    const drawSamples = [adjusted.drawMs];
     const memorySamples = [];
     let cycles = 0;
     let errors = 0;
@@ -206,10 +222,14 @@ async function selectPreset(window, presetId) {
     let parameterTextureUploads = 0;
     const soakStartedAt = performance.now();
     const soakDeadline = soakStartedAt + minutes * 60_000;
-    const presetIds = ["lung-like", "mediastinum-like", "bone-like", "high-contrast", "inverse", "original"];
+    const displayAdjustments = [
+      { level: 0.5, width: 1, gamma: 1, sharpAmount: 0 },
+      { level: 0.45, width: 0.8, gamma: 1.1, sharpAmount: 0.2 },
+      { level: 0.55, width: 1.2, gamma: 0.9, sharpAmount: 0.4 },
+    ];
     while (performance.now() < soakDeadline) {
       const beforeUploads = Number(await window.webContents.executeJavaScript(`document.documentElement.dataset.qaTextureUploads`, true));
-      await selectPreset(window, presetIds[cycles % presetIds.length]);
+      await setDisplayAdjustments(window, displayAdjustments[cycles % displayAdjustments.length]);
       const sample = await window.webContents.executeJavaScript(`({ draw:Number(document.documentElement.dataset.qaDisplayDrawMs), uploads:Number(document.documentElement.dataset.qaTextureUploads), seek:Number(document.documentElement.dataset.qaSeekDecodeCount), error:document.querySelector(".error-message")?.textContent ?? null })`, true);
       drawSamples.push(sample.draw);
       parameterTextureUploads += sample.uploads - beforeUploads;
@@ -226,7 +246,7 @@ async function selectPreset(window, presetId) {
 
     const result = {
       initial,
-      preset,
+      adjusted,
       originalEquality,
       dragState,
       manualControls,
@@ -246,11 +266,12 @@ async function selectPreset(window, presetId) {
       },
     };
     result.passed = initial.state.presetId === "original"
-      && preset.state.presetId === "lung-like"
-      && preset.uploads === initial.uploads
-      && preset.seek === initial.seek
-      && JSON.stringify(preset.view) === JSON.stringify(initial.view)
-      && preset.drawMs <= 16
+      && adjusted.state.presetId === "custom"
+      && adjusted.state.width === 0.8
+      && adjusted.uploads === initial.uploads
+      && adjusted.seek === initial.seek
+      && JSON.stringify(adjusted.view) === JSON.stringify(initial.view)
+      && adjusted.drawMs <= 16
       && originalEquality.different === 0
       && dragState.presetId === "custom"
       && manualControls.gamma === 1.5 && manualControls.sharpAmount === 0.3 && manualControls.invert

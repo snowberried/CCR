@@ -208,15 +208,14 @@ async function main() {
 
     const displayResetContract = await window.webContents.executeJavaScript(`(async () => {
       const gamma=document.querySelector('[aria-label="화면 보정 감마"]');
-      const preset=document.querySelector('[aria-label="화면 보정 프리셋"]');
       const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
       setter.call(gamma,'1.5');
       gamma.dispatchEvent(new Event('input',{bubbles:true}));
       await new Promise((resolve)=>requestAnimationFrame(resolve));
-      const before={gamma:gamma.value,preset:preset.value};
+      const before={gamma:gamma.value};
       document.querySelector('.panel-reset-button').click();
       await new Promise((resolve)=>requestAnimationFrame(resolve));
-      return {before,after:{gamma:gamma.value,preset:preset.value}};
+      return {before,after:{gamma:gamma.value}};
     })()`, true);
 
     const zoomContract = await withTimeout(window.webContents.executeJavaScript(`(async () => {
@@ -293,7 +292,7 @@ async function main() {
       && layout.redundantPanelHeadings === 0
       && JSON.stringify(layout.paneLabels) === JSON.stringify(["왼쪽 영역", "오른쪽 영역"])
       && layout.adjustmentRegion === "화면 보정 · 왼쪽 영역"
-      && layout.displayResetLabel === "초기 설정"
+      && layout.displayResetLabel === "원본 보기"
       && layout.duplicateOriginalButtons === 0
       && layout.footerUtilityLayout.settingsLabel === "설정"
       && layout.footerUtilityLayout.settingsPressed === "true"
@@ -345,9 +344,7 @@ async function main() {
       && !result.tabContract.information.informationHidden
       && result.tabContract.restored.selected === "조정"
       && result.displayResetContract.before.gamma === "1.5"
-      && result.displayResetContract.before.preset === "custom"
       && result.displayResetContract.after.gamma === "1"
-      && result.displayResetContract.after.preset === "original"
       && result.zoomContract.initial.label.endsWith('%')
       && JSON.stringify(result.zoomContract.initial.options) === JSON.stringify(['화면 맞춤','50%','75%','100%','125%','150%','175%','200%'])
       && result.zoomContract.fifty.label === "50%"

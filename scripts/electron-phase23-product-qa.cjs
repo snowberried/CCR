@@ -59,6 +59,21 @@ function memorySlope(samples) {
   return denominator === 0 ? 0 : numerator / denominator;
 }
 
+async function setDisplayAdjustment(window, field, value) {
+  const selectors = {
+    level: '.display-panel input[type="range"][min="0"][max="1"][step="0.01"]',
+    width: '.display-panel input[type="range"][min="0.02"][max="2"]',
+    gamma: '.display-panel input[type="range"][min="0.25"][max="4"]',
+    sharpAmount: '.display-panel input[type="range"][min="0"][max="1"][step="0.05"]',
+  };
+  await window.webContents.executeJavaScript(`(() => {
+    const input = document.querySelector(${JSON.stringify(selectors[field])});
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, ${JSON.stringify(String(value))});
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`, true);
+  return waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).${field} === ${value}`, 5_000, `display-${field}`);
+}
+
 (async () => {
   await rm(path.join(root, "temp", "phase23-product-ui-qa-error.txt"), { force: true });
   const files = await mediaFiles(path.join(root, "local-samples"));
@@ -149,11 +164,7 @@ function memorySlope(samples) {
       return { displayed, frameCount, pixelFormat: document.documentElement.dataset.qaPixelFormat };
     })()`, true);
     await window.webContents.executeJavaScript(`document.querySelector('button[title="10%p 확대 (+)"]')?.click()`, true);
-    await window.webContents.executeJavaScript(`(() => {
-      const select=document.querySelector('select[aria-label="화면 보정 프리셋"]');
-      select.value="bone-like"; select.dispatchEvent(new Event("change",{bubbles:true}));
-    })()`, true);
-    await waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).presetId === "bone-like"`, 5_000, "display-preset");
+    await setDisplayAdjustment(window, "width", 0.65);
     const holdTransformBefore = await window.webContents.executeJavaScript(`[
       document.documentElement.dataset.qaViewZoom,
       document.documentElement.dataset.qaViewCenter,
@@ -255,14 +266,12 @@ function memorySlope(samples) {
       display: JSON.parse(document.documentElement.dataset.qaDisplayState),
       error: document.querySelector(".error-message")?.textContent ?? null,
     })`, true);
-    await window.webContents.executeJavaScript(`(() => { const select=document.querySelector('select[aria-label="화면 보정 프리셋"]'); select.value="lung-like"; select.dispatchEvent(new Event("change",{bubbles:true})); })()`, true);
-    await waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).presetId === "lung-like"`, 5_000, "bt709-display");
+    await setDisplayAdjustment(window, "gamma", 1.1);
     const bt709DisplayResult = await window.webContents.executeJavaScript(`({ pixelFormat:document.documentElement.dataset.qaPixelFormat, display:JSON.parse(document.documentElement.dataset.qaDisplayState), drawMs:Number(document.documentElement.dataset.qaDisplayDrawMs), error:document.querySelector(".error-message")?.textContent ?? null })`, true);
 
     await sendQaOpen(window, actualSampleCount + 1);
     await waitFor(window, `document.documentElement.dataset.qaSampleIndex === "${actualSampleCount + 1}" && document.documentElement.dataset.qaPixelFormat === "rgba" && document.querySelector(".status-indicator")?.textContent === "준비"`, 10_000, "full-range-fallback");
-    await window.webContents.executeJavaScript(`(() => { const select=document.querySelector('select[aria-label="화면 보정 프리셋"]'); select.value="high-contrast"; select.dispatchEvent(new Event("change",{bubbles:true})); })()`, true);
-    await waitFor(window, `JSON.parse(document.documentElement.dataset.qaDisplayState).presetId === "high-contrast"`, 5_000, "full-range-display");
+    await setDisplayAdjustment(window, "width", 0.8);
     const fullRangeDisplayResult = await window.webContents.executeJavaScript(`({ pixelFormat:document.documentElement.dataset.qaPixelFormat, display:JSON.parse(document.documentElement.dataset.qaDisplayState), drawMs:Number(document.documentElement.dataset.qaDisplayDrawMs), error:document.querySelector(".error-message")?.textContent ?? null })`, true);
 
     let soakResult = null;
@@ -375,10 +384,12 @@ function memorySlope(samples) {
         && fallbackResult.pixelFormat === "rgba"
         && fallbackResult.error === null
         && bt709DisplayResult.pixelFormat === "rgba"
-        && bt709DisplayResult.display.presetId === "lung-like"
+        && bt709DisplayResult.display.presetId === "custom"
+        && bt709DisplayResult.display.gamma === 1.1
         && bt709DisplayResult.error === null
         && fullRangeDisplayResult.pixelFormat === "rgba"
-        && fullRangeDisplayResult.display.presetId === "high-contrast"
+        && fullRangeDisplayResult.display.presetId === "custom"
+        && fullRangeDisplayResult.display.width === 0.8
         && fullRangeDisplayResult.error === null
         && (soakResult === null || (
           soakResult.errors === 0

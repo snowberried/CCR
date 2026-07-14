@@ -58,18 +58,16 @@ import {
   type ZoomDragGesture,
 } from "./domain/viewInteraction";
 import {
-  VIDEO_DISPLAY_PRESETS,
-  applyVideoDisplayPreset,
   beginDisplayDrag,
   moveDisplayDrag,
   originalVideoDisplay,
+  resetVideoDisplay,
   temporaryOriginalDisplay,
   toggleVideoDisplayInvert,
   updateVideoDisplay,
   videoDisplayEqual,
   videoDisplayShortcut,
   type DisplayDragGesture,
-  type VideoDisplayPresetId,
   type VideoDisplayState,
 } from "./domain/videoDisplay";
 import { applyVideoDisplayToRgba } from "./domain/videoDisplayReference";
@@ -1332,7 +1330,7 @@ export function App() {
       if (displayShortcut) {
         event.preventDefault();
         if (displayShortcut === "reset") {
-          setDisplayState((current) => applyVideoDisplayPreset(current, "original"));
+          setDisplayState(resetVideoDisplay);
         } else if (displayShortcut === "invert") {
           setDisplayState(toggleVideoDisplayInvert);
         } else if (!event.repeat) {
@@ -1857,34 +1855,19 @@ export function App() {
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
-                  setDisplayState((current) => applyVideoDisplayPreset(current, "original"));
+                  setDisplayState(resetVideoDisplay);
                 }}
                 disabled={!metadata}
-                aria-label="화면 보정 초기 설정"
-                title="화면 보정 초기 설정"
-              ><Icon src={resetIcon} /><span>초기 설정</span></button>
+                aria-label="화면 보정 원본 보기"
+                title="화면 보정 원본 보기"
+              ><Icon src={resetIcon} /><span>원본 보기</span></button>
             </summary>
             <p className="display-help" title="MP4 화면 픽셀 보정이며 DICOM HU Window가 아닙니다.">
               MP4 화면 픽셀 보정 · HU Window 아님
             </p>
-            <label>
-              <span>프리셋</span>
-              <select
-                aria-label="화면 보정 프리셋"
-                value={displayState.presetId}
-                disabled={!metadata}
-                onChange={(event) => {
-                  const presetId = event.target.value as VideoDisplayPresetId;
-                  if (presetId !== "custom") setDisplayState((current) => applyVideoDisplayPreset(current, presetId));
-                }}
-              >
-                {VIDEO_DISPLAY_PRESETS.map((preset) => <option key={preset.presetId} value={preset.presetId}>{preset.presetId === "original" ? "원본" : preset.label}</option>)}
-                <option value="custom" disabled>Custom</option>
-              </select>
-            </label>
             {([
-              ["level", "레벨", 0, 1, 0.01],
-              ["width", "폭", 0.02, 2, 0.01],
+              ["level", "밝기", 0, 1, 0.01],
+              ["width", "명암", 0.02, 2, 0.01],
               ["gamma", "감마", 0.25, 4, 0.05],
               ["sharpAmount", "선명도", 0, 1, 0.05],
             ] as const).map(([key, label, min, max, step]) => (
@@ -2044,8 +2027,7 @@ export function App() {
           <section className="display-information" aria-label="표시 정보">
             <h2>표시</h2>
             <dl>
-              <div><dt>Display</dt><dd>{displayState.presetId}</dd></div>
-              <div><dt>L / W</dt><dd>{displayState.level.toFixed(2)} / {displayState.width.toFixed(2)}</dd></div>
+              <div><dt>밝기 / 명암</dt><dd>{displayState.level.toFixed(2)} / {displayState.width.toFixed(2)}</dd></div>
               <div><dt>Gamma / Sharp</dt><dd>{displayState.gamma.toFixed(2)} / {displayState.sharpAmount.toFixed(2)}</dd></div>
               <div><dt>Display revision</dt><dd>{displayState.revision}</dd></div>
             </dl>
