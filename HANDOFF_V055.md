@@ -19,9 +19,15 @@ v0.5.4 기능과 설치 UI를 그대로 유지하면서 깨끗한 GitHub Windows
 - 태그·main·버전 검증과 전체 테스트는 통과했고 공개 Release는 생성되지 않았다.
 - 이미 푸시된 태그를 교체하지 않고 수정 버전 `v0.5.5`로 재배포한다.
 
-## 검증 기준
+## 검증 결과
 
-- 로컬 전체 테스트 통과
-- Windows NSIS 패키징과 `verify:package` 통과
-- GitHub Actions `CCR Windows Release` 성공
-- GitHub Latest Release `v0.5.5`와 설치 파일·체크섬 확인
+- 로컬 전체 테스트: 91/91 통과
+- 로컬 Windows NSIS 패키징과 `verify:package`: 통과
+- GitHub Actions `CCR Windows Release`: 성공 (`29303904117`)
+- GitHub Desktop CI: 성공 (`29303889330`)
+- GitHub Latest Release: `v0.5.5`
+- 공개 설치 파일: `CT-Cine-Reviewer-Setup-0.5.5.exe` (143,378,896 bytes)
+- 공개 설치 파일 SHA-256: `ee0d0f6345f1d4602a2e82e81b944c6f81faf7dced0e6faed147595862a9102d`
+- Release의 `.sha256` 내용과 GitHub asset digest 일치
+
+Release: `https://github.com/snowberried/CCR/releases/tag/v0.5.5`

@@ -187,7 +187,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ffmpeg.p
 
 ## 2026-07-14 GitHub Windows 러너에서 Electron 배포본 누락으로 패키징 실패
 
-상태: 해결 후 재검증 진행
+상태: 검증 완료
 
 ### 증상
 
@@ -209,3 +209,5 @@ Electron 43.1.0 npm 패키지에는 자동 `postinstall` 스크립트가 없다.
 
 - Actions에서 Electron 설치 단계, 전체 테스트, 패키징, 검증, Release 생성 단계가 순서대로 통과하는지 확인한다.
 - Latest Release의 설치 파일과 `.sha256` 자산을 확인한다.
+
+`v0.5.5` 실행 `29303904117`에서 모든 단계가 통과했고, 공개 설치 파일의 GitHub asset digest와 `.sha256` 파일 내용이 일치했다.
