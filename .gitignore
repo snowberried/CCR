@@ -31,7 +31,7 @@ coverage/
 android/.gradle/
 android/**/build/
 android/local.properties
-android/signing.properties
-android/*.jks
-android/*.keystore
+signing.properties
+*.jks
+*.keystore
 android/reports/

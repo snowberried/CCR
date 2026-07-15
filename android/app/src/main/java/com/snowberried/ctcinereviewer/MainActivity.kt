@@ -34,8 +34,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.lifecycle.ViewModelProvider
 
-internal object SpikeBuildContract {
-    const val VERSION_NAME = "0.1.0"
+internal object AndroidSdkContract {
     const val MIN_SDK = 34
     const val COMPILE_SDK = 37
 }
@@ -99,7 +98,10 @@ private fun CcrSpikeApp(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("CT Cine Reviewer · S24 exact-frame spike", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "CT Cine Reviewer · Android ${BuildConfig.VERSION_NAME} internal",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
                     AndroidView(factory = viewport, modifier = Modifier.fillMaxSize())
                 }
                 ViewerControls(
@@ -117,7 +119,10 @@ private fun CcrSpikeApp(
             }
         } else {
             Column(modifier = Modifier.padding(12.dp)) {
-                Text("CT Cine Reviewer · S24 exact-frame spike", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "CT Cine Reviewer · Android ${BuildConfig.VERSION_NAME} internal",
+                    style = MaterialTheme.typography.titleMedium,
+                )
                 AndroidView(
                     factory = viewport,
                     modifier = Modifier

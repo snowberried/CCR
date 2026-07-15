@@ -14,16 +14,21 @@ fun signingValue(property: String, environment: String): String? =
     providers.environmentVariable(environment).orNull
         ?: localSigning.getProperty(property)?.takeIf(String::isNotBlank)
 
-val releaseStoreFile = signingValue("storeFile", "CCR_ANDROID_KEYSTORE_PATH")
-val releaseStorePassword = signingValue("storePassword", "CCR_ANDROID_KEYSTORE_PASSWORD")
-val releaseKeyAlias = signingValue("keyAlias", "CCR_ANDROID_KEY_ALIAS")
-val releaseKeyPassword = signingValue("keyPassword", "CCR_ANDROID_KEY_PASSWORD")
-val hasReleaseSigning = listOf(
-    releaseStoreFile,
-    releaseStorePassword,
-    releaseKeyAlias,
-    releaseKeyPassword,
-).all { !it.isNullOrBlank() }
+val internalStoreFile = signingValue("internalStoreFile", "CCR_ANDROID_INTERNAL_KEYSTORE_PATH")
+val internalStorePassword = signingValue("internalStorePassword", "CCR_ANDROID_INTERNAL_KEYSTORE_PASSWORD")
+val internalKeyAlias = signingValue("internalKeyAlias", "CCR_ANDROID_INTERNAL_KEY_ALIAS")
+val internalKeyPassword = signingValue("internalKeyPassword", "CCR_ANDROID_INTERNAL_KEY_PASSWORD")
+val internalSigningValues = listOf(
+    internalStoreFile,
+    internalStorePassword,
+    internalKeyAlias,
+    internalKeyPassword,
+)
+val configuredInternalSigningValueCount = internalSigningValues.count { !it.isNullOrBlank() }
+require(configuredInternalSigningValueCount == 0 || configuredInternalSigningValueCount == 4) {
+    "Internal release signing requires all four CCR_ANDROID_INTERNAL_* values (or none)."
+}
+val hasInternalReleaseSigning = configuredInternalSigningValueCount == 4
 
 android {
     namespace = "com.snowberried.ctcinereviewer"
@@ -33,8 +38,8 @@ android {
         applicationId = "com.snowberried.ctcinereviewer"
         minSdk = 34
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -47,12 +52,12 @@ android {
     }
 
     signingConfigs {
-        if (hasReleaseSigning) {
-            create("release") {
-                storeFile = rootProject.file(releaseStoreFile!!)
-                storePassword = releaseStorePassword
-                keyAlias = releaseKeyAlias
-                keyPassword = releaseKeyPassword
+        if (hasInternalReleaseSigning) {
+            create("internalRelease") {
+                storeFile = rootProject.file(internalStoreFile!!)
+                storePassword = internalStorePassword
+                keyAlias = internalKeyAlias
+                keyPassword = internalKeyPassword
             }
         }
     }
@@ -60,7 +65,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.findByName("release")
+            signingConfig = signingConfigs.findByName("internalRelease")
         }
     }
 

@@ -24,45 +24,66 @@ $runner = "$testPackage/androidx.test.runner.AndroidJUnitRunner"
 $appApk = Join-Path $androidRoot "app\build\outputs\apk\internal\debug\app-internal-debug.apk"
 $testApk = Join-Path $androidRoot "app\build\outputs\apk\androidTest\internal\debug\app-internal-debug-androidTest.apk"
 
-Push-Location $androidRoot
+$gateFailure = $null
+$cleanupFailure = $null
+$gateResult = $null
 try {
-  & .\gradlew.bat assembleInternalDebug assembleInternalDebugAndroidTest
-  if ($LASTEXITCODE -ne 0) { throw "S24_BUILD_FAILED" }
+  Push-Location $androidRoot
+  try {
+    & .\gradlew.bat assembleInternalDebug assembleInternalDebugAndroidTest
+    if ($LASTEXITCODE -ne 0) { throw "S24_BUILD_FAILED" }
+  } finally {
+    Pop-Location
+  }
+
+  & $adb -s $serial install -r $appApk
+  if ($LASTEXITCODE -ne 0) { throw "S24_APP_INSTALL_FAILED" }
+  & $adb -s $serial install -r $testApk
+  if ($LASTEXITCODE -ne 0) { throw "S24_TEST_INSTALL_FAILED" }
+  & $adb -s $serial shell run-as $appPackage rm -f "files/s24-frame-accuracy-report.json"
+  if ($LASTEXITCODE -ne 0) { throw "S24_STALE_REPORT_CLEAR_FAILED" }
+
+  $instrumentation = @(& $adb -s $serial shell am instrument -w -r -e class $testClass $runner)
+  $instrumentationExitCode = $LASTEXITCODE
+  $instrumentationText = $instrumentation -join "`n"
+  $instrumentation | Write-Output
+  $instrumentationPassed = $instrumentationExitCode -eq 0 -and $instrumentationText -match "OK \(1 test\)"
+
+  if (-not $OutputPath) {
+    $OutputPath = "android\reports\s24-frame-accuracy-report.json"
+  }
+  $resolvedOutput = if ([System.IO.Path]::IsPathRooted($OutputPath)) { $OutputPath } else { Join-Path $repoRoot $OutputPath }
+  [System.IO.Directory]::CreateDirectory((Split-Path -Parent $resolvedOutput)) | Out-Null
+  $reportLines = @(& $adb -s $serial exec-out run-as $appPackage cat "files/s24-frame-accuracy-report.json")
+  $reportExitCode = $LASTEXITCODE
+  $reportText = $reportLines -join "`n"
+  $reportJson = if ($reportExitCode -eq 0 -and $reportText) {
+    try { $reportText | ConvertFrom-Json } catch { $null }
+  } else {
+    $null
+  }
+  if ($reportJson) {
+    [System.IO.File]::WriteAllText($resolvedOutput, $reportText, [System.Text.UTF8Encoding]::new($false))
+  }
+
+  if (-not $instrumentationPassed) { throw "S24_INSTRUMENTATION_FAILED" }
+  if (-not $reportJson -or $reportJson.status -ne "PASS") { throw "S24_REPORT_PULL_FAILED" }
+  $gateResult = $resolvedOutput
+} catch {
+  $gateFailure = $_
 } finally {
-  Pop-Location
+  & $adb -s $serial uninstall $testPackage | Out-Null
+  $remainingTestPackages = @(& $adb -s $serial shell pm list packages --user 0 $testPackage)
+  if ($LASTEXITCODE -ne 0) {
+    $cleanupFailure = "S24_TEST_PACKAGE_CLEANUP_QUERY_FAILED"
+  } elseif ($remainingTestPackages | Where-Object { $_.Trim() -eq "package:$testPackage" }) {
+    $cleanupFailure = "S24_TEST_PACKAGE_CLEANUP_FAILED"
+  }
 }
 
-& $adb -s $serial install -r $appApk
-if ($LASTEXITCODE -ne 0) { throw "S24_APP_INSTALL_FAILED" }
-& $adb -s $serial install -r $testApk
-if ($LASTEXITCODE -ne 0) { throw "S24_TEST_INSTALL_FAILED" }
-& $adb -s $serial shell run-as $appPackage rm -f "files/s24-frame-accuracy-report.json"
-if ($LASTEXITCODE -ne 0) { throw "S24_STALE_REPORT_CLEAR_FAILED" }
-
-$instrumentation = @(& $adb -s $serial shell am instrument -w -r -e class $testClass $runner)
-$instrumentationExitCode = $LASTEXITCODE
-$instrumentationText = $instrumentation -join "`n"
-$instrumentation | Write-Output
-$instrumentationPassed = $instrumentationExitCode -eq 0 -and $instrumentationText -match "OK \(1 test\)"
-
-if (-not $OutputPath) {
-  $OutputPath = "android\reports\s24-frame-accuracy-report.json"
+if ($cleanupFailure) {
+  if ($gateFailure) { throw "$cleanupFailure; PRIMARY=$($gateFailure.Exception.Message)" }
+  throw $cleanupFailure
 }
-$resolvedOutput = if ([System.IO.Path]::IsPathRooted($OutputPath)) { $OutputPath } else { Join-Path $repoRoot $OutputPath }
-[System.IO.Directory]::CreateDirectory((Split-Path -Parent $resolvedOutput)) | Out-Null
-$reportLines = @(& $adb -s $serial exec-out run-as $appPackage cat "files/s24-frame-accuracy-report.json")
-$reportExitCode = $LASTEXITCODE
-$reportText = $reportLines -join "`n"
-$reportJson = if ($reportExitCode -eq 0 -and $reportText) {
-  try { $reportText | ConvertFrom-Json } catch { $null }
-} else {
-  $null
-}
-if ($reportJson) {
-  [System.IO.File]::WriteAllText($resolvedOutput, $reportText, [System.Text.UTF8Encoding]::new($false))
-}
-& $adb -s $serial uninstall $testPackage | Out-Null
-
-if (-not $instrumentationPassed) { throw "S24_INSTRUMENTATION_FAILED" }
-if (-not $reportJson -or $reportJson.status -ne "PASS") { throw "S24_REPORT_PULL_FAILED" }
-Write-Output $resolvedOutput
+if ($gateFailure) { throw $gateFailure }
+Write-Output $gateResult

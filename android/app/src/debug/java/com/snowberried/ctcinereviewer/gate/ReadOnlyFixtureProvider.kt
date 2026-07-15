@@ -17,6 +17,7 @@ class ReadOnlyFixtureProvider : ContentProvider() {
             writeOpenCount.incrementAndGet()
             throw FileNotFoundException("WRITE_MODE_FORBIDDEN")
         }
+        readOpenCount.incrementAndGet()
         val name = uri.lastPathSegment?.takeIf { FIXTURE_NAME.matches(it) }
             ?: throw FileNotFoundException("INVALID_FIXTURE_NAME")
         val cacheDir = File(requireNotNull(context).cacheDir, "frame-accuracy-fixtures").apply { mkdirs() }
@@ -42,6 +43,7 @@ class ReadOnlyFixtureProvider : ContentProvider() {
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
 
     companion object {
+        val readOpenCount = AtomicInteger()
         val writeOpenCount = AtomicInteger()
         private val FIXTURE_NAME = Regex("[a-z0-9-]+\\.mp4")
     }

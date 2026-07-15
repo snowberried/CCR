@@ -20,6 +20,19 @@ if ($LASTEXITCODE -ne 0) {
   throw "Failed to inspect APK permissions"
 }
 
+$applicationId = (& $analyzer manifest application-id $resolvedApk).Trim()
+$versionName = (& $analyzer manifest version-name $resolvedApk).Trim()
+$versionCode = (& $analyzer manifest version-code $resolvedApk).Trim()
+if ($LASTEXITCODE -ne 0) {
+  throw "Failed to inspect APK identity"
+}
+if ($applicationId -ne "com.snowberried.ctcinereviewer.internal") {
+  throw "Unexpected APK application ID"
+}
+if ($versionName -ne "0.1.1" -or $versionCode -ne "2") {
+  throw "Unexpected APK version"
+}
+
 $forbidden = @(
   "android.permission.INTERNET",
   "android.permission.READ_MEDIA_VIDEO",
@@ -36,4 +49,7 @@ if ($found.Count -gt 0) {
   apk = $resolvedApk
   forbiddenPermissionCount = 0
   declaredPermissions = @($permissions)
+  applicationId = $applicationId
+  versionName = $versionName
+  versionCode = [int]$versionCode
 } | ConvertTo-Json -Depth 3
