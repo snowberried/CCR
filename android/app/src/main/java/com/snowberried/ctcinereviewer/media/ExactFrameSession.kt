@@ -108,6 +108,8 @@ class ExactFrameSession(
     private var resources: DecoderResources? = null
     private var diagnostics = DecoderDiagnostics()
     private var lastPublishedFrameIndex: Int? = null
+    private var activePrefetch: PrefetchRunState? = null
+    private var prefetchCancellationWaste = 0L
 
     fun createViewport(context: Context): VideoViewport = VideoViewport(context, renderer)
 
@@ -177,21 +179,19 @@ class ExactFrameSession(
         publicationGate.beginFile()
         latestRequest.clear()
         actor.removeCallbacksAndMessages(requestMessageToken)
-        val latch = CountDownLatch(1)
         actor.post {
             closeResources()
-            latch.countDown()
+            renderer.close()
+            actorThread.quitSafely()
         }
-        latch.await(2, TimeUnit.SECONDS)
-        actorThread.quitSafely()
-        actorThread.join(2_000)
-        renderer.close()
     }
 
     private fun openInternal(uri: Uri, token: GenerationToken, initialFrameIndex: Int) {
         closeResources()
         diagnostics = DecoderDiagnostics()
         lastPublishedFrameIndex = null
+        activePrefetch = null
+        prefetchCancellationWaste = 0
         renderer.beginFile(token.fileGeneration)
         var descriptor: ParcelFileDescriptor? = null
         var extractor: MediaExtractor? = null
@@ -335,11 +335,7 @@ class ExactFrameSession(
 
         val target = current.video.frames[request.requestedFrameIndex]
         val startSample = current.video.previousSyncSample(target)
-        val prefetchPlan = directionalPrefetchPlan(
-            previousDisplayedFrameIndex = lastPublishedFrameIndex,
-            targetFrameIndex = target.key.displayFrameIndex,
-            frameCount = current.video.frameCount,
-        )
+        val prefetch = preparePrefetch(current, request, target, startSample)
         val duplicateCounts = mutableMapOf<Long, Int>()
         current.video.frames.asSequence()
             .filter { it.sampleOrdinal < startSample.sampleOrdinal }
@@ -357,6 +353,7 @@ class ExactFrameSession(
             val deadline = SystemClock.elapsedRealtime() + 15_000
             while (SystemClock.elapsedRealtime() < deadline) {
                 if (!publicationGate.isCurrent(request.token)) {
+                    cancelPrefetch(prefetch)
                     diagnostics = diagnostics.copy(staleDiscardCount = diagnostics.staleDiscardCount + 1)
                     report(FrameResult.DiscardedStale(request, "decode-loop"))
                     return
@@ -401,7 +398,10 @@ class ExactFrameSession(
                                 .let { history -> if (history.lastOrNull() == decoded) history else history + decoded },
                         )
                         when (val support = classifyDecodedOutput(current.metadata, decoded)) {
-                            VideoSupport.Supported -> renderer.configureFrame(current.metadata, decoded)
+                            VideoSupport.Supported -> {
+                                renderer.configureFrame(current.metadata, decoded)
+                                refreshPrefetchLimit(prefetch)
+                            }
                             is VideoSupport.Unsupported -> {
                                 report(FrameResult.Unsupported(request, support.reason))
                                 return
@@ -418,22 +418,28 @@ class ExactFrameSession(
                         if (outputFrame == null) {
                             current.codec.releaseOutputBuffer(outputIndex, false)
                         } else if (outputFrame.key.displayFrameIndex < target.key.displayFrameIndex) {
-                            if (
-                                prefetchPlan.direction == DirectionalPrefetchDirection.REVERSE &&
-                                outputFrame.key.displayFrameIndex in prefetchPlan.frameIndexes &&
-                                publicationGate.isCurrent(request.token)
-                            ) {
-                                when (cacheDecodedOutput(current, request, outputFrame, outputIndex)) {
-                                    EglFrameRenderer.AckStatus.CACHED -> diagnostics = diagnostics.copy(
-                                        prefetchedFrameCount = diagnostics.prefetchedFrameCount + 1,
+                            if (prefetch?.direction == DirectionalPrefetchDirection.REVERSE && prefetch.contains(outputFrame.key.displayFrameIndex)) {
+                                if (!publicationGate.isCurrent(request.token)) {
+                                    current.codec.releaseOutputBuffer(outputIndex, false)
+                                    cancelPrefetch(prefetch)
+                                    diagnostics = diagnostics.copy(staleDiscardCount = diagnostics.staleDiscardCount + 1)
+                                    report(FrameResult.DiscardedStale(request, "reverse-prefetch-preempted"))
+                                    return
+                                }
+                                markPrefetchStarted(prefetch, outputFrame.key.displayFrameIndex)
+                                when (cacheDecodedOutput(current, request, outputFrame, outputIndex).status) {
+                                    EglFrameRenderer.AckStatus.CACHED -> markPrefetchCompleted(
+                                        prefetch,
+                                        outputFrame.key.displayFrameIndex,
                                     )
                                     EglFrameRenderer.AckStatus.STALE -> {
+                                        cancelPrefetch(prefetch)
                                         diagnostics = diagnostics.copy(staleDiscardCount = diagnostics.staleDiscardCount + 1)
                                         report(FrameResult.DiscardedStale(request, "reverse-prefetch"))
                                         return
                                     }
                                     EglFrameRenderer.AckStatus.PUBLISHED,
-                                    EglFrameRenderer.AckStatus.ERROR -> Unit
+                                    EglFrameRenderer.AckStatus.ERROR -> cancelPrefetch(prefetch)
                                 }
                             } else {
                                 current.codec.releaseOutputBuffer(outputIndex, false)
@@ -453,6 +459,9 @@ class ExactFrameSession(
                             val ack = handle.await(3_000)
                             when (ack.status) {
                                 EglFrameRenderer.AckStatus.PUBLISHED -> {
+                                    if (prefetch?.direction == DirectionalPrefetchDirection.REVERSE) {
+                                        cancelPrefetch(prefetch)
+                                    }
                                     lastPublishedFrameIndex = target.key.displayFrameIndex
                                     report(
                                         FrameResult.Published(
@@ -462,12 +471,12 @@ class ExactFrameSession(
                                             imageProbe = ack.imageProbe,
                                         ),
                                     )
-                                    if (prefetchPlan.direction == DirectionalPrefetchDirection.FORWARD) {
+                                    if (prefetch?.direction == DirectionalPrefetchDirection.FORWARD) {
                                         prefetchForward(
                                             current = current,
                                             request = request,
                                             target = target,
-                                            frameIndexes = prefetchPlan.frameIndexes,
+                                            prefetch = prefetch,
                                             duplicateCounts = duplicateCounts,
                                             inputEosAtTarget = inputEos,
                                         )
@@ -502,7 +511,90 @@ class ExactFrameSession(
                     FrameResult.DiscardedStale(request, "decode-exception")
                 },
             )
+        } finally {
+            cancelPrefetch(prefetch)
         }
+    }
+
+    private fun preparePrefetch(
+        current: DecoderResources,
+        request: FrameRequest,
+        target: IndexedFrame,
+        startSample: IndexedSample,
+    ): PrefetchRunState? {
+        cancelPrefetch(activePrefetch)
+        val budget = renderer.prefetchSnapshot().budget
+        updatePrefetchBudget(budget)
+        val plan = directionalPrefetchPlan(
+            previousDisplayedFrameIndex = lastPublishedFrameIndex,
+            targetFrameIndex = target.key.displayFrameIndex,
+            frameCount = current.video.frameCount,
+            frameLimit = budget.effectivePrefetchLimit,
+        )
+        val candidates = plan.frameIndexes
+            .filter { frameIndex ->
+                plan.direction != DirectionalPrefetchDirection.REVERSE ||
+                    current.video.frames[frameIndex].sampleOrdinal >= startSample.sampleOrdinal
+            }
+        if (candidates.isEmpty()) return null
+        val keys = candidates.map { current.video.frames[it].key }
+        val cachedKeys = renderer.prefetchSnapshot(keys).cachedFrameKeys
+        val missing = candidates.filter { current.video.frames[it].key !in cachedKeys }
+        if (missing.isEmpty()) return null
+        diagnostics = diagnostics.copy(prefetchRequested = diagnostics.prefetchRequested + missing.size)
+        return PrefetchRunState(
+            token = request.token,
+            direction = plan.direction,
+            targetFrameIndex = target.key.displayFrameIndex,
+            candidates = missing,
+        ).also { activePrefetch = it }
+    }
+
+    private fun refreshPrefetchLimit(prefetch: PrefetchRunState?) {
+        val budget = renderer.prefetchSnapshot().budget
+        updatePrefetchBudget(budget)
+        if (prefetch == null) return
+        val cancellation = prefetch.limitTo(budget.effectivePrefetchLimit)
+        recordPrefetchCancellation(cancellation)
+        if (prefetch.isComplete && activePrefetch === prefetch) activePrefetch = null
+    }
+
+    private fun updatePrefetchBudget(budget: PrefetchBudgetDecision) {
+        diagnostics = diagnostics.copy(
+            effectivePrefetchLimit = budget.effectivePrefetchLimit,
+            canonicalFrameBytes = budget.canonicalFrameBytes,
+            cacheBudgetBytes = budget.cacheBudgetBytes,
+        )
+    }
+
+    private fun markPrefetchStarted(prefetch: PrefetchRunState, frameIndex: Int) {
+        if (prefetch.markStarted(frameIndex)) {
+            diagnostics = diagnostics.copy(prefetchStarted = diagnostics.prefetchStarted + 1)
+        }
+    }
+
+    private fun markPrefetchCompleted(prefetch: PrefetchRunState, frameIndex: Int) {
+        if (prefetch.markCompleted(frameIndex)) {
+            diagnostics = diagnostics.copy(
+                prefetchedFrameCount = diagnostics.prefetchedFrameCount + 1,
+                prefetchCompleted = diagnostics.prefetchCompleted + 1,
+            )
+        }
+        if (prefetch.isComplete && activePrefetch === prefetch) activePrefetch = null
+    }
+
+    private fun cancelPrefetch(prefetch: PrefetchRunState?) {
+        if (prefetch == null) return
+        recordPrefetchCancellation(prefetch.cancel())
+        if (activePrefetch === prefetch) activePrefetch = null
+    }
+
+    private fun recordPrefetchCancellation(cancellation: PrefetchCancellation) {
+        if (cancellation.cancelled == 0 && cancellation.wasted == 0) return
+        prefetchCancellationWaste += cancellation.wasted
+        diagnostics = diagnostics.copy(
+            prefetchCancelled = diagnostics.prefetchCancelled + cancellation.cancelled,
+        )
     }
 
     private fun cacheDecodedOutput(
@@ -510,38 +602,40 @@ class ExactFrameSession(
         request: FrameRequest,
         frame: IndexedFrame,
         outputIndex: Int,
-    ): EglFrameRenderer.AckStatus {
+    ): EglFrameRenderer.RenderAck {
         val handle = renderer.queueCacheOnly(request.token, frame.key)
         if (handle == null) {
             current.codec.releaseOutputBuffer(outputIndex, false)
-            return EglFrameRenderer.AckStatus.ERROR
+            return EglFrameRenderer.RenderAck(EglFrameRenderer.AckStatus.ERROR, 0, "PREFETCH_TARGET_BUSY")
         }
         current.codec.releaseOutputBuffer(outputIndex, true)
-        return handle.await(3_000).status
+        return handle.await(3_000)
     }
 
     private fun prefetchForward(
         current: DecoderResources,
         request: FrameRequest,
         target: IndexedFrame,
-        frameIndexes: IntRange,
+        prefetch: PrefetchRunState,
         duplicateCounts: MutableMap<Long, Int>,
         inputEosAtTarget: Boolean,
     ) {
-        if (frameIndexes.isEmpty()) return
+        if (prefetch.isComplete) return
         var inputEos = inputEosAtTarget
-        var cachedFrames = 0
         val info = MediaCodec.BufferInfo()
         val deadline = SystemClock.elapsedRealtime() + 5_000
         while (
-            cachedFrames < frameIndexes.count() &&
+            !prefetch.isComplete &&
             SystemClock.elapsedRealtime() < deadline &&
             publicationGate.isCurrent(request.token)
         ) {
             if (!inputEos) {
                 val inputIndex = current.codec.dequeueInputBuffer(0)
                 if (inputIndex >= 0) {
-                    val inputBuffer = current.codec.getInputBuffer(inputIndex) ?: return
+                    val inputBuffer = current.codec.getInputBuffer(inputIndex) ?: run {
+                        cancelPrefetch(prefetch)
+                        return
+                    }
                     val sampleTrack = current.extractor.sampleTrackIndex
                     if (sampleTrack < 0) {
                         current.codec.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
@@ -566,15 +660,24 @@ class ExactFrameSession(
                 MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
                 MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     val decoded = runCatching { decodedOutputMetadataFrom(current.codec.outputFormat) }.getOrNull()
-                        ?: return
+                        ?: run {
+                            cancelPrefetch(prefetch)
+                            return
+                        }
                     diagnostics = diagnostics.copy(
                         outputFormatChangeCount = diagnostics.outputFormatChangeCount + 1,
                         decodedOutputFormatHistory = diagnostics.decodedOutputFormatHistory
                             .let { history -> if (history.lastOrNull() == decoded) history else history + decoded },
                     )
                     when (classifyDecodedOutput(current.metadata, decoded)) {
-                        VideoSupport.Supported -> renderer.configureFrame(current.metadata, decoded)
-                        is VideoSupport.Unsupported -> return
+                        VideoSupport.Supported -> {
+                            renderer.configureFrame(current.metadata, decoded)
+                            refreshPrefetchLimit(prefetch)
+                        }
+                        is VideoSupport.Unsupported -> {
+                            cancelPrefetch(prefetch)
+                            return
+                        }
                     }
                 }
                 else -> if (outputIndex >= 0) {
@@ -587,29 +690,35 @@ class ExactFrameSession(
                         outputFrame == null || outputFrame.key.displayFrameIndex <= target.key.displayFrameIndex -> {
                             current.codec.releaseOutputBuffer(outputIndex, false)
                         }
-                        outputFrame.key.displayFrameIndex > frameIndexes.last -> {
+                        outputFrame.key.displayFrameIndex > (prefetch.furthestFrameIndex ?: target.key.displayFrameIndex) -> {
                             current.codec.releaseOutputBuffer(outputIndex, false)
+                            cancelPrefetch(prefetch)
                             return
                         }
-                        outputFrame.key.displayFrameIndex in frameIndexes -> {
-                            when (cacheDecodedOutput(current, request, outputFrame, outputIndex)) {
+                        prefetch.contains(outputFrame.key.displayFrameIndex) -> {
+                            markPrefetchStarted(prefetch, outputFrame.key.displayFrameIndex)
+                            when (cacheDecodedOutput(current, request, outputFrame, outputIndex).status) {
                                 EglFrameRenderer.AckStatus.CACHED -> {
-                                    cachedFrames += 1
-                                    diagnostics = diagnostics.copy(
-                                        prefetchedFrameCount = diagnostics.prefetchedFrameCount + 1,
-                                    )
+                                    markPrefetchCompleted(prefetch, outputFrame.key.displayFrameIndex)
                                 }
                                 EglFrameRenderer.AckStatus.PUBLISHED,
                                 EglFrameRenderer.AckStatus.STALE,
-                                EglFrameRenderer.AckStatus.ERROR -> return
+                                EglFrameRenderer.AckStatus.ERROR -> {
+                                    cancelPrefetch(prefetch)
+                                    return
+                                }
                             }
                         }
                         else -> current.codec.releaseOutputBuffer(outputIndex, false)
                     }
-                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
+                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                        cancelPrefetch(prefetch)
+                        return
+                    }
                 }
             }
         }
+        if (!publicationGate.isCurrent(request.token) || !prefetch.isComplete) cancelPrefetch(prefetch)
     }
 
     private fun recreateCodec(current: DecoderResources): DecoderResources {
@@ -771,6 +880,7 @@ class ExactFrameSession(
 
     private fun report(result: FrameResult) {
         val publicationStats = publicationGate.snapshotStats()
+        val prefetch = renderer.prefetchSnapshot()
         val nextDiagnostics = diagnostics.copy(
             cacheBytes = renderer.cacheByteSize(),
             cacheHitCount = renderer.cacheHits(),
@@ -782,6 +892,13 @@ class ExactFrameSession(
             publicationInvariantViolationCount = publicationStats.publicationInvariantViolationCount,
             fullFrameReadbackCount = renderer.fullFrameReadbacks(),
             publicationEventHistory = publicationGate.recentEvents(),
+            prefetchCacheHit = prefetch.cacheHitCount,
+            prefetchEvictedBeforeUse = prefetch.evictedBeforeUseCount,
+            prefetchWasted = prefetchCancellationWaste + prefetch.wastedCount,
+            currentPrefetchDepth = prefetch.currentDepth,
+            effectivePrefetchLimit = prefetch.budget.effectivePrefetchLimit,
+            canonicalFrameBytes = prefetch.budget.canonicalFrameBytes,
+            cacheBudgetBytes = prefetch.budget.cacheBudgetBytes,
         )
         diagnostics = nextDiagnostics
         mainHandler.post { listener.onFrameResult(result, nextDiagnostics) }

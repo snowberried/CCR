@@ -3,7 +3,7 @@ package com.snowberried.ctcinereviewer.cache
 class DirectionalByteCache<K, V>(
     private val byteBudget: Long,
     private val frameIndex: (K) -> Int,
-    private val onEvict: (V) -> Unit = {},
+    private val onEvict: (K, V) -> Unit = { _, _ -> },
 ) {
     private data class Entry<V>(val value: V, val bytes: Long)
 
@@ -42,19 +42,31 @@ class DirectionalByteCache<K, V>(
         return entry?.value
     }
 
-    fun put(key: K, value: V, bytes: Long) {
+    fun containsKey(key: K): Boolean = entries.containsKey(key)
+
+    fun put(
+        key: K,
+        value: V,
+        bytes: Long,
+        protectedKeys: Set<K> = emptySet(),
+        maximumByteSize: Long = byteBudget,
+    ): Boolean {
         require(bytes > 0)
+        require(maximumByteSize in 0..byteBudget)
         entries.remove(key)?.also {
             byteSize -= it.bytes
-            onEvict(it.value)
+            onEvict(key, it.value)
+        }
+        if (bytes > maximumByteSize || !makeRoomFor(bytes, protectedKeys, maximumByteSize)) {
+            return false
         }
         entries[key] = Entry(value, bytes)
         byteSize += bytes
-        evictToBudget(key)
+        return true
     }
 
     fun clear() {
-        entries.values.forEach { onEvict(it.value) }
+        entries.forEach { (key, entry) -> onEvict(key, entry.value) }
         entries.clear()
         byteSize = 0
         previousRequestIndex = null
@@ -71,13 +83,20 @@ class DirectionalByteCache<K, V>(
             }
             val removed = entries.remove(victim) ?: continue
             byteSize -= removed.bytes
-            onEvict(removed.value)
+            onEvict(victim, removed.value)
         }
     }
 
-    private fun evictToBudget(protectedKey: K) {
-        while (byteSize > byteBudget && entries.isNotEmpty()) {
-            val candidates = entries.keys.filter { it != protectedKey }.ifEmpty { entries.keys.toList() }
+    private fun makeRoomFor(bytes: Long, protectedKeys: Set<K>, maximumByteSize: Long): Boolean {
+        val targetBytes = maximumByteSize - bytes
+        val reclaimableBytes = entries
+            .filterKeys { it !in protectedKeys }
+            .values
+            .sumOf { it.bytes }
+        if (byteSize - reclaimableBytes > targetBytes) return false
+        while (byteSize > targetBytes && entries.isNotEmpty()) {
+            val candidates = entries.keys.filterNot(protectedKeys::contains)
+            if (candidates.isEmpty()) return false
             val victim = when {
                 direction > 0 -> candidates.minBy(frameIndex)
                 direction < 0 -> candidates.maxBy(frameIndex)
@@ -85,7 +104,8 @@ class DirectionalByteCache<K, V>(
             }
             val removed = entries.remove(victim) ?: continue
             byteSize -= removed.bytes
-            onEvict(removed.value)
+            onEvict(victim, removed.value)
         }
+        return byteSize <= targetBytes
     }
 }

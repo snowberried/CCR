@@ -23,6 +23,8 @@ import com.snowberried.ctcinereviewer.media.GenerationToken
 import com.snowberried.ctcinereviewer.media.PublicationEvent
 import com.snowberried.ctcinereviewer.media.PublicationGate
 import com.snowberried.ctcinereviewer.media.PublicationResult
+import com.snowberried.ctcinereviewer.media.PrefetchBudgetDecision
+import com.snowberried.ctcinereviewer.media.prefetchBudgetDecision
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
@@ -43,6 +45,15 @@ class EglFrameRenderer(
         val code: String? = null,
         val cacheHit: Boolean = false,
         val imageProbe: FrameImageProbe? = null,
+    )
+
+    internal data class PrefetchSnapshot(
+        val budget: PrefetchBudgetDecision,
+        val cachedFrameKeys: Set<FrameKey>,
+        val cacheHitCount: Long,
+        val evictedBeforeUseCount: Long,
+        val wastedCount: Long,
+        val currentDepth: Int,
     )
 
     class TargetHandle internal constructor(val request: FrameRequest) {
@@ -120,6 +131,11 @@ class EglFrameRenderer(
     private var canonicalGeometry = CanonicalGeometry(1, 1, 1, 1, 0)
     private var fileGeneration = 0L
     private var pendingTarget: PendingTarget? = null
+    private var lastPublishedKey: FrameKey? = null
+    private val prefetchedKeys = mutableSetOf<FrameKey>()
+    private var prefetchCacheHitCount = 0L
+    private var prefetchEvictedBeforeUseCount = 0L
+    private var prefetchWastedCount = 0L
     private val probePolicy = FrameProbePolicy(renderMode)
     private val surfaceLeases = SurfaceLeaseTracker()
 
@@ -127,11 +143,20 @@ class EglFrameRenderer(
     private val cache = DirectionalByteCache<FrameKey, CachedTexture>(
         byteBudget = byteBudget,
         frameIndex = { it.displayFrameIndex },
-        onEvict = { texture -> GLES30.glDeleteTextures(1, intArrayOf(texture.textureId), 0) },
+        onEvict = { key, texture ->
+            GLES30.glDeleteTextures(1, intArrayOf(texture.textureId), 0)
+            if (prefetchedKeys.remove(key)) {
+                prefetchEvictedBeforeUseCount += 1
+                prefetchWastedCount += 1
+            }
+            if (lastPublishedKey == key) lastPublishedKey = null
+        },
     )
 
     fun attachWindow(surfaceLeaseId: Long, surface: Surface, width: Int, height: Int) {
+        if (closed) return
         handler.post {
+            if (closed) return@post
             if (!surfaceLeases.attach(surfaceLeaseId)) return@post
             releaseGl()
             try {
@@ -144,7 +169,9 @@ class EglFrameRenderer(
     }
 
     fun resize(surfaceLeaseId: Long, width: Int, height: Int) {
+        if (closed) return
         handler.post {
+            if (closed) return@post
             if (!surfaceLeases.isActive(surfaceLeaseId)) return@post
             windowWidth = width.coerceAtLeast(1)
             windowHeight = height.coerceAtLeast(1)
@@ -152,7 +179,9 @@ class EglFrameRenderer(
     }
 
     fun detachWindow(surfaceLeaseId: Long) {
+        if (closed) return
         handler.post {
+            if (closed) return@post
             if (!surfaceLeases.detach(surfaceLeaseId)) return@post
             releaseGl()
         }
@@ -171,13 +200,23 @@ class EglFrameRenderer(
     }
 
     fun beginFile(nextFileGeneration: Long) {
+        if (closed) return
         val latch = CountDownLatch(1)
         handler.post {
+            if (closed) {
+                latch.countDown()
+                return@post
+            }
             fileGeneration = nextFileGeneration
             probePolicy.reset()
             pendingTarget?.complete?.invoke(RenderAck(AckStatus.STALE, 0, "FILE_CHANGED"))
             pendingTarget = null
             if (display != EGL14.EGL_NO_DISPLAY) cache.clear()
+            lastPublishedKey = null
+            prefetchedKeys.clear()
+            prefetchCacheHitCount = 0
+            prefetchEvictedBeforeUseCount = 0
+            prefetchWastedCount = 0
             latch.countDown()
         }
         latch.await(1, TimeUnit.SECONDS)
@@ -187,8 +226,13 @@ class EglFrameRenderer(
         container: ContainerMetadata,
         decoded: DecodedOutputMetadata? = null,
     ) {
+        if (closed) return
         val latch = CountDownLatch(1)
         handler.post {
+            if (closed) {
+                latch.countDown()
+                return@post
+            }
             val nextSourceWidth = (decoded?.width ?: container.codedWidth).coerceAtLeast(1)
             val nextSourceHeight = (decoded?.height ?: container.codedHeight).coerceAtLeast(1)
             val nextGeometry = CanonicalGeometry.fromInclusiveCrop(
@@ -202,6 +246,7 @@ class EglFrameRenderer(
             )
             if (nextSourceWidth != sourceWidth || nextSourceHeight != sourceHeight || nextGeometry != canonicalGeometry) {
                 if (display != EGL14.EGL_NO_DISPLAY) cache.clear()
+                lastPublishedKey = null
                 sourceWidth = nextSourceWidth
                 sourceHeight = nextSourceHeight
                 canonicalGeometry = nextGeometry
@@ -213,17 +258,25 @@ class EglFrameRenderer(
     }
 
     fun presentCached(request: FrameRequest): RenderAck? {
+        if (closed) return RenderAck(AckStatus.STALE, 0, "RENDERER_CLOSED")
         val latch = CountDownLatch(1)
         val result = AtomicReference<RenderAck?>()
         handler.post {
+            if (closed) {
+                result.set(RenderAck(AckStatus.STALE, 0, "RENDERER_CLOSED"))
+                latch.countDown()
+                return@post
+            }
             if (request.token.fileGeneration != fileGeneration || display == EGL14.EGL_NO_DISPLAY) {
                 result.set(RenderAck(AckStatus.STALE, 0, "CACHE_GENERATION_STALE"))
             } else {
                 cache.recordRequest(request.requestedFrameIndex)
                 val cached = cache.get(request.expectedKey)
                 if (cached != null) {
+                    if (prefetchedKeys.remove(request.expectedKey)) prefetchCacheHitCount += 1
                     drawTextureToWindow(cached)
                     val event = publish(request, cached.timestampNs)
+                    if (event.result == PublicationResult.PUBLISHED) lastPublishedKey = request.expectedKey
                     result.set(
                         renderAckFor(
                             event,
@@ -239,9 +292,14 @@ class EglFrameRenderer(
     }
 
     fun queueTarget(request: FrameRequest): TargetHandle? {
+        if (closed) return null
         val latch = CountDownLatch(1)
         val result = AtomicReference<TargetHandle?>()
         handler.post {
+            if (closed) {
+                latch.countDown()
+                return@post
+            }
             if (pendingTarget == null && display != EGL14.EGL_NO_DISPLAY && request.token.fileGeneration == fileGeneration) {
                 TargetHandle(request).also {
                     pendingTarget = PendingTarget(
@@ -260,9 +318,14 @@ class EglFrameRenderer(
     }
 
     fun queueCacheOnly(token: GenerationToken, expectedKey: FrameKey): CacheTargetHandle? {
+        if (closed) return null
         val latch = CountDownLatch(1)
         val result = AtomicReference<CacheTargetHandle?>()
         handler.post {
+            if (closed) {
+                latch.countDown()
+                return@post
+            }
             if (
                 pendingTarget == null &&
                 display != EGL14.EGL_NO_DISPLAY &&
@@ -289,24 +352,59 @@ class EglFrameRenderer(
     fun cacheMisses(): Long = cache.missCount
     fun fullFrameReadbacks(): Long = probePolicy.readbackCount()
 
-    fun trimCache(level: Int) {
+    internal fun prefetchSnapshot(frameKeys: Collection<FrameKey> = emptyList()): PrefetchSnapshot {
+        if (closed) return emptyPrefetchSnapshot()
+        val latch = CountDownLatch(1)
+        val result = AtomicReference<PrefetchSnapshot?>()
         handler.post {
+            if (closed) {
+                latch.countDown()
+                return@post
+            }
+            result.set(
+                PrefetchSnapshot(
+                    budget = prefetchBudgetDecision(
+                        width = canonicalGeometry.width,
+                        height = canonicalGeometry.height,
+                        cacheBudgetBytes = byteBudget,
+                    ),
+                    cachedFrameKeys = frameKeys.filterTo(mutableSetOf(), cache::containsKey),
+                    cacheHitCount = prefetchCacheHitCount,
+                    evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
+                    wastedCount = prefetchWastedCount,
+                    currentDepth = prefetchedKeys.size,
+                ),
+            )
+            latch.countDown()
+        }
+        return if (latch.await(2, TimeUnit.SECONDS)) {
+            result.get() ?: emptyPrefetchSnapshot()
+        } else {
+            emptyPrefetchSnapshot()
+        }
+    }
+
+    fun trimCache(level: Int) {
+        if (closed) return
+        handler.post {
+            if (closed) return@post
             val targetBytes = cacheTargetBytes(level, byteBudget)
             if (targetBytes == 0L) cache.clear() else cache.trimToBytes(targetBytes)
         }
     }
 
+    @Synchronized
     override fun close() {
         if (closed) return
         closed = true
-        val latch = CountDownLatch(1)
-        handler.post {
+        synchronized(decoderSurfaceMonitor) { decoderSurfaceMonitor.notifyAll() }
+        handler.removeCallbacksAndMessages(null)
+        handler.postAtFrontOfQueue {
+            pendingTarget?.complete?.invoke(RenderAck(AckStatus.STALE, 0, "RENDERER_CLOSED"))
+            pendingTarget = null
             releaseGl()
-            latch.countDown()
+            thread.quitSafely()
         }
-        latch.await(2, TimeUnit.SECONDS)
-        thread.quitSafely()
-        thread.join(2_000)
     }
 
     private fun initializeGl(surface: Surface, width: Int, height: Int) {
@@ -403,15 +501,36 @@ class EglFrameRenderer(
             handle.complete(RenderAck(AckStatus.ERROR, timestampNs, "TEXTURE_COPY_FAILED"))
             return
         }
-        cache.put(handle.expectedKey, cached, cached.width.toLong() * cached.height.toLong() * 4L)
+        val prefetchBudget = prefetchBudgetDecision(cached.width, cached.height, byteBudget)
+        val frameBytes = prefetchBudget.canonicalFrameBytes
+        val retained = frameBytes > 0 && cache.put(
+                key = handle.expectedKey,
+                value = cached,
+                bytes = frameBytes,
+                protectedKeys = setOfNotNull(lastPublishedKey),
+                maximumByteSize = if (handle.publicationRequest == null) {
+                    prefetchBudget.availablePrefetchBytes + frameBytes
+                } else {
+                    byteBudget
+                },
+            )
         completeCachedTextureTarget(
             publicationRequest = handle.publicationRequest,
             onCacheOnly = {
-                handle.complete(RenderAck(AckStatus.CACHED, timestampNs, imageProbe = cached.imageProbe))
+                if (retained) {
+                    prefetchedKeys += handle.expectedKey
+                    handle.complete(RenderAck(AckStatus.CACHED, timestampNs, imageProbe = cached.imageProbe))
+                } else {
+                    GLES30.glDeleteTextures(1, intArrayOf(cached.textureId), 0)
+                    handle.complete(RenderAck(AckStatus.ERROR, timestampNs, "PREFETCH_NOT_RETAINED"))
+                }
             },
             onPublish = { publicationRequest ->
                 drawTextureToWindow(cached)
-                handle.complete(renderAckFor(publish(publicationRequest, timestampNs), imageProbe = cached.imageProbe))
+                val event = publish(publicationRequest, timestampNs)
+                if (event.result == PublicationResult.PUBLISHED) lastPublishedKey = handle.expectedKey
+                handle.complete(renderAckFor(event, imageProbe = cached.imageProbe))
+                if (!retained) GLES30.glDeleteTextures(1, intArrayOf(cached.textureId), 0)
             },
         )
     }
@@ -625,6 +744,7 @@ class EglFrameRenderer(
         if (display != EGL14.EGL_NO_DISPLAY) {
             runCatching { EGL14.eglMakeCurrent(display, eglWindowSurface, eglWindowSurface, context) }
             cache.clear()
+            lastPublishedKey = null
             if (oesTextureId != 0) GLES30.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
             if (oesProgram != 0) GLES30.glDeleteProgram(oesProgram)
             if (textureProgram != 0) GLES30.glDeleteProgram(textureProgram)
@@ -656,6 +776,15 @@ class EglFrameRenderer(
         vertexBuffer = 0
         onDecoderSurfaceChanged(false)
     }
+
+    private fun emptyPrefetchSnapshot(): PrefetchSnapshot = PrefetchSnapshot(
+        budget = prefetchBudgetDecision(0, 0, byteBudget),
+        cachedFrameKeys = emptySet(),
+        cacheHitCount = prefetchCacheHitCount,
+        evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
+        wastedCount = prefetchWastedCount,
+        currentDepth = prefetchedKeys.size,
+    )
 
     companion object {
         private const val TAG = "CcrEglRenderer"
