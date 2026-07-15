@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -45,6 +46,12 @@ data class ViewerUiState(
     val activeRequestGeneration: Long? = null,
     val restoreState: ViewerRestoreState = ViewerRestoreState.NONE,
     val surfaceAvailable: Boolean = false,
+    val currentDecodeTarget: Int? = null,
+    val latestPendingRequest: Int? = null,
+    val recentRequestToPublishLatencyMs: List<Double> = emptyList(),
+    val lastPublicationResult: String? = null,
+    val surfaceGeneration: Long = 0,
+    val lastErrorCode: String? = null,
 ) {
     val displayedFrameIndex: Int? get() = displayedFrame?.displayFrameIndex
     val isIndexing: Boolean get() = status == "indexing"
@@ -99,7 +106,9 @@ class ViewerViewModel(
     private val foreground: Boolean get() = foregroundOwner != null
     private var decodeInFlight = false
     private var inFlightRequestGeneration: Long? = null
+    private var inFlightAcceptedAtNs: Long? = null
     private var pendingRequestedFrame: Int? = null
+    private val navigationGestureGate = NavigationGestureGate()
 
     var uiState by mutableStateOf(
         ViewerUiState(
@@ -121,6 +130,7 @@ class ViewerViewModel(
     fun createViewport(context: Context): VideoViewport = session.createViewport(context)
 
     fun openVideo(uri: Uri) {
+        navigationGestureGate.invalidate()
         val persisted = runCatching {
             getApplication<Application>().contentResolver.takePersistableUriPermission(
                 uri,
@@ -146,6 +156,11 @@ class ViewerViewModel(
             notice = if (persisted) null else SESSION_ONLY_PERMISSION_NOTICE,
             activeFileGeneration = null,
             activeRequestGeneration = null,
+            currentDecodeTarget = null,
+            latestPendingRequest = null,
+            recentRequestToPublishLatencyMs = emptyList(),
+            lastPublicationResult = null,
+            lastErrorCode = null,
             restoreState = if (uiState.surfaceAvailable && foreground) {
                 ViewerRestoreState.OPENING
             } else {
@@ -159,6 +174,16 @@ class ViewerViewModel(
     fun moveBy(delta: Int) {
         val next = uiState.moveRequestedBy(delta)
         requestFrame(next.requestedFrameIndex)
+    }
+
+    fun beginNavigationGesture(): Long = navigationGestureGate.begin()
+
+    fun moveByGesture(delta: Int, gestureGeneration: Long) {
+        if (navigationGestureGate.accepts(gestureGeneration)) moveBy(delta)
+    }
+
+    fun endNavigationGesture(gestureGeneration: Long) {
+        navigationGestureGate.end(gestureGeneration)
     }
 
     fun setDirectInput(value: String) {
@@ -189,12 +214,14 @@ class ViewerViewModel(
         if (!foreground || !uiState.surfaceAvailable) return
         if (decodeInFlight) {
             pendingRequestedFrame = target
+            uiState = uiState.copy(latestPendingRequest = target)
         } else {
             submitFrameRequest(target)
         }
     }
 
     fun cancel() {
+        navigationGestureGate.invalidate()
         setAutoRecover(false)
         resetRequestPump()
         session.cancel()
@@ -213,6 +240,7 @@ class ViewerViewModel(
 
     fun onBackground(owner: Any = this) {
         if (foregroundOwner !== owner) return
+        navigationGestureGate.invalidate()
         foregroundOwner = null
         resetRequestPump()
         session.cancel()
@@ -234,7 +262,15 @@ class ViewerViewModel(
     override fun onStatus(fileGeneration: Long?, status: String, detail: String?) {
         if (!autoRecoverEnabled || !foreground || !uiState.surfaceAvailable) return
         if (fileGeneration != null && fileGeneration != uiState.activeFileGeneration) return
-        uiState = uiState.copy(status = status, detail = detail)
+        uiState = uiState.copy(
+            status = status,
+            detail = detail,
+            lastErrorCode = if (status == "error" || status == "unsupported") {
+                sanitizedErrorCode(detail)
+            } else {
+                uiState.lastErrorCode
+            },
+        )
     }
 
     override fun onVideoOpened(metadata: ContainerMetadata) {
@@ -244,6 +280,7 @@ class ViewerViewModel(
         val readyForDecode = foreground && uiState.surfaceAvailable
         decodeInFlight = readyForDecode
         inFlightRequestGeneration = null
+        inFlightAcceptedAtNs = null
         uiState = uiState.copy(
             status = if (readyForDecode) "decoding" else "surface waiting",
             detail = null,
@@ -251,6 +288,8 @@ class ViewerViewModel(
             requestedFrameIndex = requested,
             diagnostics = DecoderDiagnostics(),
             activeRequestGeneration = null,
+            currentDecodeTarget = requested.takeIf { readyForDecode },
+            latestPendingRequest = null,
             restoreState = if (readyForDecode) ViewerRestoreState.DECODING else ViewerRestoreState.WAITING_FOR_SURFACE,
         )
     }
@@ -265,19 +304,54 @@ class ViewerViewModel(
         if (result.request.token.fileGeneration != uiState.activeFileGeneration) return
         val expectedGeneration = inFlightRequestGeneration
         if (expectedGeneration != null && result.request.token.requestGeneration != expectedGeneration) return
-        uiState = uiState.applyFrameResult(result, diagnostics)
+        val latencyMs = if (result is FrameResult.Published) {
+            inFlightAcceptedAtNs?.let { (SystemClock.elapsedRealtimeNanos() - it).coerceAtLeast(0) / 1_000_000.0 }
+        } else {
+            null
+        }
+        val lastResult = diagnostics.publicationEventHistory.lastOrNull { event ->
+            event.fileGeneration == result.request.token.fileGeneration &&
+                event.requestGeneration == result.request.token.requestGeneration
+        }?.result?.name ?: when (result) {
+            is FrameResult.Published -> "PUBLISHED"
+            is FrameResult.DiscardedStale -> "DISCARDED_STALE"
+            is FrameResult.Unsupported -> "UNSUPPORTED"
+            is FrameResult.Error -> "ERROR"
+        }
+        val errorCode = when (result) {
+            is FrameResult.Unsupported -> sanitizedErrorCode(result.reason)
+            is FrameResult.Error -> sanitizedErrorCode(result.code)
+            else -> uiState.lastErrorCode
+        }
+        uiState = uiState.applyFrameResult(result, diagnostics).copy(
+            currentDecodeTarget = null,
+            latestPendingRequest = pendingRequestedFrame,
+            recentRequestToPublishLatencyMs = latencyMs?.let {
+                (uiState.recentRequestToPublishLatencyMs + it).takeLast(DIAGNOSTIC_LATENCY_HISTORY_LIMIT)
+            } ?: uiState.recentRequestToPublishLatencyMs,
+            lastPublicationResult = lastResult,
+            lastErrorCode = errorCode,
+        )
         decodeInFlight = false
         inFlightRequestGeneration = null
+        inFlightAcceptedAtNs = null
         if (result is FrameResult.Published || result is FrameResult.DiscardedStale) {
             submitPendingFrameRequest()
         } else {
             pendingRequestedFrame = null
+            uiState = uiState.copy(latestPendingRequest = null)
         }
     }
 
     override fun onSurfaceAvailabilityChanged(available: Boolean) {
-        uiState = uiState.copy(surfaceAvailable = available)
+        val nextSurfaceGeneration = if (available && !uiState.surfaceAvailable) {
+            uiState.surfaceGeneration + 1
+        } else {
+            uiState.surfaceGeneration
+        }
+        uiState = uiState.copy(surfaceAvailable = available, surfaceGeneration = nextSurfaceGeneration)
         if (!available) {
+            navigationGestureGate.invalidate()
             resetRequestPump()
             if (currentUri != null && autoRecoverEnabled) {
                 uiState = uiState.copy(
@@ -294,6 +368,7 @@ class ViewerViewModel(
     }
 
     override fun onCleared() {
+        navigationGestureGate.invalidate()
         foregroundOwner = null
         session.close()
     }
@@ -354,15 +429,25 @@ class ViewerViewModel(
         val acceptance = session.requestFrame(frameIndex) ?: return
         decodeInFlight = true
         inFlightRequestGeneration = acceptance.request.token.requestGeneration
-        uiState = uiState.copy(activeRequestGeneration = acceptance.request.token.requestGeneration)
+        inFlightAcceptedAtNs = acceptance.elapsedRealtimeNanos
+        uiState = uiState.copy(
+            activeRequestGeneration = acceptance.request.token.requestGeneration,
+            currentDecodeTarget = frameIndex,
+            latestPendingRequest = null,
+        )
     }
 
     private fun submitPendingFrameRequest() {
         val pending = pendingRequestedFrame
         pendingRequestedFrame = null
+        uiState = uiState.copy(latestPendingRequest = null)
         if (pending == null || !foreground || !uiState.surfaceAvailable) return
         if (uiState.displayedFrameIndex == pending) {
-            uiState = uiState.copy(status = "ready", detail = "already displayed")
+            uiState = uiState.copy(
+                status = "ready",
+                detail = "already displayed",
+                currentDecodeTarget = null,
+            )
             return
         }
         submitFrameRequest(pending)
@@ -371,7 +456,9 @@ class ViewerViewModel(
     private fun resetRequestPump() {
         decodeInFlight = false
         inFlightRequestGeneration = null
+        inFlightAcceptedAtNs = null
         pendingRequestedFrame = null
+        uiState = uiState.copy(currentDecodeTarget = null, latestPendingRequest = null)
     }
 
     private fun setAutoRecover(enabled: Boolean) {
@@ -390,6 +477,7 @@ class ViewerViewModel(
         private const val KEY_AUTO_RECOVER = "viewer.auto-recover"
         private const val KEY_STATE_SCHEMA_VERSION = "viewer.state-schema-version"
         private const val VIEWER_STATE_SCHEMA_VERSION = 1
+        private const val DIAGNOSTIC_LATENCY_HISTORY_LIMIT = 32
         private const val SESSION_ONLY_PERMISSION_NOTICE =
             "읽기 권한은 이번 실행에만 유지됩니다. 앱 재실행 뒤에는 영상을 다시 여세요."
     }

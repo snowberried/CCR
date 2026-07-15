@@ -1,10 +1,13 @@
 package com.snowberried.ctcinereviewer
 
 import android.net.Uri
+import android.content.pm.ActivityInfo
 import android.view.ViewConfiguration
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performTouchInput
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
@@ -19,15 +22,7 @@ class NavigationHoldIntegrationTest {
     @Test
     fun holdPlusOneAdvancesRequestedIndexAndSettlesOnRelease() {
         val viewer = ViewModelProvider(compose.activity)[ViewerViewModel::class.java]
-        compose.waitUntil(timeoutMillis = 20_000) { viewer.uiState.surfaceAvailable }
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
-        compose.runOnUiThread {
-            viewer.openVideo(Uri.parse("content://${context.packageName}.fixture/burst.mp4"))
-        }
-        compose.waitUntil(timeoutMillis = 20_000) {
-            viewer.uiState.metadata?.frameCount == 48 &&
-                viewer.uiState.displayedFrame?.displayFrameIndex == 0
-        }
+        openBurst(viewer)
 
         val button = compose.onNodeWithText("+1")
         button.performTouchInput { down(center) }
@@ -41,15 +36,69 @@ class NavigationHoldIntegrationTest {
         val requestedAfterRelease = viewer.uiState.requestedFrameIndex
 
         assertTrue("actual viewer did not advance: $requestedBeforeRelease", requestedBeforeRelease >= 3)
-        assertTrue(
-            "more than one queued repeat crossed release",
-            requestedAfterRelease <= requestedBeforeRelease + 1,
-        )
+        assertEquals("release changed requested index", requestedBeforeRelease, requestedAfterRelease)
         compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
         assertEquals("actual viewer continued after release was handled", requestedAfterRelease, viewer.uiState.requestedFrameIndex)
         compose.waitUntil(timeoutMillis = 20_000) {
             viewer.uiState.displayedFrame?.displayFrameIndex == requestedAfterRelease
         }
         assertEquals(0L, viewer.uiState.diagnostics.publicationInvariantViolationCount)
+    }
+
+    @Test
+    fun orientationChangeDuringHoldStopsWithoutRequestedIndexOvershoot() {
+        val viewer = ViewModelProvider(compose.activity)[ViewerViewModel::class.java]
+        openBurst(viewer)
+        val button = compose.onNodeWithText("+1")
+
+        button.performTouchInput { down(center) }
+        advancePastLongPress(2)
+        compose.activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        compose.waitUntil(timeoutMillis = 20_000) {
+            compose.onAllNodesWithTag("viewer-two-pane").fetchSemanticsNodes().isNotEmpty()
+        }
+        val afterOrientationStop = viewer.uiState.requestedFrameIndex
+        compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
+
+        assertEquals(
+            "orientation disposal allowed a stale repeat",
+            afterOrientationStop,
+            viewer.uiState.requestedFrameIndex,
+        )
+    }
+
+    @Test
+    fun backgroundDuringHoldInvalidatesViewModelGeneration() {
+        val viewer = ViewModelProvider(compose.activity)[ViewerViewModel::class.java]
+        openBurst(viewer)
+        val button = compose.onNodeWithText("+1")
+
+        button.performTouchInput { down(center) }
+        advancePastLongPress(2)
+        compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        val afterStop = viewer.uiState.requestedFrameIndex
+        compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
+
+        assertEquals("background allowed a stale repeat", afterStop, viewer.uiState.requestedFrameIndex)
+        compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+    }
+
+    private fun openBurst(viewer: ViewerViewModel) {
+        compose.waitUntil(timeoutMillis = 20_000) { viewer.uiState.surfaceAvailable }
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        compose.runOnUiThread {
+            viewer.openVideo(Uri.parse("content://${context.packageName}.fixture/burst.mp4"))
+        }
+        compose.waitUntil(timeoutMillis = 20_000) {
+            viewer.uiState.metadata?.frameCount == 48 &&
+                viewer.uiState.displayedFrame?.displayFrameIndex == 0
+        }
+    }
+
+    private fun advancePastLongPress(repeatIntervals: Int) {
+        compose.mainClock.advanceTimeBy(
+            ViewConfiguration.getLongPressTimeout().toLong() +
+                NAVIGATION_REPEAT_INTERVAL_MS * repeatIntervals + 32,
+        )
     }
 }

@@ -29,6 +29,19 @@ require(configuredInternalSigningValueCount == 0 || configuredInternalSigningVal
     "Internal release signing requires all four CCR_ANDROID_INTERNAL_* values (or none)."
 }
 val hasInternalReleaseSigning = configuredInternalSigningValueCount == 4
+val commitSha = providers.environmentVariable("CCR_ANDROID_COMMIT_SHA")
+    .orElse(providers.environmentVariable("GITHUB_SHA"))
+    .orNull
+    ?: runCatching {
+        providers.exec {
+            workingDir(rootProject.projectDir.parentFile)
+            commandLine("git", "rev-parse", "HEAD")
+        }.standardOutput.asText.get().trim()
+    }.getOrNull()?.takeIf(String::isNotBlank)
+    ?: "unknown"
+val escapedCommitSha = commitSha
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
 
 android {
     namespace = "com.snowberried.ctcinereviewer"
@@ -38,9 +51,10 @@ android {
         applicationId = "com.snowberried.ctcinereviewer"
         minSdk = 34
         targetSdk = 37
-        versionCode = 2
-        versionName = "0.2.0-alpha.1"
+        versionCode = 3
+        versionName = "0.2.0-alpha.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "COMMIT_SHA", "\"$escapedCommitSha\"")
     }
 
     flavorDimensions += "channel"

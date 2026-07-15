@@ -1,14 +1,17 @@
 package com.snowberried.ctcinereviewer
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.ViewConfiguration
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -27,6 +30,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -35,16 +39,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.window.core.layout.WindowSizeClass
 import com.snowberried.ctcinereviewer.media.timelineFractionForFrame
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -67,10 +77,13 @@ class MainActivity : ComponentActivity() {
                     state = viewer.uiState,
                     onOpen = viewer::openVideo,
                     onRequest = viewer::requestFrame,
-                    onMoveBy = viewer::moveBy,
+                    onNavigationGestureStart = viewer::beginNavigationGesture,
+                    onNavigationStep = viewer::moveByGesture,
+                    onNavigationGestureEnd = viewer::endNavigationGesture,
                     onDirectInputChange = viewer::setDirectInput,
                     onTimelineRequest = viewer::requestTimelineFraction,
                     onCancel = viewer::cancel,
+                    onCopyDiagnostics = ::copyDiagnostics,
                     viewport = viewer::createViewport,
                 )
             }
@@ -91,6 +104,23 @@ class MainActivity : ComponentActivity() {
         viewer.onTrimMemory(level)
         super.onTrimMemory(level)
     }
+
+    private fun copyDiagnostics() {
+        if (!BuildConfig.DEBUG) return
+        val report = buildSanitizedDiagnostics(
+            viewer.uiState,
+            DiagnosticBuildInfo(
+                versionName = BuildConfig.VERSION_NAME,
+                versionCode = BuildConfig.VERSION_CODE,
+                commitSha = BuildConfig.COMMIT_SHA,
+                deviceModel = Build.MODEL,
+                sdk = Build.VERSION.SDK_INT,
+            ),
+        )
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(
+            ClipData.newPlainText("CCR sanitized diagnostics", report),
+        )
+    }
 }
 
 @Composable
@@ -98,10 +128,13 @@ private fun CcrSpikeApp(
     state: ViewerUiState,
     onOpen: (Uri) -> Unit,
     onRequest: (Int) -> Unit,
-    onMoveBy: (Int) -> Unit,
+    onNavigationGestureStart: () -> Long,
+    onNavigationStep: (Int, Long) -> Unit,
+    onNavigationGestureEnd: (Long) -> Unit,
     onDirectInputChange: (String) -> Unit,
     onTimelineRequest: (Float, Boolean) -> Unit,
     onCancel: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
     viewport: (android.content.Context) -> android.view.View,
 ) {
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -131,9 +164,12 @@ private fun CcrSpikeApp(
                     onDirectInputChange = onDirectInputChange,
                     onOpen = { launcher.launch(arrayOf("video/mp4")) },
                     onRequest = onRequest,
-                    onMoveBy = onMoveBy,
+                    onNavigationGestureStart = onNavigationGestureStart,
+                    onNavigationStep = onNavigationStep,
+                    onNavigationGestureEnd = onNavigationGestureEnd,
                     onTimelineRequest = onTimelineRequest,
                     onCancel = onCancel,
+                    onCopyDiagnostics = onCopyDiagnostics,
                     modifier = Modifier
                         .weight(1f)
                         .verticalScroll(rememberScrollState()),
@@ -161,9 +197,12 @@ private fun CcrSpikeApp(
                     onDirectInputChange = onDirectInputChange,
                     onOpen = { launcher.launch(arrayOf("video/mp4")) },
                     onRequest = onRequest,
-                    onMoveBy = onMoveBy,
+                    onNavigationGestureStart = onNavigationGestureStart,
+                    onNavigationStep = onNavigationStep,
+                    onNavigationGestureEnd = onNavigationGestureEnd,
                     onTimelineRequest = onTimelineRequest,
                     onCancel = onCancel,
+                    onCopyDiagnostics = onCopyDiagnostics,
                 )
             }
         }
@@ -177,9 +216,12 @@ private fun ViewerControls(
     onDirectInputChange: (String) -> Unit,
     onOpen: () -> Unit,
     onRequest: (Int) -> Unit,
-    onMoveBy: (Int) -> Unit,
+    onNavigationGestureStart: () -> Long,
+    onNavigationStep: (Int, Long) -> Unit,
+    onNavigationGestureEnd: (Long) -> Unit,
     onTimelineRequest: (Float, Boolean) -> Unit,
     onCancel: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val metadata = state.metadata
@@ -210,10 +252,10 @@ private fun ViewerControls(
                 .padding(top = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            NavigationButton("−5", canNavigate && requestedIndex > 0) { onMoveBy(-5) }
-            NavigationButton("−1", canNavigate && requestedIndex > 0) { onMoveBy(-1) }
-            NavigationButton("+1", canNavigate && requestedIndex < lastIndex) { onMoveBy(1) }
-            NavigationButton("+5", canNavigate && requestedIndex < lastIndex) { onMoveBy(5) }
+            NavigationButton("−5", -5, canNavigate && requestedIndex > 0, onNavigationGestureStart, onNavigationStep, onNavigationGestureEnd)
+            NavigationButton("−1", -1, canNavigate && requestedIndex > 0, onNavigationGestureStart, onNavigationStep, onNavigationGestureEnd)
+            NavigationButton("+1", 1, canNavigate && requestedIndex < lastIndex, onNavigationGestureStart, onNavigationStep, onNavigationGestureEnd)
+            NavigationButton("+5", 5, canNavigate && requestedIndex < lastIndex, onNavigationGestureStart, onNavigationStep, onNavigationGestureEnd)
         }
         Row(
             modifier = Modifier
@@ -244,7 +286,9 @@ private fun ViewerControls(
                 modifier = Modifier.padding(top = 8.dp),
             )
         }
-        if (state.diagnosticsVisible) DiagnosticPanel(state, modifier = Modifier.fillMaxWidth())
+        if (state.diagnosticsVisible) {
+            DiagnosticPanel(state, onCopyDiagnostics, modifier = Modifier.fillMaxWidth())
+        }
     }
 }
 
@@ -288,72 +332,123 @@ private fun FrameTimeline(
 @Composable
 internal fun androidx.compose.foundation.layout.RowScope.NavigationButton(
     label: String,
+    delta: Int,
     enabled: Boolean,
-    onClick: () -> Unit,
+    onGestureStart: () -> Long,
+    onStep: (Int, Long) -> Unit,
+    onGestureEnd: (Long) -> Unit,
 ) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val currentOnClick by rememberUpdatedState(onClick)
-    var repeated by remember { mutableStateOf(false) }
+    val currentOnGestureStart by rememberUpdatedState(onGestureStart)
+    val currentOnStep by rememberUpdatedState(onStep)
+    val currentOnGestureEnd by rememberUpdatedState(onGestureEnd)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val activeGesture = remember { ActiveNavigationGesture() }
 
-    LaunchedEffect(interactionSource, enabled) {
-        if (!enabled) {
-            repeated = false
-            return@LaunchedEffect
+    DisposableEffect(lifecycleOwner, activeGesture) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) activeGesture.cancelActive()
         }
-        var activePress: PressInteraction.Press? = null
-        var repeatJob: Job? = null
-        try {
-            interactionSource.interactions.collect { interaction ->
-                when (interaction) {
-                    is PressInteraction.Press -> {
-                        repeatJob?.cancel()
-                        activePress = interaction
-                        repeated = false
-                        repeatJob = launch {
-                            delay(ViewConfiguration.getLongPressTimeout().toLong())
-                            while (isActive) {
-                                repeated = true
-                                currentOnClick()
-                                delay(NAVIGATION_REPEAT_INTERVAL_MS)
-                            }
-                        }
-                    }
-
-                    is PressInteraction.Release -> if (interaction.press === activePress) {
-                        repeatJob?.cancel()
-                        repeatJob = null
-                        activePress = null
-                    }
-
-                    is PressInteraction.Cancel -> if (interaction.press === activePress) {
-                        repeatJob?.cancel()
-                        repeatJob = null
-                        activePress = null
-                        repeated = false
-                    }
-                }
-            }
-        } finally {
-            repeatJob?.cancel()
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            activeGesture.cancelActive()
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
     Button(
-        onClick = {
-            val wasRepeated = repeated
-            repeated = false
-            if (!wasRepeated) currentOnClick()
-        },
-        interactionSource = interactionSource,
+        onClick = {},
         enabled = enabled,
-        modifier = Modifier.weight(1f),
+        modifier = Modifier
+            .weight(1f)
+            .pointerInput(enabled, activeGesture) {
+                if (!enabled) return@pointerInput
+                coroutineScope {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(
+                            requireUnconsumed = false,
+                            pass = PointerEventPass.Initial,
+                        )
+                        val generation = currentOnGestureStart()
+                        var repeated = false
+                        activeGesture.begin(generation, currentOnGestureEnd)
+                        val repeatJob = launch {
+                            delay(ViewConfiguration.getLongPressTimeout().toLong())
+                            while (isActive && activeGesture.isActive(generation)) {
+                                if (!activeGesture.isActive(generation)) break
+                                repeated = true
+                                currentOnStep(delta, generation)
+                                delay(NAVIGATION_REPEAT_INTERVAL_MS)
+                            }
+                        }
+                        activeGesture.attach(generation, repeatJob)
+                        try {
+                            while (activeGesture.isActive(generation)) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                val primary = event.changes.firstOrNull { it.id == down.id }
+                                val secondPointer = event.changes.any { it.id != down.id && it.pressed }
+                                val outside = primary == null || primary.position.isOutside(size.width, size.height)
+                                if (secondPointer || outside) break
+                                event.changes.forEach { it.consume() }
+                                if (!primary.pressed) {
+                                    if (!repeated && activeGesture.isActive(generation)) {
+                                        currentOnStep(delta, generation)
+                                    }
+                                    break
+                                }
+                            }
+                        } finally {
+                            activeGesture.end(generation)
+                        }
+                    }
+                }
+            },
     ) {
         Text(label)
     }
 }
 
+private fun Offset.isOutside(width: Int, height: Int): Boolean =
+    x < 0f || y < 0f || x >= width || y >= height
+
+private class ActiveNavigationGesture {
+    private data class Active(
+        val generation: Long,
+        val onEnd: (Long) -> Unit,
+        var repeatJob: Job? = null,
+    )
+
+    private var active: Active? = null
+
+    fun begin(generation: Long, onEnd: (Long) -> Unit) {
+        cancelActive()
+        active = Active(generation, onEnd)
+    }
+
+    fun attach(generation: Long, repeatJob: Job) {
+        val current = active
+        if (current?.generation == generation) current.repeatJob = repeatJob else repeatJob.cancel()
+    }
+
+    fun isActive(generation: Long): Boolean = active?.generation == generation
+
+    fun end(generation: Long) {
+        if (active?.generation == generation) cancelActive()
+    }
+
+    fun cancelActive() {
+        val ending = active ?: return
+        active = null
+        ending.onEnd(ending.generation)
+        ending.repeatJob?.cancel()
+    }
+}
+
 @Composable
-private fun DiagnosticPanel(state: ViewerUiState, modifier: Modifier = Modifier) {
+private fun DiagnosticPanel(
+    state: ViewerUiState,
+    onCopyDiagnostics: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val metadata = state.metadata
     val frame = state.displayedFrame
     val diagnostics = state.diagnostics
@@ -383,5 +478,13 @@ private fun DiagnosticPanel(state: ViewerUiState, modifier: Modifier = Modifier)
         Text("full-frame readback: ${diagnostics.fullFrameReadbackCount}")
         Text("복구: ${state.restoreState} · surface=${state.surfaceAvailable}")
         Text("세대: ${state.activeFileGeneration ?: "-"}/${state.activeRequestGeneration ?: "-"}")
+        if (BuildConfig.DEBUG) {
+            Button(
+                onClick = onCopyDiagnostics,
+                modifier = Modifier.testTag("copy-sanitized-diagnostics"),
+            ) {
+                Text("진단 복사")
+            }
+        }
     }
 }
