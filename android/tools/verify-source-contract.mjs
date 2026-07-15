@@ -47,8 +47,8 @@ requireContract(session.includes('openFileDescriptor(uri, "r")'), "source URI is
 requireContract(!/openFileDescriptor\([^\n]+,\s*"(?:w|rw|rwt|wa)"/.test(session), "write-capable source open mode");
 requireContract(provider.includes("ParcelFileDescriptor.MODE_READ_ONLY"), "fixture provider is not read-only");
 requireContract(provider.includes('if (mode != "r")'), "fixture provider does not reject write modes");
-requireContract(/versionCode\s*=\s*2\b/.test(build), "versionCode is not 2");
-requireContract(/versionName\s*=\s*"0\.2\.0-alpha\.1"/.test(build), "versionName is not 0.2.0-alpha.1");
+requireContract(/versionCode\s*=\s*3\b/.test(build), "versionCode is not 3");
+requireContract(/versionName\s*=\s*"0\.2\.0-alpha\.2"/.test(build), "versionName is not 0.2.0-alpha.2");
 requireContract(build.includes('applicationIdSuffix = ".internal"'), "internal application ID suffix is missing");
 requireContract(
   build.includes('androidx.compose.material3.adaptive:adaptive:1.2.0'),
@@ -105,7 +105,6 @@ for (const ignoreLine of [
 requireContract(localSampleReadme.includes("실제 영상"), "local sample privacy guidance is missing");
 for (const field of [
   "localFixtureId",
-  "sha256",
   "codec",
   "profile",
   "resolution",
@@ -116,6 +115,12 @@ for (const field of [
 ]) {
   requireContract(Object.hasOwn(localSampleExample, field), `local sample manifest field ${field}`);
 }
+for (const forbiddenField of ["sha256", "fileName", "path", "contentUri"]) {
+  requireContract(
+    !Object.hasOwn(localSampleExample, forbiddenField),
+    `tracked local sample example contains forbidden field ${forbiddenField}`,
+  );
+}
 requireContract(
   localSampleExample.referenceFrames.every(
     (frame) => Number.isInteger(frame.displayFrameIndex) && Number.isInteger(frame.ptsUs),
@@ -123,4 +128,4 @@ requireContract(
   "local sample reference frame index/PTS contract",
 );
 
-console.log("verified Android 0.2.0-alpha.1 identity, frozen evidence privacy, CI, local sample, and signing contracts");
+console.log("verified Android 0.2.0-alpha.2 identity, frozen evidence privacy, CI, local sample, and signing contracts");
