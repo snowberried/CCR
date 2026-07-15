@@ -40,6 +40,7 @@
 | v0.5.2 Modern Dark Professional | `22_V052_MODERN_DARK_PROFESSIONAL.md` | 기능 동결을 유지한 Modern Dark UI, SVG 자산, 3:1:3 탐색과 시각 QA |
 | GitHub Windows Release Automation | `23_GITHUB_RELEASE_AUTOMATION.md` | main 버전 증가 감지, 자동 태그와 Windows Latest Release 절차 |
 | Android S24 Ultra Exact-Frame Spike | `24_ANDROID_S24_EXACT_FRAME_SPIKE.md` | v0.5.9 동결 기준선, Android 환경과 Gate 0~3 정확성 범위 |
+| Android Canonical Image Coordinates | `25_ANDROID_CANONICAL_COORDINATES.md` | inclusive crop, PAR, clockwise rotation, canonical image와 EGL 물리 픽셀 계약 |
 | v0.5.2 Design QA | `../design-qa.md` | 최종 시안과 1440×900·720×600 구현 비교 및 판정 |
 | v0.5.2 Modern Dark Handoff | `../HANDOFF_V052_MODERN_DARK.md` | 최신 UI·확대율 의미, 검증 결과, 설치본과 후속 작업 상태 |
 | v0.5.3 Handoff | `../HANDOFF_V053.md` | 버전 표시, 설정 모달, 수동 업데이트 확인과 검증된 설치본 |
@@ -85,6 +86,7 @@
 - v0.5.7에서 2GiB 초과 영상의 LRU를 현재 위치 중심 warmup과 최대 4-block 방향성 선읽기로 보완했다.
 - v0.5.8에서 5프레임 연속 이동 중 남은 foreground 재디코드를 줄이기 위해 최대 4-block 단일-process refill을 추가했다.
 - v0.5.9에서 PC 전체 RAM에 맞는 수동 cache 상한과 파일 open 시 여유 RAM 50% 안전 제한을 추가했다.
+- Android S24 Ultra 정확 프레임 스파이크는 Gate 2 local/CI를 통과했고, Gate 3 합성 골든과 instrumentation APK를 준비했다. 연결 기기가 없어 S24 실기기 판정은 `Pending`이다.
 - 사용자 승인 전 프로젝트 저장, 마스크와 DICOM/PACS를 시작하지 않는다.
 
 ## 갱신 규칙

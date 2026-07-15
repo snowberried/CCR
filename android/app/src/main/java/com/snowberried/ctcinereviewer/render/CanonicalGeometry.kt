@@ -13,10 +13,11 @@ data class CanonicalGeometry(
         require(rotationDegrees in setOf(0, 90, 180, 270))
     }
 
-    private val squarePixelWidth = roundedRatio(cropWidth, pixelAspectRatioWidth, pixelAspectRatioHeight)
+    val preRotationWidth = roundedRatio(cropWidth, pixelAspectRatioWidth, pixelAspectRatioHeight)
+    val preRotationHeight = cropHeight
 
-    val width: Int = if (rotationDegrees == 90 || rotationDegrees == 270) cropHeight else squarePixelWidth
-    val height: Int = if (rotationDegrees == 90 || rotationDegrees == 270) squarePixelWidth else cropHeight
+    val width: Int = if (rotationDegrees == 90 || rotationDegrees == 270) preRotationHeight else preRotationWidth
+    val height: Int = if (rotationDegrees == 90 || rotationDegrees == 270) preRotationWidth else preRotationHeight
 
     companion object {
         fun fromInclusiveCrop(

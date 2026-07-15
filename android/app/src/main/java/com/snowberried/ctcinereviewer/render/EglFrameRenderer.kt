@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.view.Surface
 import com.snowberried.ctcinereviewer.cache.DirectionalByteCache
+import com.snowberried.ctcinereviewer.media.FrameImageProbe
 import com.snowberried.ctcinereviewer.media.FrameKey
 import com.snowberried.ctcinereviewer.media.FrameRequest
 import com.snowberried.ctcinereviewer.media.PublicationGate
@@ -35,6 +36,7 @@ class EglFrameRenderer(
         val textureTimestampNs: Long,
         val code: String? = null,
         val cacheHit: Boolean = false,
+        val imageProbe: FrameImageProbe? = null,
     )
 
     class TargetHandle internal constructor(val request: FrameRequest) {
@@ -58,6 +60,7 @@ class EglFrameRenderer(
         val width: Int,
         val height: Int,
         val timestampNs: Long,
+        val imageProbe: FrameImageProbe,
     )
 
     private val thread = HandlerThread("ccr-egl-render").apply { start() }
@@ -178,6 +181,7 @@ class EglFrameRenderer(
                             cached.timestampNs,
                             if (published) null else "CACHE_PUBLISH_STALE",
                             cacheHit = true,
+                            imageProbe = cached.imageProbe,
                         ),
                     )
                 }
@@ -323,6 +327,7 @@ class EglFrameRenderer(
                 if (published) AckStatus.PUBLISHED else AckStatus.STALE,
                 timestampNs,
                 if (published) null else "SWAP_GENERATION_STALE",
+                imageProbe = cached.imageProbe,
             ),
         )
     }
@@ -369,9 +374,23 @@ class EglFrameRenderer(
         GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         draw(oesProgram, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId, textureMatrix, 1f, 1f, rotationDegrees)
+        val rgba = ByteBuffer.allocateDirect(outputWidth * outputHeight * 4)
+        GLES30.glReadPixels(
+            0,
+            0,
+            outputWidth,
+            outputHeight,
+            GLES30.GL_RGBA,
+            GLES30.GL_UNSIGNED_BYTE,
+            rgba,
+        )
+        rgba.rewind()
+        val bytes = ByteArray(rgba.remaining())
+        rgba.get(bytes)
+        val imageProbe = FrameProbe.fromRgbaBottomUp(bytes, outputWidth, outputHeight, canonicalGeometry)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glDeleteFramebuffers(1, framebuffers, 0)
-        return CachedTexture(textureId, outputWidth, outputHeight, timestampNs)
+        return CachedTexture(textureId, outputWidth, outputHeight, timestampNs, imageProbe)
     }
 
     private fun drawTextureToWindow(texture: CachedTexture) {

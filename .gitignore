@@ -3,6 +3,7 @@ local-samples/
 local-cache/
 temp/
 *.mp4
+!android/testdata/frame-accuracy/*.mp4
 *.mov
 *.avi
 *.mkv
@@ -33,3 +34,4 @@ android/local.properties
 android/signing.properties
 android/*.jks
 android/*.keystore
+android/reports/

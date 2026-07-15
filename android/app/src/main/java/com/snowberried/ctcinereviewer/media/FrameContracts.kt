@@ -52,6 +52,11 @@ data class FrameRequest(
     val expectedKey: FrameKey,
 )
 
+data class FrameImageProbe(
+    val embeddedFrameId: Int?,
+    val imageSignature: List<Int>,
+)
+
 sealed interface FrameResult {
     val request: FrameRequest
 
@@ -59,6 +64,7 @@ sealed interface FrameResult {
         override val request: FrameRequest,
         val textureTimestampNs: Long,
         val cacheHit: Boolean,
+        val imageProbe: FrameImageProbe,
     ) : FrameResult
 
     data class DiscardedStale(

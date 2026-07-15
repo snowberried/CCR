@@ -26,6 +26,7 @@ class ExactFrameSession(
     interface Listener {
         fun onStatus(status: String, detail: String? = null)
         fun onVideoOpened(metadata: VideoMetadata)
+        fun onVideoIndexed(video: IndexedVideo) = Unit
         fun onFrameResult(result: FrameResult, diagnostics: DecoderDiagnostics)
     }
 
@@ -183,7 +184,7 @@ class ExactFrameSession(
             codec = null
             currentVideo.set(video)
             surfaceChanged.set(false)
-            notifyOpened(metadata)
+            notifyOpened(metadata, video)
 
             val firstToken = publicationGate.beginRequest(video.fileGeneration) ?: return
             decodeInternal(FrameRequest(firstToken, 0, video.frames[0].key))
@@ -222,7 +223,19 @@ class ExactFrameSession(
             when (cached.status) {
                 EglFrameRenderer.AckStatus.PUBLISHED -> {
                     diagnostics = diagnostics.copy(cacheHitCount = diagnostics.cacheHitCount + 1)
-                    report(FrameResult.Published(request, cached.textureTimestampNs, cacheHit = true))
+                    val imageProbe = cached.imageProbe
+                    report(
+                        if (imageProbe != null) {
+                            FrameResult.Published(
+                                request,
+                                cached.textureTimestampNs,
+                                cacheHit = true,
+                                imageProbe = imageProbe,
+                            )
+                        } else {
+                            FrameResult.Error(request, "IMAGE_PROBE_MISSING")
+                        },
+                    )
                 }
                 EglFrameRenderer.AckStatus.STALE -> report(FrameResult.DiscardedStale(request, cached.code ?: "cache"))
                 EglFrameRenderer.AckStatus.ERROR -> report(FrameResult.Error(request, cached.code ?: "CACHE_RENDER_FAILED"))
@@ -300,9 +313,21 @@ class ExactFrameSession(
                             current.codec.releaseOutputBuffer(outputIndex, true)
                             val ack = handle.await(3_000)
                             when (ack.status) {
-                                EglFrameRenderer.AckStatus.PUBLISHED -> report(
-                                    FrameResult.Published(request, ack.textureTimestampNs, cacheHit = false),
-                                )
+                                EglFrameRenderer.AckStatus.PUBLISHED -> {
+                                    val imageProbe = ack.imageProbe
+                                    report(
+                                        if (imageProbe != null) {
+                                            FrameResult.Published(
+                                                request,
+                                                ack.textureTimestampNs,
+                                                cacheHit = false,
+                                                imageProbe = imageProbe,
+                                            )
+                                        } else {
+                                            FrameResult.Error(request, "IMAGE_PROBE_MISSING")
+                                        },
+                                    )
+                                }
                                 EglFrameRenderer.AckStatus.STALE -> {
                                     diagnostics = diagnostics.copy(staleDiscardCount = diagnostics.staleDiscardCount + 1)
                                     report(FrameResult.DiscardedStale(request, ack.code ?: "render"))
@@ -452,8 +477,11 @@ class ExactFrameSession(
         mainHandler.post { listener.onStatus(status, detail) }
     }
 
-    private fun notifyOpened(metadata: VideoMetadata) {
-        mainHandler.post { listener.onVideoOpened(metadata) }
+    private fun notifyOpened(metadata: VideoMetadata, video: IndexedVideo) {
+        mainHandler.post {
+            listener.onVideoIndexed(video)
+            listener.onVideoOpened(metadata)
+        }
     }
 
     private fun sanitizeError(error: Throwable): String {

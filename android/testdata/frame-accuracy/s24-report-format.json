@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "status": "Pending — device not connected",
+  "gate": "Samsung SM-S928* S24 Ultra",
+  "device": {
+    "manufacturer": null,
+    "model": null,
+    "fingerprint": null,
+    "build": null,
+    "securityPatch": null,
+    "sdk": null,
+    "displayWidth": null,
+    "displayHeight": null,
+    "refreshRate": null
+  },
+  "appSha256": null,
+  "codecComponents": [],
+  "fixtures": [],
+  "latencyMs": { "count": 0, "p50": null, "p95": null, "max": null },
+  "decoder": {
+    "cacheHits": null,
+    "cacheMisses": null,
+    "cacheBytes": null,
+    "decodedOutputs": null,
+    "staleDiscard": null,
+    "stalePublish": null,
+    "recreate": null
+  },
+  "memory": {
+    "javaUsedBytes": null,
+    "javaMaxBytes": null,
+    "nativeHeapBytes": null,
+    "pssKb": null
+  },
+  "thermalStatus": null,
+  "batteryPercent": null,
+  "writeOpenCount": null,
+  "performanceGateApplied": false
+}

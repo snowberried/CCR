@@ -29,7 +29,7 @@
 | 0 — v0.5.9 동결 | 통과 | tag/Latest Release와 artifact 확인 |
 | 1 — Android 환경/프로젝트 | 통과 | local/Windows CI build와 privacy 검사 통과 |
 | 2 — exact decode/render | 통과 | JVM 계약·Lint·APK 검증 통과, 실기기 판정은 Gate 3에서 수행 |
-| 3 — golden/S24 | 진행 전 | 연결 기기 없음, 최종 상태는 `Pending` 유지 |
+| 3 — golden/S24 | 부분 완료 | 합성 골든·instrumentation·실행 스크립트 완료, 연결 기기 없어 `Pending` |
 
 ## Gate 1 검증 기록
 
@@ -65,3 +65,37 @@
 - S24 Ultra가 연결되지 않아 hardware codec component, 실제 frame identity, stale publish 0과 A/B 전환은 아직 검증하지 않았다.
 - Gate 3에서 비식별 합성 fixture, golden JSON, instrumentation runner와 report 형식을 추가한 뒤 Samsung `SM-S928*`에서만 S24 합격 여부를 판정한다.
 - 자동 재생, 오디오, 주석, 비교 보기, 프로젝트 저장, DICOM/PACS, AI, cloud와 Play 배포는 범위 밖이다.
+
+## Gate 3 고정 골든
+
+- `android/testdata/frame-accuracy/`에 비식별 합성 MP4 16개와 schemaVersion 1 JSON을 고정했다.
+- fixture는 H.264 IP/B-frame, VFR, long-GOP, nonzero PTS, 1/2 frame, 짧은 마지막 GOP, rotation 90/180/270, HEVC Main8, burst, A/B 전환과 PAR 8:9를 포함한다.
+- B-frame fixture만 RTX 4080 SUPER의 `h264_nvenc`로 한 번 생성했다. GPU driver, FFmpeg/FFprobe version과 encoder 인자는 `provenance.json`에 기록했다.
+- 모든 frame은 8×8 대형 흑백 cell의 finder pattern, 16-bit ID와 CRC-8을 포함한다. 생성기는 압축된 MP4를 다시 decode해 ID/CRC를 복원한 뒤에만 golden을 기록한다.
+- JSON은 source SHA, codec/profile, coded size, inclusive crop, clockwise rotation, PAR, frame count와 frame별 key/sample ordinal/embedded ID/sync/16×16 RGB signature를 포함한다.
+- CI는 `verify-frame-accuracy.mjs`로 source SHA와 wire contract만 검증하고 fixture를 재인코딩하지 않는다.
+
+## S24 instrumentation 게이트
+
+- debug APK의 read-only fixture provider는 `ParcelFileDescriptor.MODE_READ_ONLY`만 허용하고 다른 mode를 계수한 뒤 거부한다.
+- test는 extractor index 전체, first/middle/last, ±1/±5 의미, random seek, rapid burst와 A→B generation 전환을 검사한다.
+- 표시 결과는 FrameKey·texture timestamp·finder/CRC ID가 exact 일치해야 한다. 16×16 signature 허용치는 MAE 6, p99 16, max 40이다.
+- 실제 연결 장치의 manufacturer가 Samsung이고 model이 `SM-S928*`일 때만 test를 실행한다.
+- report schema는 `s24-report-format.json`, 실행 진입점은 `android/scripts/run-s24-gate.ps1`이다.
+- 보고서는 app/fixture SHA, device/build/security patch/display, hardware codec component, latency p50/p95/max, cache/redecode/stale/recreate, Java/native/PSS, thermal과 battery를 기록한다. 성능 합격선은 적용하지 않는다.
+- 현재 `adb devices` 연결 장치가 없으므로 실기기 실행 상태는 `Pending — device not connected`다.
+
+## Gate 3 로컬 검증 기록
+
+- fixture SHA/wire contract: 16/16 통과
+- read-only/no-external-transmission source contract: 통과
+- JVM unit test: 14/14 통과
+- Android Lint: issue 0
+- `assembleInternalDebug`, `assembleInternalDebugAndroidTest`: 통과
+- app APK forbidden permission: 0
+- app APK SHA-256: `cac8ddc23f642b6b29482dedc10f9c4ed42ddbaf6ec06e9771ba02588079afa7`
+- instrumentation APK SHA-256: `fd7dd7ab5543752d43c4c09fdd5907595e420af8e7281c4f0c9752142f6b2bc8`
+- `adb devices`: 연결 장치 0대
+- S24 instrumentation 실행: 미실행, `Pending — device not connected`
+
+좌표계의 세부 수학은 `docs/25_ANDROID_CANONICAL_COORDINATES.md`를 따른다.

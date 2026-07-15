@@ -45,9 +45,14 @@ jobs:
         working-directory: android
         run: .\gradlew.bat --version
 
+      - name: Verify fixed frame-accuracy fixtures
+        run: |
+          node .\android\tools\verify-frame-accuracy.mjs
+          node .\android\tools\verify-source-contract.mjs
+
       - name: Test and build internal APK
         working-directory: android
-        run: .\gradlew.bat lintInternalDebug testInternalDebugUnitTest assembleInternalDebug --stacktrace
+        run: .\gradlew.bat lintInternalDebug testInternalDebugUnitTest assembleInternalDebug assembleInternalDebugAndroidTest --stacktrace
 
       - name: Verify APK privacy contract
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\verify-apk-privacy.ps1
@@ -58,6 +63,7 @@ jobs:
           name: ccr-android-s24-internal
           path: |
             android/app/build/outputs/apk/internal/debug/app-internal-debug.apk
+            android/app/build/outputs/apk/androidTest/internal/debug/app-internal-debug-androidTest.apk
             android/app/build/reports/**
             android/app/build/test-results/**
           if-no-files-found: error

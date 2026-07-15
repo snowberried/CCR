@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name=".gate.GateActivity"
+            android:exported="false" />
+        <provider
+            android:name=".gate.ReadOnlyFixtureProvider"
+            android:authorities="${applicationId}.fixture"
+            android:exported="false"
+            android:grantUriPermissions="false" />
+    </application>
+</manifest>
