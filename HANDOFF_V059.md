@@ -48,12 +48,38 @@ Windows UI 자동화에서는 동일 app ID가 이미 설치된 v0.5.8을 열었
 
 ## Windows 설치 파일
 
-- 파일: `artifacts/CT-Cine-Reviewer-Setup-0.5.9.exe`
-- 크기: 143,707,272 bytes
-- SHA-256: `afcb4377e8ca5306fde9fc6ead59d3a32682230e8793d5988b53b80463bdf4b2`
+- 사용자 합격 로컬 파일: `artifacts/CT-Cine-Reviewer-Setup-0.5.9.exe`
+- 로컬 크기: 143,707,272 bytes
+- 로컬 SHA-256: `afcb4377e8ca5306fde9fc6ead59d3a32682230e8793d5988b53b80463bdf4b2`
+- 공개 Release 크기: 143,707,402 bytes
+- 공개 Release SHA-256: `d489c82b6badc8b81cda81a79f8deea139c8216c7d94206245e098c6e94bc06e`
 - 실행 파일 제품 버전: `0.5.9.0`
 - NSIS x64, 현재 사용자 설치, 관리자 권한 요구 없음
 
-## 배포 상태
+## 안정판 기준선과 배포 상태
 
-v0.5.9은 사용자가 실사용 검증을 마치고 안정판으로 승인했다. 이 문서가 포함된 로컬 기준선 커밋을 만든 뒤 기존 안전 Release workflow로 `v0.5.9` 태그와 공개 Release를 생성하며, 실제 SHA와 공개 artifact checksum은 배포 확인 후 후속 동결 문서 커밋에 기록한다.
+- 기준 commit: `92f26ddb3fcbfd125986cf85f21560fb9a5655b2`
+- tag: `v0.5.9` (기준 commit을 가리키는 lightweight tag)
+- 공개 Release: <https://github.com/snowberried/CCR/releases/tag/v0.5.9>
+- Release 상태: Latest, EXE·SHA256·blockmap·`latest.yml` 4개 자산 확인
+- Desktop CI: <https://github.com/snowberried/CCR/actions/runs/29392342278>
+- Windows Release workflow: <https://github.com/snowberried/CCR/actions/runs/29392342210>
+
+로컬 합격 설치파일과 GitHub runner 재빌드 설치파일은 같은 기준 commit에서 만들어졌지만 NSIS/PE 생성 시각 때문에 byte-identical하지 않다. 두 checksum을 혼동하지 않는다.
+
+## 재현 명령
+
+```powershell
+npm.cmd test
+npm.cmd run build
+npm.cmd run verify:package
+```
+
+위 명령은 기준선에서 자동 테스트 106/106, production build, unpacked 91개 파일, package privacy와 update metadata 검증을 통과했다.
+
+## 지원 범위와 알려진 제한
+
+- Windows x64 NSIS 설치 앱, 로컬 MP4 보조 검토, 정확 frameIndex 탐색과 RAM cache가 지원 범위다.
+- DICOM/PACS, AI, 클라우드, 자동 재생, 오디오와 프로젝트 저장은 지원하지 않는다.
+- HEVC Main10, HDR와 Dolby Vision은 v0.5.9 데스크톱 안정판의 보장 범위가 아니다.
+- Explorer cross-window drag/drop 실제 파일럿 검증은 기존 이월 항목이다.
