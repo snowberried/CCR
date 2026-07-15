@@ -29,7 +29,7 @@ if ($LASTEXITCODE -ne 0) {
 if ($applicationId -ne "com.snowberried.ctcinereviewer.internal") {
   throw "Unexpected APK application ID"
 }
-if ($versionName -ne "0.1.1" -or $versionCode -ne "2") {
+if ($versionName -ne "0.2.0-alpha.1" -or $versionCode -ne "2") {
   throw "Unexpected APK version"
 }
 

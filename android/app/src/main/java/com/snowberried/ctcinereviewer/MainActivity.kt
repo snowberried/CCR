@@ -2,7 +2,6 @@ package com.snowberried.ctcinereviewer
 
 import android.net.Uri
 import android.os.Bundle
-import android.content.res.Configuration
 import android.view.ViewConfiguration
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -23,28 +22,33 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.lifecycle.ViewModelProvider
+import androidx.window.core.layout.WindowSizeClass
+import com.snowberried.ctcinereviewer.media.timelineFractionForFrame
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-internal const val NAVIGATION_REPEAT_INTERVAL_MS = 80L
+internal const val NAVIGATION_REPEAT_INTERVAL_MS = 50L
 
 internal object AndroidSdkContract {
     const val MIN_SDK = 34
@@ -64,6 +68,8 @@ class MainActivity : ComponentActivity() {
                     onOpen = viewer::openVideo,
                     onRequest = viewer::requestFrame,
                     onMoveBy = viewer::moveBy,
+                    onDirectInputChange = viewer::setDirectInput,
+                    onTimelineRequest = viewer::requestTimelineFraction,
                     onCancel = viewer::cancel,
                     viewport = viewer::createViewport,
                 )
@@ -93,20 +99,23 @@ private fun CcrSpikeApp(
     onOpen: (Uri) -> Unit,
     onRequest: (Int) -> Unit,
     onMoveBy: (Int) -> Unit,
+    onDirectInputChange: (String) -> Unit,
+    onTimelineRequest: (Float, Boolean) -> Unit,
     onCancel: () -> Unit,
     viewport: (android.content.Context) -> android.view.View,
 ) {
-    var directInput by remember { mutableStateOf("") }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(onOpen)
     }
-    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val windowSizeClass = currentWindowAdaptiveInfo().windowSizeClass
+    val twoPane = windowSizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND)
     Surface(modifier = Modifier.fillMaxSize()) {
-        if (landscape) {
+        if (twoPane) {
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(12.dp),
+                    .padding(12.dp)
+                    .testTag("viewer-two-pane"),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Column(modifier = Modifier.weight(1f)) {
@@ -118,11 +127,12 @@ private fun CcrSpikeApp(
                 }
                 ViewerControls(
                     state = state,
-                    directInput = directInput,
-                    onDirectInputChange = { directInput = it.filter(Char::isDigit) },
+                    directInput = state.directInput,
+                    onDirectInputChange = onDirectInputChange,
                     onOpen = { launcher.launch(arrayOf("video/mp4")) },
                     onRequest = onRequest,
                     onMoveBy = onMoveBy,
+                    onTimelineRequest = onTimelineRequest,
                     onCancel = onCancel,
                     modifier = Modifier
                         .weight(1f)
@@ -130,7 +140,11 @@ private fun CcrSpikeApp(
                 )
             }
         } else {
-            Column(modifier = Modifier.padding(12.dp)) {
+            Column(
+                modifier = Modifier
+                    .padding(12.dp)
+                    .testTag("viewer-single-pane"),
+            ) {
                 Text(
                     "CT Cine Reviewer · Android ${BuildConfig.VERSION_NAME} internal",
                     style = MaterialTheme.typography.titleMedium,
@@ -143,11 +157,12 @@ private fun CcrSpikeApp(
                 )
                 ViewerControls(
                     state = state,
-                    directInput = directInput,
-                    onDirectInputChange = { directInput = it.filter(Char::isDigit) },
+                    directInput = state.directInput,
+                    onDirectInputChange = onDirectInputChange,
                     onOpen = { launcher.launch(arrayOf("video/mp4")) },
                     onRequest = onRequest,
                     onMoveBy = onMoveBy,
+                    onTimelineRequest = onTimelineRequest,
                     onCancel = onCancel,
                 )
             }
@@ -163,6 +178,7 @@ private fun ViewerControls(
     onOpen: () -> Unit,
     onRequest: (Int) -> Unit,
     onMoveBy: (Int) -> Unit,
+    onTimelineRequest: (Float, Boolean) -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -170,6 +186,7 @@ private fun ViewerControls(
     val requestedIndex = state.requestedFrameIndex
     val lastIndex = (metadata?.frameCount ?: 1) - 1
     val canNavigate = metadata != null && state.surfaceAvailable
+    val canCancel = state.activeFileGeneration != null && state.restoreState != ViewerRestoreState.CANCELLED
     val directIndex = directInput.toIntOrNull()
 
     Column(modifier = modifier) {
@@ -180,12 +197,13 @@ private fun ViewerControls(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Button(onClick = onOpen, modifier = Modifier.weight(1f)) { Text("열기") }
-            Button(onClick = onCancel, enabled = canNavigate, modifier = Modifier.weight(1f)) { Text("취소") }
+            Button(onClick = onCancel, enabled = canCancel, modifier = Modifier.weight(1f)) { Text("취소") }
             Button(onClick = { onRequest(0) }, enabled = canNavigate, modifier = Modifier.weight(1f)) { Text("처음") }
             Button(onClick = { onRequest(lastIndex) }, enabled = canNavigate, modifier = Modifier.weight(1f)) {
                 Text("마지막")
             }
         }
+        FrameTimeline(state, onTimelineRequest)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -219,8 +237,52 @@ private fun ViewerControls(
                 Text("이동")
             }
         }
-        DiagnosticPanel(state, modifier = Modifier.fillMaxWidth())
+        state.errorOrUnsupportedMessage?.let { message ->
+            Text(
+                text = "열 수 없음: $message",
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+        if (state.diagnosticsVisible) DiagnosticPanel(state, modifier = Modifier.fillMaxWidth())
     }
+}
+
+@Composable
+private fun FrameTimeline(
+    state: ViewerUiState,
+    onTimelineRequest: (Float, Boolean) -> Unit,
+) {
+    val ptsUs = state.framePtsUs
+    if (ptsUs.isEmpty()) return
+    val requestedFraction = timelineFractionForFrame(ptsUs, state.requestedFrameIndex)
+    var dragFraction by remember(state.activeFileGeneration) { mutableFloatStateOf(requestedFraction) }
+    var dragging by remember(state.activeFileGeneration) { mutableStateOf(false) }
+    LaunchedEffect(requestedFraction, dragging) {
+        if (!dragging) dragFraction = requestedFraction
+    }
+
+    Text(
+        text = "표시 ${state.displayedFrameIndex ?: "-"} / ${ptsUs.lastIndex} (전체 ${ptsUs.size}, 0-based) · " +
+            "PTS ${state.displayedFrame?.ptsUs ?: "-"} µs",
+        modifier = Modifier.padding(top = 8.dp),
+    )
+    Slider(
+        value = dragFraction,
+        onValueChange = { value ->
+            dragging = true
+            dragFraction = value
+            onTimelineRequest(value, false)
+        },
+        onValueChangeFinished = {
+            dragging = false
+            onTimelineRequest(dragFraction, true)
+        },
+        enabled = state.metadata != null && state.surfaceAvailable,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("pts-timeline"),
+    )
 }
 
 @Composable
@@ -311,7 +373,10 @@ private fun DiagnosticPanel(state: ViewerUiState, modifier: Modifier = Modifier)
             Text("디코더: ${metadata.codecComponent} · hardware=${metadata.hardwareAccelerated}")
         }
         Text("인덱스: ${diagnostics.indexBuildMs} ms · 디코드 출력: ${diagnostics.decodeOrdinal}")
-        Text("캐시: ${diagnostics.cacheHitCount}/${diagnostics.cacheMissCount} · ${diagnostics.cacheBytes} bytes")
+        Text(
+            "캐시 hit/miss: ${diagnostics.cacheHitCount}/${diagnostics.cacheMissCount} · " +
+                "미리읽기: ${diagnostics.prefetchedFrameCount} · ${diagnostics.cacheBytes} bytes",
+        )
         Text("stale discard/before-swap: ${diagnostics.staleDiscardCount}/${diagnostics.staleBeforeSwapCount} · recreate: ${diagnostics.decoderRecreateCount}")
         Text("swap 성공/실패/invalid: ${diagnostics.publishedSwapCount}/${diagnostics.swapFailureCount}/${diagnostics.surfaceInvalidCount}")
         Text("publication invariant violation: ${diagnostics.publicationInvariantViolationCount}")

@@ -16,6 +16,7 @@ import com.snowberried.ctcinereviewer.media.FrameKey
 import com.snowberried.ctcinereviewer.media.FrameResult
 import com.snowberried.ctcinereviewer.media.IndexedVideo
 import com.snowberried.ctcinereviewer.media.boundedFrameIndex
+import com.snowberried.ctcinereviewer.media.nearestFrameIndexForTimelineFraction
 import com.snowberried.ctcinereviewer.render.VideoViewport
 
 enum class ViewerRestoreState {
@@ -29,18 +30,28 @@ enum class ViewerRestoreState {
 }
 
 data class ViewerUiState(
+    val selectedUri: Uri? = null,
     val status: String = "파일을 여세요",
     val detail: String? = null,
     val metadata: ContainerMetadata? = null,
     val requestedFrameIndex: Int = 0,
     val displayedFrame: FrameKey? = null,
+    val framePtsUs: List<Long> = emptyList(),
+    val directInput: String = "",
     val diagnostics: DecoderDiagnostics = DecoderDiagnostics(),
+    val diagnosticsVisible: Boolean = BuildConfig.DEBUG,
     val notice: String? = null,
     val activeFileGeneration: Long? = null,
     val activeRequestGeneration: Long? = null,
     val restoreState: ViewerRestoreState = ViewerRestoreState.NONE,
     val surfaceAvailable: Boolean = false,
-)
+) {
+    val displayedFrameIndex: Int? get() = displayedFrame?.displayFrameIndex
+    val isIndexing: Boolean get() = status == "indexing"
+    val isDecoding: Boolean get() = status == "decoding"
+    val errorOrUnsupportedMessage: String?
+        get() = detail?.takeIf { status == "error" || status == "unsupported" }
+}
 
 internal fun ViewerUiState.moveRequestedBy(delta: Int): ViewerUiState {
     val frameCount = metadata?.frameCount ?: return this
@@ -86,9 +97,13 @@ class ViewerViewModel(
     private var foregroundOwner: Any? = null
     private var autoRecoverEnabled = savedState[KEY_AUTO_RECOVER] ?: (currentUri != null)
     private val foreground: Boolean get() = foregroundOwner != null
+    private var decodeInFlight = false
+    private var inFlightRequestGeneration: Long? = null
+    private var pendingRequestedFrame: Int? = null
 
     var uiState by mutableStateOf(
         ViewerUiState(
+            selectedUri = currentUri,
             requestedFrameIndex = savedState[KEY_REQUESTED_FRAME] ?: 0,
             restoreState = when {
                 currentUri == null -> ViewerRestoreState.NONE
@@ -98,6 +113,10 @@ class ViewerViewModel(
         ),
     )
         private set
+
+    init {
+        savedState[KEY_STATE_SCHEMA_VERSION] = VIEWER_STATE_SCHEMA_VERSION
+    }
 
     fun createViewport(context: Context): VideoViewport = session.createViewport(context)
 
@@ -113,10 +132,20 @@ class ViewerViewModel(
         setAutoRecover(true)
         savedState[KEY_REQUESTED_FRAME] = 0
         if (persisted) savedState[KEY_URI] = uri.toString() else savedState.remove<String>(KEY_URI)
-        uiState = ViewerUiState(
+        resetRequestPump()
+        uiState = uiState.copy(
+            selectedUri = uri,
             status = if (uiState.surfaceAvailable && foreground) "indexing" else "surface waiting",
+            detail = null,
+            metadata = null,
             requestedFrameIndex = 0,
+            displayedFrame = null,
+            framePtsUs = emptyList(),
+            directInput = "",
+            diagnostics = DecoderDiagnostics(),
             notice = if (persisted) null else SESSION_ONLY_PERMISSION_NOTICE,
+            activeFileGeneration = null,
+            activeRequestGeneration = null,
             restoreState = if (uiState.surfaceAvailable && foreground) {
                 ViewerRestoreState.OPENING
             } else {
@@ -130,6 +159,16 @@ class ViewerViewModel(
     fun moveBy(delta: Int) {
         val next = uiState.moveRequestedBy(delta)
         requestFrame(next.requestedFrameIndex)
+    }
+
+    fun setDirectInput(value: String) {
+        uiState = uiState.copy(directInput = value.filter(Char::isDigit))
+    }
+
+    fun requestTimelineFraction(fraction: Float, final: Boolean) {
+        if (uiState.framePtsUs.isEmpty()) return
+        val target = nearestFrameIndexForTimelineFraction(uiState.framePtsUs, fraction)
+        if (final || target != uiState.requestedFrameIndex) requestFrame(target)
     }
 
     fun requestFrame(frameIndex: Int) {
@@ -147,17 +186,17 @@ class ViewerViewModel(
                 ViewerRestoreState.WAITING_FOR_SURFACE
             },
         )
-        if (foreground && uiState.surfaceAvailable) {
-            session.requestFrame(target)?.let { acceptance ->
-                uiState = uiState.copy(
-                    activeRequestGeneration = acceptance.request.token.requestGeneration,
-                )
-            }
+        if (!foreground || !uiState.surfaceAvailable) return
+        if (decodeInFlight) {
+            pendingRequestedFrame = target
+        } else {
+            submitFrameRequest(target)
         }
     }
 
     fun cancel() {
         setAutoRecover(false)
+        resetRequestPump()
         session.cancel()
         uiState = uiState.copy(
             status = "cancelled",
@@ -175,6 +214,7 @@ class ViewerViewModel(
     fun onBackground(owner: Any = this) {
         if (foregroundOwner !== owner) return
         foregroundOwner = null
+        resetRequestPump()
         session.cancel()
         if (currentUri != null && autoRecoverEnabled) {
             uiState = uiState.copy(
@@ -202,6 +242,8 @@ class ViewerViewModel(
         val requested = uiState.requestedFrameIndex.coerceIn(0, metadata.frameCount - 1)
         savedState[KEY_REQUESTED_FRAME] = requested
         val readyForDecode = foreground && uiState.surfaceAvailable
+        decodeInFlight = readyForDecode
+        inFlightRequestGeneration = null
         uiState = uiState.copy(
             status = if (readyForDecode) "decoding" else "surface waiting",
             detail = null,
@@ -215,16 +257,28 @@ class ViewerViewModel(
 
     override fun onVideoIndexed(video: IndexedVideo) {
         if (video.fileGeneration != uiState.activeFileGeneration) return
+        uiState = uiState.copy(framePtsUs = video.frames.map { it.key.ptsUs })
     }
 
     override fun onFrameResult(result: FrameResult, diagnostics: DecoderDiagnostics) {
         if (!autoRecoverEnabled || !foreground || !uiState.surfaceAvailable) return
+        if (result.request.token.fileGeneration != uiState.activeFileGeneration) return
+        val expectedGeneration = inFlightRequestGeneration
+        if (expectedGeneration != null && result.request.token.requestGeneration != expectedGeneration) return
         uiState = uiState.applyFrameResult(result, diagnostics)
+        decodeInFlight = false
+        inFlightRequestGeneration = null
+        if (result is FrameResult.Published || result is FrameResult.DiscardedStale) {
+            submitPendingFrameRequest()
+        } else {
+            pendingRequestedFrame = null
+        }
     }
 
     override fun onSurfaceAvailabilityChanged(available: Boolean) {
         uiState = uiState.copy(surfaceAvailable = available)
         if (!available) {
+            resetRequestPump()
             if (currentUri != null && autoRecoverEnabled) {
                 uiState = uiState.copy(
                     status = "surface waiting",
@@ -267,7 +321,9 @@ class ViewerViewModel(
             currentUri = null
             currentUriPersisted = false
             setAutoRecover(false)
+            resetRequestPump()
             uiState = uiState.copy(
+                selectedUri = null,
                 status = "permission required",
                 detail = "URI_PERMISSION_LOST",
                 notice = "저장된 읽기 권한이 없어 영상을 다시 선택해야 합니다.",
@@ -280,16 +336,42 @@ class ViewerViewModel(
             return
         }
         val token = session.open(uri, uiState.requestedFrameIndex) ?: return
+        resetRequestPump()
         uiState = uiState.copy(
             status = "indexing",
             detail = null,
             metadata = null,
             displayedFrame = null,
+            framePtsUs = emptyList(),
             diagnostics = DecoderDiagnostics(),
             activeFileGeneration = token.fileGeneration,
             activeRequestGeneration = null,
             restoreState = ViewerRestoreState.OPENING,
         )
+    }
+
+    private fun submitFrameRequest(frameIndex: Int) {
+        val acceptance = session.requestFrame(frameIndex) ?: return
+        decodeInFlight = true
+        inFlightRequestGeneration = acceptance.request.token.requestGeneration
+        uiState = uiState.copy(activeRequestGeneration = acceptance.request.token.requestGeneration)
+    }
+
+    private fun submitPendingFrameRequest() {
+        val pending = pendingRequestedFrame
+        pendingRequestedFrame = null
+        if (pending == null || !foreground || !uiState.surfaceAvailable) return
+        if (uiState.displayedFrameIndex == pending) {
+            uiState = uiState.copy(status = "ready", detail = "already displayed")
+            return
+        }
+        submitFrameRequest(pending)
+    }
+
+    private fun resetRequestPump() {
+        decodeInFlight = false
+        inFlightRequestGeneration = null
+        pendingRequestedFrame = null
     }
 
     private fun setAutoRecover(enabled: Boolean) {
@@ -306,6 +388,8 @@ class ViewerViewModel(
         private const val KEY_URI = "viewer.uri"
         private const val KEY_REQUESTED_FRAME = "viewer.requested-frame"
         private const val KEY_AUTO_RECOVER = "viewer.auto-recover"
+        private const val KEY_STATE_SCHEMA_VERSION = "viewer.state-schema-version"
+        private const val VIEWER_STATE_SCHEMA_VERSION = 1
         private const val SESSION_ONLY_PERMISSION_NOTICE =
             "읽기 권한은 이번 실행에만 유지됩니다. 앱 재실행 뒤에는 영상을 다시 여세요."
     }

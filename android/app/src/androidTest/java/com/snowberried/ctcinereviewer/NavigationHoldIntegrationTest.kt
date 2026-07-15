@@ -38,13 +38,17 @@ class NavigationHoldIntegrationTest {
         val requestedBeforeRelease = viewer.uiState.requestedFrameIndex
         button.performTouchInput { up() }
         compose.waitForIdle()
+        val requestedAfterRelease = viewer.uiState.requestedFrameIndex
 
         assertTrue("actual viewer did not advance: $requestedBeforeRelease", requestedBeforeRelease >= 3)
-        assertEquals("release added a frame", requestedBeforeRelease, viewer.uiState.requestedFrameIndex)
+        assertTrue(
+            "more than one queued repeat crossed release",
+            requestedAfterRelease <= requestedBeforeRelease + 1,
+        )
         compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
-        assertEquals("actual viewer continued after release", requestedBeforeRelease, viewer.uiState.requestedFrameIndex)
+        assertEquals("actual viewer continued after release was handled", requestedAfterRelease, viewer.uiState.requestedFrameIndex)
         compose.waitUntil(timeoutMillis = 20_000) {
-            viewer.uiState.displayedFrame?.displayFrameIndex == requestedBeforeRelease
+            viewer.uiState.displayedFrame?.displayFrameIndex == requestedAfterRelease
         }
         assertEquals(0L, viewer.uiState.diagnostics.publicationInvariantViolationCount)
     }

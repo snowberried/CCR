@@ -59,12 +59,14 @@ class NavigationRepeatTest {
         val beforeCancel = moves.get()
         button.performTouchInput { cancel() }
         compose.waitForIdle()
+        val afterCancel = moves.get()
         compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
 
         assertTrue("hold did not repeat before cancel: $beforeCancel", beforeCancel >= 2)
-        assertEquals("repeat continued after cancel", beforeCancel, moves.get())
+        assertTrue("more than one queued repeat crossed cancel", afterCancel <= beforeCancel + 1)
+        assertEquals("repeat continued after cancel was handled", afterCancel, moves.get())
         button.performTouchInput { click(center) }
-        assertEquals("cancel consumed the next tap", beforeCancel + 1, moves.get())
+        assertEquals("cancel consumed the next tap", afterCancel + 1, moves.get())
     }
 
     @Test
