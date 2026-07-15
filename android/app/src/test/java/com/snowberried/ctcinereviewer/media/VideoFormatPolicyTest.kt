@@ -1,5 +1,8 @@
 package com.snowberried.ctcinereviewer.media
 
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -22,5 +25,23 @@ class VideoFormatPolicyTest {
             VideoFormatDescriptor("video/av01", true, 8, false, false),
         ).map(::classifyVideoFormat)
         assertTrue(unsupported.all { it is VideoSupport.Unsupported })
+    }
+
+    @Test
+    fun `AVC Main is not confused with HEVC Main10 profile value`() {
+        assertEquals(
+            8,
+            androidVideoBitDepth(
+                MediaFormat.MIMETYPE_VIDEO_AVC,
+                MediaCodecInfo.CodecProfileLevel.AVCProfileMain,
+            ),
+        )
+        assertEquals(
+            10,
+            androidVideoBitDepth(
+                MediaFormat.MIMETYPE_VIDEO_HEVC,
+                MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
+            ),
+        )
     }
 }

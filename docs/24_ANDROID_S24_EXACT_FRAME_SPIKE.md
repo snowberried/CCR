@@ -12,7 +12,7 @@
 - platform-tools / ADB 37.0.0
 - AGP 9.3.0, Gradle Wrapper 9.5.0
 - minSdk 34, compileSdk/targetSdk 37
-- S24 Ultra 연결 상태: 없음, 실기기 Gate `Pending`
+- S24 Ultra 연결 상태: Samsung `SM-S928N`, 실기기 Gate `PASS` (2026-07-15)
 
 ## 프로젝트 경계
 
@@ -29,7 +29,7 @@
 | 0 — v0.5.9 동결 | 통과 | tag/Latest Release와 artifact 확인 |
 | 1 — Android 환경/프로젝트 | 통과 | local/Windows CI build와 privacy 검사 통과 |
 | 2 — exact decode/render | 통과 | JVM 계약·Lint·APK 검증 통과, 실기기 판정은 Gate 3에서 수행 |
-| 3 — golden/S24 | 부분 완료 | 합성 골든·instrumentation·실행 스크립트 완료, 연결 기기 없어 `Pending` |
+| 3 — golden/S24 | 통과 | Samsung `SM-S928N`에서 16개 fixture 정확성·burst·A→B 전환·읽기 전용 계약 통과 |
 
 ## Gate 1 검증 기록
 
@@ -60,10 +60,11 @@
 - APK privacy script: forbidden permission 0
 - `internalDebug` APK SHA-256: `17fab2d8a8d4d3a58c365947fc6af3accc8049d7897735b84d33d4e98e998f16`
 
-## 아직 판정하지 않은 항목
+## 실기기 판정 결과와 제외 범위
 
-- S24 Ultra가 연결되지 않아 hardware codec component, 실제 frame identity, stale publish 0과 A/B 전환은 아직 검증하지 않았다.
-- Gate 3에서 비식별 합성 fixture, golden JSON, instrumentation runner와 report 형식을 추가한 뒤 Samsung `SM-S928*`에서만 S24 합격 여부를 판정한다.
+- Samsung `SM-S928N`에서 H.264와 HEVC hardware decoder, 전체 frame identity, stale publish 0과 A→B 전환을 검증했다.
+- 실기기에서 H.264 Main과 HEVC Main10의 Android profile 숫자 `2` 충돌을 MIME 없이 판정하던 결함을 확인해 MIME별 bit depth 판정과 회귀 test를 추가했다.
+- Android의 clockwise rotation과 FFmpeg `-display_rotation`의 counter-clockwise 입력 규약 차이를 반영해 90/270 fixture metadata, SHA와 provenance를 바로잡았다.
 - 자동 재생, 오디오, 주석, 비교 보기, 프로젝트 저장, DICOM/PACS, AI, cloud와 Play 배포는 범위 밖이다.
 
 ## Gate 3 고정 골든
@@ -83,19 +84,23 @@
 - 실제 연결 장치의 manufacturer가 Samsung이고 model이 `SM-S928*`일 때만 test를 실행한다.
 - report schema는 `s24-report-format.json`, 실행 진입점은 `android/scripts/run-s24-gate.ps1`이다.
 - 보고서는 app/fixture SHA, device/build/security patch/display, hardware codec component, latency p50/p95/max, cache/redecode/stale/recreate, Java/native/PSS, thermal과 battery를 기록한다. 성능 합격선은 적용하지 않는다.
-- 현재 `adb devices` 연결 장치가 없으므로 실기기 실행 상태는 `Pending — device not connected`다.
+- Samsung `SM-S928N` 실기기에서 gate를 실행했고 `PASS` 보고서를 회수했다. 실행 스크립트는 앱과 test APK를 직접 설치해 package 제거 전에 보고서를 복사하며 test APK만 제거한다.
 
-## Gate 3 로컬 검증 기록
+## Gate 3 로컬·실기기 검증 기록
 
 - fixture SHA/wire contract: 16/16 통과
 - read-only/no-external-transmission source contract: 통과
-- JVM unit test: 14/14 통과
+- JVM unit test: 15/15 통과
 - Android Lint: issue 0
 - `assembleInternalDebug`, `assembleInternalDebugAndroidTest`: 통과
 - app APK forbidden permission: 0
-- app APK SHA-256: `cac8ddc23f642b6b29482dedc10f9c4ed42ddbaf6ec06e9771ba02588079afa7`
-- instrumentation APK SHA-256: `fd7dd7ab5543752d43c4c09fdd5907595e420af8e7281c4f0c9752142f6b2bc8`
-- `adb devices`: 연결 장치 0대
-- S24 instrumentation 실행: 미실행, `Pending — device not connected`
+- app APK SHA-256: `a07b46817d1b52934d2b1d5d63245b61f6738a2cb632ba5357de2cedebd401eb`
+- instrumentation APK SHA-256: `1e2ded93b98ecca388afb75e7cdcaf7e97023d79d352b50f44f4ad0a0adf8f6e`
+- S24: Samsung `SM-S928N`, Android 16/API 36, build `BP4A.251205.006.S928NKSS6DZF3`, security patch `2026-06-05`, 1440×3120 @ 120 Hz
+- hardware codec: `c2.qti.avc.decoder`, `c2.qti.hevc.decoder`; software fallback 없음
+- instrumentation: 1/1 통과, fixture 16/16, frame/key/embedded ID/signature mismatch 0, stale publish 0, write open 0, decoder recreate 0
+- 측정 latency 235건: p50 `50.244687 ms`, p95 `182.540937 ms`, max `283.309375 ms`; 성능 합격선은 적용하지 않음
+- memory snapshot: Java used `21,672,320 bytes`, native heap `15,108,752 bytes`, PSS `192,143 KiB`; thermal status 0, battery 100%
+- 보고서: `android/reports/s24-frame-accuracy-report.json`, SHA-256 `04cfe47587106ea3d51b754379d6d1fbcee95cd1848be15c16ddbfddaa2a6bbd`
 
 좌표계의 세부 수학은 `docs/25_ANDROID_CANONICAL_COORDINATES.md`를 따른다.

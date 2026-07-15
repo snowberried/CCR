@@ -86,7 +86,7 @@
 - v0.5.7에서 2GiB 초과 영상의 LRU를 현재 위치 중심 warmup과 최대 4-block 방향성 선읽기로 보완했다.
 - v0.5.8에서 5프레임 연속 이동 중 남은 foreground 재디코드를 줄이기 위해 최대 4-block 단일-process refill을 추가했다.
 - v0.5.9에서 PC 전체 RAM에 맞는 수동 cache 상한과 파일 open 시 여유 RAM 50% 안전 제한을 추가했다.
-- Android S24 Ultra 정확 프레임 스파이크는 Gate 2 local/CI를 통과했고, Gate 3 합성 골든과 instrumentation APK를 준비했다. 연결 기기가 없어 S24 실기기 판정은 `Pending`이다.
+- Android S24 Ultra 정확 프레임 스파이크는 Samsung `SM-S928N`에서 16개 합성 골든, hardware H.264/HEVC, burst와 A→B 전환을 통과해 Gate 3 `PASS`로 확정했다.
 - 사용자 승인 전 프로젝트 저장, 마스크와 DICOM/PACS를 시작하지 않는다.
 
 ## 갱신 규칙

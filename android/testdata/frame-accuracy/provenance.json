@@ -380,7 +380,7 @@
     {
       "fixture": "rotation-90.mp4",
       "golden": "rotation-90.json",
-      "sourceSha256": "ff457ae22331068a5fd68ff0f486959f69ef9cbe9ecfc63a3bef4ae7c51346f1",
+      "sourceSha256": "2e858e42fb4e25f05d9747000f4fb282c4b65d9540cc7112c69ce96e0bb67438",
       "commands": [
         {
           "purpose": "encode",
@@ -427,7 +427,7 @@
             "error",
             "-y",
             "-display_rotation:v:0",
-            "90",
+            "-90",
             "-i",
             "<temporary.mp4>",
             "-map",
@@ -504,7 +504,7 @@
     {
       "fixture": "rotation-270.mp4",
       "golden": "rotation-270.json",
-      "sourceSha256": "8185b2d701d0007af2aec03b09f1c5356710fc313277201655976eea2c6f09b8",
+      "sourceSha256": "5e7b76c6c6a6066580d72a94f41dbe3c50d87d94b9c1384c8c63faa1becec77a",
       "commands": [
         {
           "purpose": "encode",
@@ -551,7 +551,7 @@
             "error",
             "-y",
             "-display_rotation:v:0",
-            "270",
+            "-270",
             "-i",
             "<temporary.mp4>",
             "-map",

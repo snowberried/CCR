@@ -79,6 +79,7 @@ class S24FrameAccuracyTest {
         assertTrue(ready.await(5, TimeUnit.SECONDS))
         val gate = activity.get()
         assertTrue("EGL Surface was not created", gate.awaitSurface())
+        gate.display.mode.let { report.captureDisplay(it.physicalWidth, it.physicalHeight, it.refreshRate) }
 
         val outcome = runCatching {
             val names = REQUIRED_FIXTURES
@@ -100,15 +101,21 @@ class S24FrameAccuracyTest {
             assertEquals("exactness mismatch", 0, mismatchCount)
         }
 
-        report.finish(
-            status = if (outcome.isSuccess) "PASS" else "FAIL",
-            failure = outcome.exceptionOrNull(),
-            latencyMs = latencyMs,
-            diagnostics = lastDiagnostics,
-            writeOpenCount = ReadOnlyFixtureProvider.writeOpenCount.get(),
-        )
+        val reportOutcome = runCatching {
+            report.finish(
+                status = if (outcome.isSuccess) "PASS" else "FAIL",
+                failure = outcome.exceptionOrNull(),
+                latencyMs = latencyMs,
+                diagnostics = lastDiagnostics,
+                writeOpenCount = ReadOnlyFixtureProvider.writeOpenCount.get(),
+            )
+        }
         scenario.close()
-        outcome.getOrThrow()
+        outcome.exceptionOrNull()?.let { failure ->
+            reportOutcome.exceptionOrNull()?.let(failure::addSuppressed)
+            throw failure
+        }
+        reportOutcome.getOrThrow()
     }
 
     private fun exerciseEveryFrame(activity: GateActivity, golden: Golden) {
@@ -116,7 +123,9 @@ class S24FrameAccuracyTest {
         report.currentFrameIndex = 0
         val openedAt = SystemClock.elapsedRealtimeNanos()
         open(activity, golden.fixture)
-        val indexed = requireNotNull(activity.awaitIndex()) { "${golden.fixture}: index timeout" }
+        val indexed = requireNotNull(activity.awaitIndex()) {
+            "${golden.fixture}: index timeout ${activity.drainStatuses()}"
+        }
         val metadata = requireNotNull(activity.awaitMetadata()) { "${golden.fixture}: metadata timeout ${activity.drainStatuses()}" }
         validateIndex(golden, indexed)
         validateMetadata(golden, metadata)
@@ -338,6 +347,15 @@ class S24FrameAccuracyTest {
         val codecComponents = linkedSetOf<String>()
         var currentFixture: String? = null
         var currentFrameIndex: Int? = null
+        private var displayWidth: Int? = null
+        private var displayHeight: Int? = null
+        private var refreshRate: Float? = null
+
+        fun captureDisplay(width: Int, height: Int, refreshRate: Float) {
+            displayWidth = width
+            displayHeight = height
+            this.refreshRate = refreshRate
+        }
 
         fun finish(
             status: String,
@@ -351,7 +369,6 @@ class S24FrameAccuracyTest {
                 ?.get((ceil(sorted.size * value).toInt() - 1).coerceIn(0, sorted.lastIndex))
             val power = context.getSystemService(PowerManager::class.java)
             val battery = context.getSystemService(BatteryManager::class.java)
-            val displayMode = context.display.mode
             val json = JSONObject()
                 .put("schemaVersion", 1)
                 .put("status", status)
@@ -363,9 +380,9 @@ class S24FrameAccuracyTest {
                     .put("build", Build.DISPLAY)
                     .put("securityPatch", Build.VERSION.SECURITY_PATCH)
                     .put("sdk", Build.VERSION.SDK_INT)
-                    .put("displayWidth", displayMode.physicalWidth)
-                    .put("displayHeight", displayMode.physicalHeight)
-                    .put("refreshRate", displayMode.refreshRate))
+                    .put("displayWidth", displayWidth)
+                    .put("displayHeight", displayHeight)
+                    .put("refreshRate", refreshRate))
                 .put("appSha256", sha256(File(context.applicationInfo.sourceDir)))
                 .put("codecComponents", JSONArray(codecComponents.toList()))
                 .put("fixtures", JSONArray(fixtures))

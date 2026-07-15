@@ -141,7 +141,7 @@ function encode(spec) {
   run(ffmpeg, args, { input });
   const commands = [{ purpose: "encode", args: redactCommand(args, encodedPath) }];
   if (spec.rotation) {
-    const rotationArgs = ["-hide_banner", "-loglevel", "error", "-y", "-display_rotation:v:0", String(spec.rotation), "-i", encodedPath, "-map", "0:v:0", "-c", "copy", finalPath];
+    const rotationArgs = ["-hide_banner", "-loglevel", "error", "-y", "-display_rotation:v:0", String(-spec.rotation), "-i", encodedPath, "-map", "0:v:0", "-c", "copy", finalPath];
     run(ffmpeg, rotationArgs);
     rmSync(encodedPath);
     commands.push({ purpose: "rotation metadata remux", args: redactCommand(rotationArgs, encodedPath, finalPath) });
@@ -280,7 +280,8 @@ function writeGolden(spec, commands) {
   const path = join(outputDir, `${spec.fixture}.mp4`);
   const result = probe(path);
   const stream = result.streams[0];
-  const rotation = normalizeRotation(stream.side_data_list?.find((entry) => entry.rotation !== undefined)?.rotation ?? spec.rotation);
+  const probedRotation = stream.side_data_list?.find((entry) => entry.rotation !== undefined)?.rotation;
+  const rotation = normalizeRotation(probedRotation === undefined ? spec.rotation : -probedRotation);
   const geometry = canonicalGeometry(stream, rotation);
   const decoded = decodeCanonical(path, geometry, rotation);
   const frameBytes = geometry.width * geometry.height * 3;

@@ -19,6 +19,14 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
+internal fun androidVideoBitDepth(mime: String, profile: Int?): Int = when (mime) {
+    MediaFormat.MIMETYPE_VIDEO_AVC ->
+        if (profile == MediaCodecInfo.CodecProfileLevel.AVCProfileHigh10) 10 else 8
+    MediaFormat.MIMETYPE_VIDEO_HEVC ->
+        if (profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10) 10 else 8
+    else -> 8
+}
+
 class ExactFrameSession(
     context: Context,
     private val listener: Listener,
@@ -398,12 +406,7 @@ class ExactFrameSession(
             MediaFormat.MIMETYPE_VIDEO_HEVC -> profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
             else -> false
         }
-        val bitDepth = when (profile) {
-            MediaCodecInfo.CodecProfileLevel.AVCProfileHigh10,
-            MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
-            -> 10
-            else -> 8
-        }
+        val bitDepth = androidVideoBitDepth(mime, profile)
         val transfer = format.intOrNull(MediaFormat.KEY_COLOR_TRANSFER)
         val hdr = transfer == MediaFormat.COLOR_TRANSFER_ST2084 ||
             transfer == MediaFormat.COLOR_TRANSFER_HLG ||
