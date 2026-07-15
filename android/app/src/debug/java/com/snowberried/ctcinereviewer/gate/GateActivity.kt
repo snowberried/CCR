@@ -68,7 +68,7 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
     fun drainStatuses(): List<Pair<String, String?>> = buildList { statuses.drainTo(this) }
     fun drainPublicationEvents(): List<PublicationEvent> = buildList { publicationEvents.drainTo(this) }
 
-    override fun onStatus(status: String, detail: String?) {
+    override fun onStatus(fileGeneration: Long?, status: String, detail: String?) {
         statuses += status to detail
     }
 

@@ -11,6 +11,7 @@ import android.opengl.GLES11Ext
 import android.opengl.GLES30
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Log
 import android.view.Surface
 import com.snowberried.ctcinereviewer.cache.DirectionalByteCache
 import com.snowberried.ctcinereviewer.media.ContainerMetadata
@@ -30,7 +31,7 @@ import kotlin.math.min
 
 class EglFrameRenderer(
     private val publicationGate: PublicationGate,
-    private val onDecoderSurfaceChanged: () -> Unit,
+    private val onDecoderSurfaceChanged: (Boolean) -> Unit,
     renderMode: FrameRenderMode,
 ) : AutoCloseable {
     enum class AckStatus { PUBLISHED, STALE, ERROR }
@@ -93,6 +94,7 @@ class EglFrameRenderer(
     private var fileGeneration = 0L
     private var pendingTarget: TargetHandle? = null
     private val probePolicy = FrameProbePolicy(renderMode)
+    private val surfaceLeases = SurfaceLeaseTracker()
 
     private val byteBudget = min(128L * 1024L * 1024L, Runtime.getRuntime().maxMemory() / 4L)
     private val cache = DirectionalByteCache<FrameKey, CachedTexture>(
@@ -101,26 +103,32 @@ class EglFrameRenderer(
         onEvict = { texture -> GLES30.glDeleteTextures(1, intArrayOf(texture.textureId), 0) },
     )
 
-    fun attachWindow(surface: Surface, width: Int, height: Int) {
+    fun attachWindow(surfaceLeaseId: Long, surface: Surface, width: Int, height: Int) {
         handler.post {
+            if (!surfaceLeases.attach(surfaceLeaseId)) return@post
             releaseGl()
             try {
                 initializeGl(surface, width, height)
-            } catch (_: Throwable) {
+            } catch (error: Throwable) {
+                Log.e(TAG, "EGL window initialization failed", error)
                 releaseGl()
             }
         }
     }
 
-    fun resize(width: Int, height: Int) {
+    fun resize(surfaceLeaseId: Long, width: Int, height: Int) {
         handler.post {
+            if (!surfaceLeases.isActive(surfaceLeaseId)) return@post
             windowWidth = width.coerceAtLeast(1)
             windowHeight = height.coerceAtLeast(1)
         }
     }
 
-    fun detachWindow() {
-        handler.post { releaseGl() }
+    fun detachWindow(surfaceLeaseId: Long) {
+        handler.post {
+            if (!surfaceLeases.detach(surfaceLeaseId)) return@post
+            releaseGl()
+        }
     }
 
     fun awaitDecoderSurface(timeoutMs: Long): Surface? {
@@ -224,6 +232,13 @@ class EglFrameRenderer(
     fun cacheMisses(): Long = cache.missCount
     fun fullFrameReadbacks(): Long = probePolicy.readbackCount()
 
+    fun trimCache(level: Int) {
+        handler.post {
+            val targetBytes = cacheTargetBytes(level, byteBudget)
+            if (targetBytes == 0L) cache.clear() else cache.trimToBytes(targetBytes)
+        }
+    }
+
     override fun close() {
         if (closed) return
         closed = true
@@ -298,7 +313,7 @@ class EglFrameRenderer(
             decoderSurface = Surface(textureSource)
             decoderSurfaceMonitor.notifyAll()
         }
-        onDecoderSurfaceChanged()
+        onDecoderSurfaceChanged(true)
     }
 
     private fun onFrameAvailable() {
@@ -574,10 +589,11 @@ class EglFrameRenderer(
         textureProgram = 0
         vertexArray = 0
         vertexBuffer = 0
-        onDecoderSurfaceChanged()
+        onDecoderSurfaceChanged(false)
     }
 
     companion object {
+        private const val TAG = "CcrEglRenderer"
         private val IDENTITY_MATRIX = floatArrayOf(
             1f, 0f, 0f, 0f,
             0f, 1f, 0f, 0f,
@@ -625,4 +641,11 @@ class EglFrameRenderer(
             void main() { color = texture(uTexture, vTextureCoordinate); }
         """
     }
+}
+
+internal fun cacheTargetBytes(level: Int, byteBudget: Long): Long = when {
+    level >= 15 -> 0L
+    level >= 10 -> byteBudget / 2L
+    level >= 5 -> byteBudget * 3L / 4L
+    else -> byteBudget
 }

@@ -26,6 +26,24 @@ class PublicationGate(
         expectedKey: FrameKey,
     ): RequestAcceptance? = lock.withLock {
         if (fileGeneration != expectedFileGeneration) return null
+        acceptLocked(requestedFrameIndex, expectedKey)
+    }
+
+    fun acceptInitialRequest(
+        expectedToken: GenerationToken,
+        requestedFrameIndex: Int,
+        expectedKey: FrameKey,
+    ): RequestAcceptance? = lock.withLock {
+        if (fileGeneration != expectedToken.fileGeneration || requestGeneration != expectedToken.requestGeneration) {
+            return null
+        }
+        acceptLocked(requestedFrameIndex, expectedKey)
+    }
+
+    private fun acceptLocked(
+        requestedFrameIndex: Int,
+        expectedKey: FrameKey,
+    ): RequestAcceptance {
         requestGeneration += 1
         sequence += 1
         val request = FrameRequest(
@@ -33,7 +51,7 @@ class PublicationGate(
             requestedFrameIndex,
             expectedKey,
         )
-        RequestAcceptance(request, sequence, clockNanos())
+        return RequestAcceptance(request, sequence, clockNanos())
     }
 
     fun invalidateRequest(): GenerationToken = lock.withLock {

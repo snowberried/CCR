@@ -61,6 +61,20 @@ class DirectionalByteCache<K, V>(
         direction = 0
     }
 
+    fun trimToBytes(targetBytes: Long) {
+        require(targetBytes >= 0)
+        while (byteSize > targetBytes && entries.isNotEmpty()) {
+            val victim = when {
+                direction > 0 -> entries.keys.minBy(frameIndex)
+                direction < 0 -> entries.keys.maxBy(frameIndex)
+                else -> entries.keys.first()
+            }
+            val removed = entries.remove(victim) ?: continue
+            byteSize -= removed.bytes
+            onEvict(removed.value)
+        }
+    }
+
     private fun evictToBudget(protectedKey: K) {
         while (byteSize > byteBudget && entries.isNotEmpty()) {
             val candidates = entries.keys.filter { it != protectedKey }.ifEmpty { entries.keys.toList() }

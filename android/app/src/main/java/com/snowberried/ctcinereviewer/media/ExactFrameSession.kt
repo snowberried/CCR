@@ -46,11 +46,12 @@ class ExactFrameSession(
     renderMode: FrameRenderMode = FrameRenderMode.PILOT,
 ) : AutoCloseable {
     interface Listener {
-        fun onStatus(status: String, detail: String? = null)
+        fun onStatus(fileGeneration: Long?, status: String, detail: String? = null)
         fun onVideoOpened(metadata: ContainerMetadata)
         fun onVideoIndexed(video: IndexedVideo) = Unit
         fun onFrameResult(result: FrameResult, diagnostics: DecoderDiagnostics)
         fun onPublicationEvent(event: PublicationEvent) = Unit
+        fun onSurfaceAvailabilityChanged(available: Boolean) = Unit
     }
 
     private data class DecoderResources(
@@ -78,8 +79,11 @@ class ExactFrameSession(
     private val surfaceChanged = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val requestMessageToken = Any()
-    private val renderer = EglFrameRenderer(publicationGate, {
+    @Volatile private var beforeDecodeHookForTest: ((FrameRequest) -> Unit)? = null
+    private val renderer = EglFrameRenderer(publicationGate, { available ->
         surfaceChanged.set(true)
+        if (!available) invalidateForSurfaceLoss()
+        mainHandler.post { listener.onSurfaceAvailabilityChanged(available) }
     }, renderMode)
 
     private var resources: DecoderResources? = null
@@ -87,23 +91,24 @@ class ExactFrameSession(
 
     fun createViewport(context: Context): VideoViewport = VideoViewport(context, renderer)
 
-    fun open(uri: Uri) {
-        if (closed.get()) return
+    fun open(uri: Uri, initialFrameIndex: Int = 0): GenerationToken? {
+        if (closed.get()) return null
         val token = publicationGate.beginFile()
         currentVideo.set(null)
         latestRequest.clear()
         actor.removeCallbacksAndMessages(requestMessageToken)
-        notifyStatus("indexing")
-        actor.post { openInternal(uri, token) }
+        notifyStatus(token.fileGeneration, "indexing")
+        actor.post { openInternal(uri, token, initialFrameIndex) }
+        return token
     }
 
     fun requestFrame(frameIndex: Int): RequestAcceptance? {
         val video = currentVideo.get() ?: run {
-            notifyStatus("error", "VIDEO_NOT_READY")
+            notifyStatus(null, "error", "VIDEO_NOT_READY")
             return null
         }
         if (frameIndex !in video.frames.indices) {
-            notifyStatus("error", "FRAME_INDEX_OUT_OF_RANGE")
+            notifyStatus(video.fileGeneration, "error", "FRAME_INDEX_OUT_OF_RANGE")
             return null
         }
         val acceptance = publicationGate.acceptRequest(
@@ -120,16 +125,31 @@ class ExactFrameSession(
             requestMessageToken,
             SystemClock.uptimeMillis(),
         )
-        notifyStatus("decoding")
+        notifyStatus(acceptance.request.token.fileGeneration, "decoding")
         return acceptance
     }
 
-    fun cancel() {
-        if (closed.get()) return
-        publicationGate.invalidateRequest()
+    fun cancel(): GenerationToken? {
+        if (closed.get()) return null
+        val token = publicationGate.invalidateRequest()
         latestRequest.clear()
         actor.removeCallbacksAndMessages(requestMessageToken)
-        notifyStatus("cancelled")
+        notifyStatus(token.fileGeneration, "cancelled")
+        return token
+    }
+
+    fun trimMemory(level: Int) {
+        renderer.trimCache(level)
+    }
+
+    internal fun setBeforeDecodeHookForTest(hook: ((FrameRequest) -> Unit)?) {
+        beforeDecodeHookForTest = hook
+    }
+
+    internal fun awaitActorIdleForTest(timeoutMs: Long = 5_000): Boolean {
+        val latch = CountDownLatch(1)
+        actor.post(latch::countDown)
+        return latch.await(timeoutMs, TimeUnit.MILLISECONDS)
     }
 
     override fun close() {
@@ -148,7 +168,7 @@ class ExactFrameSession(
         renderer.close()
     }
 
-    private fun openInternal(uri: Uri, token: GenerationToken) {
+    private fun openInternal(uri: Uri, token: GenerationToken, initialFrameIndex: Int) {
         closeResources()
         diagnostics = DecoderDiagnostics()
         renderer.beginFile(token.fileGeneration)
@@ -217,19 +237,24 @@ class ExactFrameSession(
             surfaceChanged.set(false)
             notifyOpened(metadata, video)
 
-            val firstRequest = publicationGate.acceptRequest(
-                video.fileGeneration,
-                0,
-                video.frames[0].key,
+            val targetIndex = initialFrameIndex.coerceIn(0, video.frames.lastIndex)
+            val firstRequest = publicationGate.acceptInitialRequest(
+                token,
+                targetIndex,
+                video.frames[targetIndex].key,
             )?.request ?: return
             decodeInternal(firstRequest)
         } catch (error: Throwable) {
             codec?.let(::releaseCodec)
             extractor?.release()
             descriptor?.close()
-            if (error.message != "OPEN_STALE") {
+            if (error.message != "OPEN_STALE" && publicationGate.isCurrent(token)) {
                 val code = sanitizeError(error)
-                notifyStatus(if (code in UNSUPPORTED_CODES) "unsupported" else "error", code)
+                notifyStatus(
+                    token.fileGeneration,
+                    if (code in UNSUPPORTED_CODES) "unsupported" else "error",
+                    code,
+                )
             }
         }
     }
@@ -237,6 +262,11 @@ class ExactFrameSession(
     private fun decodeInternal(request: FrameRequest) {
         if (!publicationGate.isCurrent(request.token)) {
             report(FrameResult.DiscardedStale(request, "before-decode"))
+            return
+        }
+        beforeDecodeHookForTest?.invoke(request)
+        if (!publicationGate.isCurrent(request.token)) {
+            report(FrameResult.DiscardedStale(request, "after-test-hook"))
             return
         }
         var current = resources
@@ -248,7 +278,13 @@ class ExactFrameSession(
             current = try {
                 recreateCodec(current)
             } catch (_: Throwable) {
-                report(FrameResult.Error(request, "DECODER_SURFACE_RECREATE_FAILED"))
+                report(
+                    if (publicationGate.isCurrent(request.token)) {
+                        FrameResult.Error(request, "DECODER_SURFACE_RECREATE_FAILED")
+                    } else {
+                        FrameResult.DiscardedStale(request, "surface-recreate")
+                    },
+                )
                 return
             }
         }
@@ -390,7 +426,13 @@ class ExactFrameSession(
             }
             report(FrameResult.Error(request, "DECODE_TIMEOUT"))
         } catch (_: Throwable) {
-            report(FrameResult.Error(request, "DECODE_FAILED"))
+            report(
+                if (publicationGate.isCurrent(request.token)) {
+                    FrameResult.Error(request, "DECODE_FAILED")
+                } else {
+                    FrameResult.DiscardedStale(request, "decode-exception")
+                },
+            )
         }
     }
 
@@ -538,6 +580,13 @@ class ExactFrameSession(
         resources = null
     }
 
+    private fun invalidateForSurfaceLoss() {
+        if (closed.get()) return
+        publicationGate.invalidateRequest()
+        latestRequest.clear()
+        actor.removeCallbacksAndMessages(requestMessageToken)
+    }
+
     private fun releaseCodec(codec: MediaCodec) {
         runCatching { codec.stop() }
         runCatching { codec.release() }
@@ -560,8 +609,8 @@ class ExactFrameSession(
         mainHandler.post { listener.onFrameResult(result, nextDiagnostics) }
     }
 
-    private fun notifyStatus(status: String, detail: String? = null) {
-        mainHandler.post { listener.onStatus(status, detail) }
+    private fun notifyStatus(fileGeneration: Long?, status: String, detail: String? = null) {
+        mainHandler.post { listener.onStatus(fileGeneration, status, detail) }
     }
 
     private fun notifyOpened(metadata: ContainerMetadata, video: IndexedVideo) {

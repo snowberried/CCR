@@ -108,6 +108,21 @@ class FrameContractsTest {
     }
 
     @Test
+    fun `cancelled open cannot accept its initial frame request`() {
+        val gate = PublicationGate()
+        val openToken = gate.beginFile()
+        gate.invalidateRequest()
+
+        assertNull(
+            gate.acceptInitialRequest(
+                openToken,
+                0,
+                FrameKey(0, 0, 0),
+            ),
+        )
+    }
+
+    @Test
     fun `latest request slot coalesces pending work`() {
         val slot = LatestRequestSlot<Int>()
         slot.offer(1)

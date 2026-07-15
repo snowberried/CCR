@@ -30,4 +30,21 @@ class DirectionalByteCacheTest {
         assertEquals(0, cache.byteSize)
         assertEquals(0, cache.size)
     }
+
+    @Test
+    fun `trim releases entries toward a requested byte target`() {
+        val evicted = mutableListOf<String>()
+        val cache = DirectionalByteCache<Int, String>(16, { it }, evicted::add)
+        cache.put(1, "one", 4)
+        cache.put(2, "two", 4)
+        cache.put(3, "three", 4)
+
+        cache.trimToBytes(4)
+
+        assertEquals(4L, cache.byteSize)
+        assertEquals(1, cache.size)
+        assertEquals(2, evicted.size)
+        cache.trimToBytes(0)
+        assertEquals(0L, cache.byteSize)
+    }
 }
