@@ -1,0 +1,64 @@
+name: CCR Android CI
+
+on:
+  push:
+    branches:
+      - main
+      - codex/android-s24-spike
+    paths:
+      - android/**
+      - .github/workflows/android-ci.yml
+  pull_request:
+    paths:
+      - android/**
+      - .github/workflows/android-ci.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Android SDK packages
+        shell: powershell
+        run: |
+          $sdkManager = Get-ChildItem -LiteralPath "$env:ANDROID_HOME\cmdline-tools" -Recurse -Filter sdkmanager.bat |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $sdkManager) { throw "sdkmanager.bat was not found" }
+          & $sdkManager "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
+          if ($LASTEXITCODE -ne 0) { throw "Android SDK package installation failed" }
+
+      - name: Verify Gradle Wrapper
+        working-directory: android
+        run: .\gradlew.bat --version
+
+      - name: Test and build internal APK
+        working-directory: android
+        run: .\gradlew.bat lintInternalDebug testInternalDebugUnitTest assembleInternalDebug --stacktrace
+
+      - name: Verify APK privacy contract
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\verify-apk-privacy.ps1
+
+      - name: Upload internal APK and reports
+        uses: actions/upload-artifact@v6
+        with:
+          name: ccr-android-s24-internal
+          path: |
+            android/app/build/outputs/apk/internal/debug/app-internal-debug.apk
+            android/app/build/reports/**
+            android/app/build/test-results/**
+          if-no-files-found: error
+          retention-days: 14

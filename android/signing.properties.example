@@ -1,0 +1,5 @@
+# Copy to signing.properties (ignored) or use the CCR_ANDROID_* environment variables.
+storeFile=C:/secure/ccr-android-release.jks
+storePassword=replace-me
+keyAlias=ccr
+keyPassword=replace-me

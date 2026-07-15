@@ -39,6 +39,7 @@
 | Frame Navigation & Right Panel Tabs | `21_FRAME_NAVIGATION_LAYOUT.md` | 프레임 시간 표시, 시각적 타임라인과 조정·정보 탭 패널 |
 | v0.5.2 Modern Dark Professional | `22_V052_MODERN_DARK_PROFESSIONAL.md` | 기능 동결을 유지한 Modern Dark UI, SVG 자산, 3:1:3 탐색과 시각 QA |
 | GitHub Windows Release Automation | `23_GITHUB_RELEASE_AUTOMATION.md` | main 버전 증가 감지, 자동 태그와 Windows Latest Release 절차 |
+| Android S24 Ultra Exact-Frame Spike | `24_ANDROID_S24_EXACT_FRAME_SPIKE.md` | v0.5.9 동결 기준선, Android 환경과 Gate 0~3 정확성 범위 |
 | v0.5.2 Design QA | `../design-qa.md` | 최종 시안과 1440×900·720×600 구현 비교 및 판정 |
 | v0.5.2 Modern Dark Handoff | `../HANDOFF_V052_MODERN_DARK.md` | 최신 UI·확대율 의미, 검증 결과, 설치본과 후속 작업 상태 |
 | v0.5.3 Handoff | `../HANDOFF_V053.md` | 버전 표시, 설정 모달, 수동 업데이트 확인과 검증된 설치본 |
