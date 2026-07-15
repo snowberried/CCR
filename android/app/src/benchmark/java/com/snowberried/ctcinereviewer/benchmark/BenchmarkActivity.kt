@@ -1,29 +1,31 @@
 package com.snowberried.ctcinereviewer.benchmark
 
-import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Trace
-import android.view.SurfaceHolder
 import android.view.View
 import android.view.accessibility.AccessibilityEvent
 import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.platform.ComposeView
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 import com.snowberried.ctcinereviewer.BuildConfig
-import com.snowberried.ctcinereviewer.media.ContainerMetadata
+import com.snowberried.ctcinereviewer.ViewerUiState
+import com.snowberried.ctcinereviewer.ViewerViewModel
 import com.snowberried.ctcinereviewer.media.DecoderDiagnostics
-import com.snowberried.ctcinereviewer.media.ExactFrameSession
-import com.snowberried.ctcinereviewer.media.FrameResult
-import com.snowberried.ctcinereviewer.media.IndexedVideo
-import com.snowberried.ctcinereviewer.media.PublicationEvent
-import com.snowberried.ctcinereviewer.render.FrameRenderMode
 import kotlin.math.abs
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 /** Benchmark-only fixture entry. It is never packaged in debug or release builds. */
-class BenchmarkActivity : Activity(), ExactFrameSession.Listener {
+class BenchmarkActivity : ComponentActivity() {
     private enum class Phase {
         OPENING,
         INITIAL_FRAME,
@@ -33,22 +35,33 @@ class BenchmarkActivity : Activity(), ExactFrameSession.Listener {
         COMPLETE,
     }
 
-    private lateinit var session: ExactFrameSession
+    private lateinit var viewer: ViewerViewModel
     private lateinit var statusView: TextView
     private val mainHandler = Handler(Looper.getMainLooper())
     private var scenario = SCENARIO_ENTRY
     private var phase = Phase.OPENING
     private var started = false
-    private var surfaceAvailable = false
-    private var firstFileGeneration = -1L
-    private var secondFileGeneration = -1L
+    private var failed = false
+    private var firstFileGeneration: Long? = null
+    private var secondFileGeneration: Long? = null
     private var expectedTargetIndex: Int? = null
     private var displayedFrameIndex: Int? = null
     private var latestRequestedFrameIndex: Int? = null
+    private var handledPublication: Triple<Long, Long, Long>? = null
+    private var openIndexTraceCookie: Long? = null
+    private var openFirstTraceCookie: Long? = null
     private var requestTraceCookie: Long? = null
+    private var switchTraceCookie: Long? = null
+    private var resumeTraceCookie: Long? = null
+    private var expectedCacheHit: Boolean? = null
+    private var cacheHitBaseline = 0L
+    private var cacheMissBaseline = 0L
+    private var observedSurfaceGeneration = 0L
     private var surfaceRecreateCount = 0L
-    private var sawSurfaceUnavailable = false
-    private var resumePending = false
+    private var backgroundStopped = false
+    private var backgroundMeasurementPending = false
+    private var traceCookieSeed = System.nanoTime()
+    private var stateObservation: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,6 +69,7 @@ class BenchmarkActivity : Activity(), ExactFrameSession.Listener {
             "BENCHMARK_VARIANT_REQUIRED"
         }
         scenario = intent.getStringExtra(EXTRA_SCENARIO) ?: SCENARIO_ENTRY
+        if (scenario == SCENARIO_ENTRY) beginAsync(TRACE_FIXTURE_ENTRY, ENTRY_TRACE_COOKIE)
         statusView = TextView(this).apply {
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
             updateStatus(status(SUFFIX_WAITING))
@@ -70,15 +84,13 @@ class BenchmarkActivity : Activity(), ExactFrameSession.Listener {
             return
         }
 
-        session = ExactFrameSession(this, this, FrameRenderMode.PILOT)
-        val viewport = session.createViewport(this)
-        viewport.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) = Unit
-            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
-            override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
-        })
+        viewer = ViewModelProvider(this)[ViewerViewModel::class.java]
+        val viewport = viewer.createViewport(this)
         setContentView(FrameLayout(this).apply {
             addView(viewport, FrameLayout.LayoutParams(-1, -1))
+            // The product UI starts Compose's process-wide snapshot notification loop.
+            // This View-only benchmark host must do the same before collecting uiState.
+            addView(ComposeView(this@BenchmarkActivity).apply { setContent {} }, FrameLayout.LayoutParams(1, 1))
             addView(statusView, FrameLayout.LayoutParams(2, 2).apply {
                 leftMargin = 200
                 topMargin = 200
@@ -86,79 +98,129 @@ class BenchmarkActivity : Activity(), ExactFrameSession.Listener {
         })
     }
 
+    override fun onStart() {
+        super.onStart()
+        if (!::viewer.isInitialized) return
+        if (scenario == SCENARIO_BACKGROUND_FOREGROUND && backgroundStopped) {
+            prepareBackgroundMeasurement()
+        }
+        stateObservation?.cancel()
+        stateObservation = lifecycleScope.launch {
+            snapshotFlow { viewer.uiState }.collect { state ->
+                if (!failed) observeState(state)
+            }
+        }
+        viewer.onForeground(this)
+    }
+
+    override fun onStop() {
+        stateObservation?.cancel()
+        stateObservation = null
+        if (::viewer.isInitialized) {
+            if (
+                scenario == SCENARIO_BACKGROUND_FOREGROUND &&
+                phase == Phase.COMPLETE &&
+                displayedFrameIndex != null
+            ) {
+                backgroundStopped = true
+            }
+            viewer.onBackground(this)
+        }
+        super.onStop()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.getStringExtra(EXTRA_SCENARIO) == SCENARIO_BACKGROUND_FOREGROUND) {
             scenario = SCENARIO_BACKGROUND_FOREGROUND
-            resumePending = true
-            statusView.updateStatus(status(SUFFIX_WAITING))
-            requestResumeFrameIfReady()
+            prepareBackgroundMeasurement()
         }
     }
 
-    override fun onStatus(fileGeneration: Long?, status: String, detail: String?) {
-        if (status == "error" || status == "unsupported") fail("$status:${detail ?: "UNKNOWN"}")
-    }
-
-    override fun onVideoOpened(metadata: ContainerMetadata) = Unit
-
-    override fun onVideoIndexed(video: IndexedVideo) {
-        if (video.fileGeneration == firstFileGeneration) {
-            endAsync(TRACE_OPEN_TO_INDEX, firstFileGeneration)
-            if (scenario == SCENARIO_OPEN_INDEX) {
-                endAsync(TRACE_OPEN_TO_FIRST_FRAME, firstFileGeneration)
-                complete()
-            }
-        }
-    }
-
-    override fun onFrameResult(result: FrameResult, diagnostics: DecoderDiagnostics) {
-        traceDiagnostics(result, diagnostics)
-        if (diagnostics.fullFrameReadbackCount != 0L) {
+    private fun observeState(state: ViewerUiState) {
+        traceDiagnostics(state)
+        if (state.diagnostics.fullFrameReadbackCount != 0L) {
             fail("PRODUCT_READBACK_FORBIDDEN")
             return
         }
-        when (result) {
-            is FrameResult.Published -> onPublished(result)
-            is FrameResult.Error -> fail(result.code)
-            is FrameResult.Unsupported -> fail(result.reason)
-            is FrameResult.DiscardedStale -> Unit
-        }
-    }
-
-    override fun onPublicationEvent(event: PublicationEvent) = Unit
-
-    override fun onSurfaceAvailabilityChanged(available: Boolean) {
-        if (!available) {
-            surfaceAvailable = false
-            sawSurfaceUnavailable = true
+        if (state.status == "error" || state.status == "unsupported") {
+            fail("${state.status}:${state.lastErrorCode ?: state.detail ?: "UNKNOWN"}")
             return
         }
-        surfaceAvailable = true
-        if (sawSurfaceUnavailable) {
-            surfaceRecreateCount += 1
-            Trace.setCounter("ccr.surface_recreate", surfaceRecreateCount)
+        traceSurfaceGeneration(state.surfaceGeneration)
+
+        if (!started && state.surfaceAvailable) {
+            if (scenario == SCENARIO_ENTRY) {
+                started = true
+                endAsync(TRACE_FIXTURE_ENTRY, ENTRY_TRACE_COOKIE)
+                complete()
+            } else {
+                startScenario()
+            }
         }
-        if (!started) startScenario() else requestResumeFrameIfReady()
+        if (!started || phase == Phase.OPENING) return
+
+        val activeFileGeneration = state.activeFileGeneration
+        if (firstFileGeneration == null && phase != Phase.SWITCHED_FRAME) {
+            firstFileGeneration = activeFileGeneration
+        }
+        if (
+            phase == Phase.SWITCHED_FRAME &&
+            activeFileGeneration != null &&
+            activeFileGeneration != firstFileGeneration
+        ) {
+            secondFileGeneration = activeFileGeneration
+        }
+
+        if (
+            openIndexTraceCookie != null &&
+            state.framePtsUs.isNotEmpty() &&
+            activeFileGeneration == firstFileGeneration
+        ) {
+            endOpenIndexTrace()
+            if (scenario == SCENARIO_OPEN_INDEX) {
+                endOpenFirstTrace()
+                complete()
+            }
+        }
+
+        val requestGeneration = state.activeRequestGeneration
+        val displayed = state.displayedFrameIndex
+        if (
+            state.status == "ready" &&
+            activeFileGeneration != null &&
+            requestGeneration != null &&
+            displayed != null
+        ) {
+            val publication = Triple(
+                activeFileGeneration,
+                requestGeneration,
+                state.diagnostics.publishedSwapCount,
+            )
+            if (publication != handledPublication) {
+                handledPublication = publication
+                onPublished(state, displayed)
+            }
+        }
     }
 
     private fun startScenario() {
         started = true
         phase = Phase.INITIAL_FRAME
-        val token = session.open(fixtureUri(firstFixture())) ?: return fail("OPEN_REJECTED")
-        firstFileGeneration = token.fileGeneration
-        beginAsync(TRACE_OPEN_TO_INDEX, token.fileGeneration)
-        beginAsync(TRACE_OPEN_TO_FIRST_FRAME, token.fileGeneration)
+        latestRequestedFrameIndex = 0
+        openIndexTraceCookie = nextTraceCookie().also { beginAsync(TRACE_OPEN_TO_INDEX, it) }
+        openFirstTraceCookie = nextTraceCookie().also { beginAsync(TRACE_OPEN_TO_FIRST_FRAME, it) }
+        viewer.openVideo(fixtureUri(firstFixture()))
     }
 
-    private fun onPublished(result: FrameResult.Published) {
-        displayedFrameIndex = result.request.requestedFrameIndex
-        Trace.setCounter("ccr.displayed_frame", result.request.requestedFrameIndex.toLong())
+    private fun onPublished(state: ViewerUiState, displayed: Int) {
+        displayedFrameIndex = displayed
+        Trace.setCounter("ccr.displayed_frame", displayed.toLong())
         when (phase) {
             Phase.INITIAL_FRAME -> {
-                if (result.request.token.fileGeneration != firstFileGeneration) return
-                endAsync(TRACE_OPEN_TO_FIRST_FRAME, firstFileGeneration)
+                if (state.activeFileGeneration != firstFileGeneration) return
+                endOpenFirstTrace()
                 when (scenario) {
                     SCENARIO_ENTRY, SCENARIO_OPEN_FIRST_FRAME -> complete()
                     SCENARIO_CACHE_HIT -> waitForPrefetchThenRequest(1)
@@ -174,18 +236,25 @@ class BenchmarkActivity : Activity(), ExactFrameSession.Listener {
                 }
             }
             Phase.TARGET_FRAME -> {
-                if (result.request.requestedFrameIndex != expectedTargetIndex) return
+                if (displayed != expectedTargetIndex) return
+                if (!assertExpectedCacheCounters(state.diagnostics)) return
                 requestTraceCookie?.let { endAsync(TRACE_REQUEST_TO_PUBLISH, it) }
                 requestTraceCookie = null
+                if (scenario == SCENARIO_BACKGROUND_FOREGROUND && backgroundMeasurementPending) {
+                    resumeTraceCookie?.let { endAsync(TRACE_BACKGROUND_TO_FIRST_FRAME, it) }
+                    resumeTraceCookie = null
+                    backgroundMeasurementPending = false
+                }
                 complete()
             }
             Phase.ADJACENT_MISS_WARMUP -> {
-                if (result.request.requestedFrameIndex != DISTANT_FRAME) return
-                requestTarget(DISTANT_FRAME - 1)
+                if (displayed != DISTANT_FRAME) return
+                requestTarget(DISTANT_FRAME - 1, expectCacheHit = false)
             }
             Phase.SWITCHED_FRAME -> {
-                if (result.request.token.fileGeneration != secondFileGeneration) return
-                endAsync(TRACE_SWITCH_TO_FIRST_FRAME, secondFileGeneration)
+                if (state.activeFileGeneration != secondFileGeneration) return
+                switchTraceCookie?.let { endAsync(TRACE_SWITCH_TO_FIRST_FRAME, it) }
+                switchTraceCookie = null
                 complete()
             }
             Phase.OPENING, Phase.COMPLETE -> Unit
@@ -194,74 +263,125 @@ class BenchmarkActivity : Activity(), ExactFrameSession.Listener {
 
     private fun waitForPrefetchThenRequest(frameIndex: Int) {
         Thread({
-            if (!session.awaitActorIdleForTest()) {
+            if (!viewer.awaitActorIdleForTest()) {
                 runOnUiThread { fail("PREFETCH_IDLE_TIMEOUT") }
                 return@Thread
             }
-            runOnUiThread { requestTarget(frameIndex) }
+            runOnUiThread {
+                requestTarget(
+                    frameIndex,
+                    expectCacheHit = if (scenario == SCENARIO_CACHE_HIT) true else null,
+                )
+            }
         }, "ccr-benchmark-prefetch-wait").start()
     }
 
-    private fun requestTarget(frameIndex: Int) {
+    private fun requestTarget(frameIndex: Int, expectCacheHit: Boolean? = null) {
         phase = Phase.TARGET_FRAME
         expectedTargetIndex = frameIndex
         latestRequestedFrameIndex = frameIndex
-        val acceptance = session.requestFrame(frameIndex) ?: return fail("REQUEST_REJECTED")
-        requestTraceCookie = acceptance.request.token.requestGeneration
-        beginAsync(TRACE_REQUEST_TO_PUBLISH, requireNotNull(requestTraceCookie))
+        expectedCacheHit = expectCacheHit
+        cacheHitBaseline = viewer.uiState.diagnostics.cacheHitCount
+        cacheMissBaseline = viewer.uiState.diagnostics.cacheMissCount
+        requestTraceCookie = nextTraceCookie().also { beginAsync(TRACE_REQUEST_TO_PUBLISH, it) }
         Trace.setCounter("ccr.requested_frame", frameIndex.toLong())
+        viewer.requestFrame(frameIndex)
     }
 
     private fun startAdjacentMissWarmup() {
         phase = Phase.ADJACENT_MISS_WARMUP
         latestRequestedFrameIndex = DISTANT_FRAME
         Trace.setCounter("ccr.requested_frame", DISTANT_FRAME.toLong())
-        if (session.requestFrame(DISTANT_FRAME) == null) fail("MISS_WARMUP_REJECTED")
+        viewer.requestFrame(DISTANT_FRAME)
     }
 
     private fun startRepeatedRequests() {
         phase = Phase.TARGET_FRAME
         expectedTargetIndex = LONG_PRESS_LAST_FRAME
-        val cookie = System.nanoTime().toInt()
-        requestTraceCookie = cookie.toLong()
-        beginAsync(TRACE_REQUEST_TO_PUBLISH, requireNotNull(requestTraceCookie))
+        expectedCacheHit = null
+        requestTraceCookie = nextTraceCookie().also { beginAsync(TRACE_REQUEST_TO_PUBLISH, it) }
+        val gestureGeneration = viewer.beginNavigationGesture()
         repeat(LONG_PRESS_LAST_FRAME) { offset ->
             mainHandler.postDelayed({
                 val frameIndex = offset + 1
                 latestRequestedFrameIndex = frameIndex
                 Trace.setCounter("ccr.requested_frame", frameIndex.toLong())
-                session.requestFrame(frameIndex)
+                viewer.moveByGesture(1, gestureGeneration)
+                if (frameIndex == LONG_PRESS_LAST_FRAME) {
+                    viewer.endNavigationGesture(gestureGeneration)
+                }
             }, offset * REPEAT_INTERVAL_MS)
         }
     }
 
     private fun startSwitch() {
         phase = Phase.SWITCHED_FRAME
-        val token = session.open(fixtureUri(secondFixture())) ?: return fail("SWITCH_REJECTED")
-        secondFileGeneration = token.fileGeneration
-        beginAsync(TRACE_SWITCH_TO_FIRST_FRAME, token.fileGeneration)
+        secondFileGeneration = null
+        switchTraceCookie = nextTraceCookie().also { beginAsync(TRACE_SWITCH_TO_FIRST_FRAME, it) }
+        viewer.openVideo(fixtureUri(secondFixture()))
     }
 
-    private fun requestResumeFrameIfReady() {
-        val frame = displayedFrameIndex ?: return
-        if (!resumePending || !surfaceAvailable) return
-        resumePending = false
+    private fun prepareBackgroundMeasurement() {
+        if (backgroundMeasurementPending || !::viewer.isInitialized) return
+        val frame = displayedFrameIndex ?: viewer.uiState.requestedFrameIndex
+        backgroundStopped = false
+        backgroundMeasurementPending = true
         phase = Phase.TARGET_FRAME
         expectedTargetIndex = frame
         latestRequestedFrameIndex = frame
-        val acceptance = session.requestFrame(frame) ?: return fail("RESUME_REQUEST_REJECTED")
-        requestTraceCookie = acceptance.request.token.requestGeneration
-        beginAsync(TRACE_REQUEST_TO_PUBLISH, requireNotNull(requestTraceCookie))
+        expectedCacheHit = null
+        resumeTraceCookie = nextTraceCookie().also {
+            beginAsync(TRACE_BACKGROUND_TO_FIRST_FRAME, it)
+        }
+        viewer.requestFrame(frame)
+        statusView.updateStatus(status(SUFFIX_WAITING))
     }
 
-    private fun traceDiagnostics(result: FrameResult, diagnostics: DecoderDiagnostics) {
-        val displayed = displayedFrameIndex ?: result.request.requestedFrameIndex
-        val requested = latestRequestedFrameIndex ?: result.request.requestedFrameIndex
+    private fun assertExpectedCacheCounters(diagnostics: DecoderDiagnostics): Boolean {
+        return when (expectedCacheHit) {
+            true -> if (
+                diagnostics.cacheHitCount > cacheHitBaseline &&
+                diagnostics.cacheMissCount == cacheMissBaseline
+            ) {
+                true
+            } else {
+                fail("EXPECTED_CACHE_HIT_COUNTER")
+                false
+            }
+            false -> if (
+                diagnostics.cacheMissCount > cacheMissBaseline &&
+                diagnostics.cacheHitCount == cacheHitBaseline
+            ) {
+                true
+            } else {
+                fail("EXPECTED_CACHE_MISS_COUNTER")
+                false
+            }
+            null -> true
+        }
+    }
+
+    private fun traceSurfaceGeneration(generation: Long) {
+        if (generation <= observedSurfaceGeneration) return
+        if (observedSurfaceGeneration > 0L) {
+            surfaceRecreateCount += generation - observedSurfaceGeneration
+            Trace.setCounter("ccr.surface_recreate", surfaceRecreateCount)
+        }
+        observedSurfaceGeneration = generation
+    }
+
+    private fun traceDiagnostics(state: ViewerUiState) {
+        val diagnostics = state.diagnostics
+        val displayed = state.displayedFrameIndex ?: displayedFrameIndex ?: state.requestedFrameIndex
+        val requested = latestRequestedFrameIndex ?: state.requestedFrameIndex
         Trace.setCounter("ccr.requested_displayed_lag", abs(requested - displayed).toLong())
         Trace.setCounter("ccr.decoded_output", diagnostics.decodeOrdinal)
         Trace.setCounter("ccr.cache_hit", diagnostics.cacheHitCount)
         Trace.setCounter("ccr.cache_miss", diagnostics.cacheMissCount)
         Trace.setCounter("ccr.prefetch_completed", diagnostics.prefetchedFrameCount)
+        Trace.setCounter("ccr.prefetch_cache_hit", diagnostics.prefetchCacheHit)
+        Trace.setCounter("ccr.prefetch_cancelled", diagnostics.prefetchCancelled)
+        Trace.setCounter("ccr.prefetch_wasted", diagnostics.prefetchWasted)
         Trace.setCounter("ccr.cache_bytes", diagnostics.cacheBytes)
         Trace.setCounter("ccr.codec_recreate", diagnostics.decoderRecreateCount)
         Trace.setCounter("ccr.swap_failure", diagnostics.swapFailureCount)
@@ -270,12 +390,25 @@ class BenchmarkActivity : Activity(), ExactFrameSession.Listener {
         Trace.setCounter("ccr.full_frame_readback", diagnostics.fullFrameReadbackCount)
     }
 
+    private fun endOpenIndexTrace() {
+        openIndexTraceCookie?.let { endAsync(TRACE_OPEN_TO_INDEX, it) }
+        openIndexTraceCookie = null
+    }
+
+    private fun endOpenFirstTrace() {
+        openFirstTraceCookie?.let { endAsync(TRACE_OPEN_TO_FIRST_FRAME, it) }
+        openFirstTraceCookie = null
+    }
+
     private fun complete() {
+        if (failed) return
         phase = Phase.COMPLETE
         statusView.updateStatus(status(SUFFIX_COMPLETE))
     }
 
     private fun fail(code: String) {
+        if (failed) return
+        failed = true
         statusView.updateStatus(status("failed-$code"))
     }
 
@@ -303,8 +436,13 @@ class BenchmarkActivity : Activity(), ExactFrameSession.Listener {
 
     private fun status(suffix: String) = "$STATUS_PREFIX-$scenario-$suffix"
 
+    private fun nextTraceCookie(): Long {
+        traceCookieSeed += 1
+        return traceCookieSeed
+    }
+
     override fun onDestroy() {
-        if (::session.isInitialized) session.close()
+        stateObservation?.cancel()
         super.onDestroy()
     }
 
@@ -333,6 +471,8 @@ class BenchmarkActivity : Activity(), ExactFrameSession.Listener {
         const val TRACE_OPEN_TO_FIRST_FRAME = "ccr.open_to_first_frame"
         const val TRACE_REQUEST_TO_PUBLISH = "ccr.request_to_publish"
         const val TRACE_SWITCH_TO_FIRST_FRAME = "ccr.switch_to_first_frame"
+        const val TRACE_FIXTURE_ENTRY = "ccr.fixture_entry"
+        const val TRACE_BACKGROUND_TO_FIRST_FRAME = "ccr.background_to_first_frame"
 
         private const val H264_FIXTURE = "burst.mp4"
         private const val H264_SECOND_FIXTURE = "h264-ip.mp4"
@@ -340,6 +480,7 @@ class BenchmarkActivity : Activity(), ExactFrameSession.Listener {
         private const val LONG_PRESS_LAST_FRAME = 12
         private const val DISTANT_FRAME = 36
         private const val REPEAT_INTERVAL_MS = 50L
+        private const val ENTRY_TRACE_COOKIE = 1L
         private val REQUIRED_FIXTURES = listOf(H264_FIXTURE, H264_SECOND_FIXTURE, HEVC_FIXTURE)
 
         private fun beginAsync(name: String, cookie: Long) {
@@ -349,6 +490,5 @@ class BenchmarkActivity : Activity(), ExactFrameSession.Listener {
         private fun endAsync(name: String, cookie: Long) {
             Trace.endAsyncSection(name, cookie.toInt())
         }
-
     }
 }

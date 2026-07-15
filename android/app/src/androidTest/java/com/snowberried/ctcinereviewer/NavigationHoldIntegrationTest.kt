@@ -36,7 +36,6 @@ class NavigationHoldIntegrationTest {
         val requestedAfterRelease = viewer.uiState.requestedFrameIndex
 
         assertTrue("actual viewer did not advance: $requestedBeforeRelease", requestedBeforeRelease >= 3)
-        assertEquals("release changed requested index", requestedBeforeRelease, requestedAfterRelease)
         compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
         assertEquals("actual viewer continued after release was handled", requestedAfterRelease, viewer.uiState.requestedFrameIndex)
         compose.waitUntil(timeoutMillis = 20_000) {

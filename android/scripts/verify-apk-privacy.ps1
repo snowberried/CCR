@@ -29,7 +29,7 @@ if ($LASTEXITCODE -ne 0) {
 if ($applicationId -ne "com.snowberried.ctcinereviewer.internal") {
   throw "Unexpected APK application ID"
 }
-if ($versionName -ne "0.2.0-alpha.1" -or $versionCode -ne "2") {
+if ($versionName -ne "0.2.0-alpha.2" -or $versionCode -ne "3") {
   throw "Unexpected APK version"
 }
 
@@ -46,7 +46,7 @@ if ($found.Count -gt 0) {
 }
 
 [PSCustomObject]@{
-  apk = $resolvedApk
+  apk = [System.IO.Path]::GetFileName($resolvedApk)
   forbiddenPermissionCount = 0
   declaredPermissions = @($permissions)
   applicationId = $applicationId

@@ -38,7 +38,7 @@ class CcrProductMacrobenchmark {
     fun warmStartup() = startup(StartupMode.WARM)
 
     @Test
-    fun fixtureEntry() = fixture(SCENARIO_ENTRY, TRACE_OPEN_TO_FIRST_FRAME)
+    fun fixtureEntry() = fixture(SCENARIO_ENTRY, TRACE_FIXTURE_ENTRY)
 
     @Test
     fun fileOpenToIndexComplete() = fixture(SCENARIO_OPEN_INDEX, TRACE_OPEN_TO_INDEX)
@@ -76,7 +76,7 @@ class CcrProductMacrobenchmark {
     @Test
     fun backgroundForegroundFirstFrame() = benchmarkRule.measureRepeated(
         packageName = TARGET_PACKAGE,
-        metrics = interactionMetrics(TRACE_REQUEST_TO_PUBLISH),
+        metrics = interactionMetrics(TRACE_BACKGROUND_TO_FIRST_FRAME),
         iterations = ITERATIONS,
         compilationMode = CompilationMode.Ignore(),
         startupMode = null,
@@ -180,5 +180,7 @@ class CcrProductMacrobenchmark {
         private const val TRACE_OPEN_TO_FIRST_FRAME = "ccr.open_to_first_frame"
         private const val TRACE_REQUEST_TO_PUBLISH = "ccr.request_to_publish"
         private const val TRACE_SWITCH_TO_FIRST_FRAME = "ccr.switch_to_first_frame"
+        private const val TRACE_FIXTURE_ENTRY = "ccr.fixture_entry"
+        private const val TRACE_BACKGROUND_TO_FIRST_FRAME = "ccr.background_to_first_frame"
     }
 }

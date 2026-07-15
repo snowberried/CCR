@@ -29,6 +29,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
 
@@ -70,6 +71,8 @@ class EglFrameRenderer(
             } else {
                 RenderAck(AckStatus.ERROR, 0, "RENDER_TIMEOUT")
             }
+
+        internal fun completedResult(): RenderAck? = result.get()
     }
 
     class CacheTargetHandle internal constructor(
@@ -89,9 +92,12 @@ class EglFrameRenderer(
             } else {
                 RenderAck(AckStatus.ERROR, 0, "CACHE_TIMEOUT")
             }
+
+        internal fun completedResult(): RenderAck? = result.get()
     }
 
     private data class PendingTarget(
+        val owner: Any,
         val token: GenerationToken,
         val expectedKey: FrameKey,
         val publicationRequest: FrameRequest?,
@@ -112,6 +118,7 @@ class EglFrameRenderer(
     private val decoderSurfaceMonitor = java.lang.Object()
     @Volatile private var decoderSurface: Surface? = null
     @Volatile private var closed = false
+    @Volatile private var terminalFailure = false
 
     private var display: EGLDisplay = EGL14.EGL_NO_DISPLAY
     private var context: EGLContext = EGL14.EGL_NO_CONTEXT
@@ -119,6 +126,7 @@ class EglFrameRenderer(
     private var windowSurface: Surface? = null
     private var config: EGLConfig? = null
     private var surfaceTexture: SurfaceTexture? = null
+    private var inputSourceEpoch = 0L
     private var oesTextureId = 0
     private var oesProgram = 0
     private var textureProgram = 0
@@ -154,9 +162,9 @@ class EglFrameRenderer(
     )
 
     fun attachWindow(surfaceLeaseId: Long, surface: Surface, width: Int, height: Int) {
-        if (closed) return
+        if (unavailable()) return
         handler.post {
-            if (closed) return@post
+            if (unavailable()) return@post
             if (!surfaceLeases.attach(surfaceLeaseId)) return@post
             releaseGl()
             try {
@@ -169,9 +177,9 @@ class EglFrameRenderer(
     }
 
     fun resize(surfaceLeaseId: Long, width: Int, height: Int) {
-        if (closed) return
+        if (unavailable()) return
         handler.post {
-            if (closed) return@post
+            if (unavailable()) return@post
             if (!surfaceLeases.isActive(surfaceLeaseId)) return@post
             windowWidth = width.coerceAtLeast(1)
             windowHeight = height.coerceAtLeast(1)
@@ -179,9 +187,9 @@ class EglFrameRenderer(
     }
 
     fun detachWindow(surfaceLeaseId: Long) {
-        if (closed) return
+        if (unavailable()) return
         handler.post {
-            if (closed) return@post
+            if (unavailable()) return@post
             if (!surfaceLeases.detach(surfaceLeaseId)) return@post
             releaseGl()
         }
@@ -190,7 +198,7 @@ class EglFrameRenderer(
     fun awaitDecoderSurface(timeoutMs: Long): Surface? {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
         synchronized(decoderSurfaceMonitor) {
-            while (!closed && decoderSurface == null) {
+            while (!unavailable() && decoderSurface == null) {
                 val remaining = deadline - System.nanoTime()
                 if (remaining <= 0) break
                 TimeUnit.NANOSECONDS.timedWait(decoderSurfaceMonitor, remaining)
@@ -199,37 +207,33 @@ class EglFrameRenderer(
         }
     }
 
-    fun beginFile(nextFileGeneration: Long) {
-        if (closed) return
-        val latch = CountDownLatch(1)
-        handler.post {
-            if (closed) {
-                latch.countDown()
-                return@post
-            }
+    fun beginFile(nextFileGeneration: Long): Boolean {
+        if (unavailable()) return false
+        return callOnRenderer(1_000, false) {
+            if (unavailable() || display == EGL14.EGL_NO_DISPLAY) return@callOnRenderer false
             fileGeneration = nextFileGeneration
             probePolicy.reset()
             pendingTarget?.complete?.invoke(RenderAck(AckStatus.STALE, 0, "FILE_CHANGED"))
             pendingTarget = null
-            if (display != EGL14.EGL_NO_DISPLAY) cache.clear()
+            cache.clear()
+            rebindDecoderInputSurface()
             lastPublishedKey = null
             prefetchedKeys.clear()
             prefetchCacheHitCount = 0
             prefetchEvictedBeforeUseCount = 0
             prefetchWastedCount = 0
-            latch.countDown()
+            true
         }
-        latch.await(1, TimeUnit.SECONDS)
     }
 
     fun configureFrame(
         container: ContainerMetadata,
         decoded: DecodedOutputMetadata? = null,
     ) {
-        if (closed) return
+        if (unavailable()) return
         val latch = CountDownLatch(1)
         handler.post {
-            if (closed) {
+            if (unavailable()) {
                 latch.countDown()
                 return@post
             }
@@ -258,74 +262,54 @@ class EglFrameRenderer(
     }
 
     fun presentCached(request: FrameRequest): RenderAck? {
-        if (closed) return RenderAck(AckStatus.STALE, 0, "RENDERER_CLOSED")
-        val latch = CountDownLatch(1)
-        val result = AtomicReference<RenderAck?>()
-        handler.post {
-            if (closed) {
-                result.set(RenderAck(AckStatus.STALE, 0, "RENDERER_CLOSED"))
-                latch.countDown()
-                return@post
-            }
+        if (unavailable()) return RenderAck(AckStatus.STALE, 0, "RENDERER_CLOSED")
+        return callOnRenderer<RenderAck?>(
+            timeoutMs = 2_000,
+            fallback = RenderAck(AckStatus.ERROR, 0, "CACHE_RENDER_TIMEOUT"),
+        ) {
+            if (unavailable()) return@callOnRenderer RenderAck(AckStatus.STALE, 0, "RENDERER_CLOSED")
             if (request.token.fileGeneration != fileGeneration || display == EGL14.EGL_NO_DISPLAY) {
-                result.set(RenderAck(AckStatus.STALE, 0, "CACHE_GENERATION_STALE"))
-            } else {
-                cache.recordRequest(request.requestedFrameIndex)
-                val cached = cache.get(request.expectedKey)
-                if (cached != null) {
-                    if (prefetchedKeys.remove(request.expectedKey)) prefetchCacheHitCount += 1
-                    drawTextureToWindow(cached)
-                    val event = publish(request, cached.timestampNs)
-                    if (event.result == PublicationResult.PUBLISHED) lastPublishedKey = request.expectedKey
-                    result.set(
-                        renderAckFor(
-                            event,
-                            cacheHit = true,
-                            imageProbe = cached.imageProbe,
-                        ),
-                    )
-                }
+                return@callOnRenderer RenderAck(AckStatus.STALE, 0, "CACHE_GENERATION_STALE")
             }
-            latch.countDown()
+            cache.recordRequest(request.requestedFrameIndex)
+            val cached = cache.get(request.expectedKey) ?: return@callOnRenderer null
+            if (prefetchedKeys.remove(request.expectedKey)) prefetchCacheHitCount += 1
+            drawTextureToWindow(cached)
+            val event = publish(request, cached.timestampNs)
+            if (event.result == PublicationResult.PUBLISHED) lastPublishedKey = request.expectedKey
+            renderAckFor(
+                event,
+                cacheHit = true,
+                imageProbe = cached.imageProbe,
+            )
         }
-        return if (latch.await(2, TimeUnit.SECONDS)) result.get() else RenderAck(AckStatus.ERROR, 0, "CACHE_RENDER_TIMEOUT")
     }
 
     fun queueTarget(request: FrameRequest): TargetHandle? {
-        if (closed) return null
-        val latch = CountDownLatch(1)
-        val result = AtomicReference<TargetHandle?>()
-        handler.post {
-            if (closed) {
-                latch.countDown()
-                return@post
-            }
+        if (unavailable()) return null
+        return callOnRenderer<TargetHandle?>(2_000, null) {
+            if (unavailable()) return@callOnRenderer null
             if (pendingTarget == null && display != EGL14.EGL_NO_DISPLAY && request.token.fileGeneration == fileGeneration) {
                 TargetHandle(request).also {
                     pendingTarget = PendingTarget(
+                        owner = it,
                         token = request.token,
                         expectedKey = request.expectedKey,
                         publicationRequest = request,
                         complete = it::complete,
                     )
                     cache.recordRequest(request.requestedFrameIndex)
-                    result.set(it)
                 }
+            } else {
+                null
             }
-            latch.countDown()
         }
-        return if (latch.await(2, TimeUnit.SECONDS)) result.get() else null
     }
 
     fun queueCacheOnly(token: GenerationToken, expectedKey: FrameKey): CacheTargetHandle? {
-        if (closed) return null
-        val latch = CountDownLatch(1)
-        val result = AtomicReference<CacheTargetHandle?>()
-        handler.post {
-            if (closed) {
-                latch.countDown()
-                return@post
-            }
+        if (unavailable()) return null
+        return callOnRenderer<CacheTargetHandle?>(2_000, null) {
+            if (unavailable()) return@callOnRenderer null
             if (
                 pendingTarget == null &&
                 display != EGL14.EGL_NO_DISPLAY &&
@@ -334,17 +318,17 @@ class EglFrameRenderer(
             ) {
                 CacheTargetHandle(token, expectedKey).also {
                     pendingTarget = PendingTarget(
+                        owner = it,
                         token = token,
                         expectedKey = expectedKey,
                         publicationRequest = null,
                         complete = it::complete,
                     )
-                    result.set(it)
                 }
+            } else {
+                null
             }
-            latch.countDown()
         }
-        return if (latch.await(2, TimeUnit.SECONDS)) result.get() else null
     }
 
     fun cacheByteSize(): Long = cache.byteSize
@@ -352,12 +336,46 @@ class EglFrameRenderer(
     fun cacheMisses(): Long = cache.missCount
     fun fullFrameReadbacks(): Long = probePolicy.readbackCount()
 
+    fun awaitTarget(handle: TargetHandle, timeoutMs: Long): RenderAck {
+        val waited = handle.await(timeoutMs)
+        if (waited.code != "RENDER_TIMEOUT") return waited
+        handle.completedResult()?.let { return it }
+        publicationGate.tryInvalidateIfCurrent(handle.request.token)
+        cancelPendingTarget(handle, "RENDER_TIMEOUT")
+        return handle.completedResult() ?: waited
+    }
+
+    fun awaitCacheTarget(handle: CacheTargetHandle, timeoutMs: Long): RenderAck {
+        val waited = handle.await(timeoutMs)
+        if (waited.code != "CACHE_TIMEOUT") return waited
+        handle.completedResult()?.let { return it }
+        publicationGate.tryInvalidateIfCurrent(handle.token)
+        cancelPendingTarget(handle, "CACHE_TIMEOUT")
+        return handle.completedResult() ?: waited
+    }
+
+    private fun cancelPendingTarget(owner: Any, code: String) {
+        callOnRenderer(1_000, false) {
+            val pending = pendingTarget
+            if (pending?.owner === owner) {
+                pendingTarget = null
+                pending.complete(RenderAck(AckStatus.STALE, 0, code))
+            }
+            true
+        }
+    }
+
+    fun cancelImmediately() {
+        terminalFailure = true
+        synchronized(decoderSurfaceMonitor) { decoderSurfaceMonitor.notifyAll() }
+    }
+
     internal fun prefetchSnapshot(frameKeys: Collection<FrameKey> = emptyList()): PrefetchSnapshot {
-        if (closed) return emptyPrefetchSnapshot()
+        if (unavailable()) return emptyPrefetchSnapshot()
         val latch = CountDownLatch(1)
         val result = AtomicReference<PrefetchSnapshot?>()
         handler.post {
-            if (closed) {
+            if (unavailable()) {
                 latch.countDown()
                 return@post
             }
@@ -385,9 +403,9 @@ class EglFrameRenderer(
     }
 
     fun trimCache(level: Int) {
-        if (closed) return
+        if (unavailable()) return
         handler.post {
-            if (closed) return@post
+            if (unavailable()) return@post
             val targetBytes = cacheTargetBytes(level, byteBudget)
             if (targetBytes == 0L) cache.clear() else cache.trimToBytes(targetBytes)
         }
@@ -450,29 +468,17 @@ class EglFrameRenderer(
         oesProgram = createProgram(VERTEX_SHADER, OES_FRAGMENT_SHADER)
         textureProgram = createProgram(VERTEX_SHADER, TEXTURE_FRAGMENT_SHADER)
 
-        val texture = IntArray(1)
-        GLES30.glGenTextures(1, texture, 0)
-        oesTextureId = texture[0]
-        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
-        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
-        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
-        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
-        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
-
-        val textureSource = SurfaceTexture(oesTextureId).apply {
-            setDefaultBufferSize(sourceWidth, sourceHeight)
-            setOnFrameAvailableListener({ onFrameAvailable() }, handler)
-        }
-        surfaceTexture = textureSource
-        synchronized(decoderSurfaceMonitor) {
-            decoderSurface = Surface(textureSource)
-            decoderSurfaceMonitor.notifyAll()
-        }
+        createDecoderInputSurface()
         onDecoderSurfaceChanged(true)
     }
 
-    private fun onFrameAvailable() {
-        val source = surfaceTexture ?: return
+    private fun onFrameAvailable(source: SurfaceTexture, sourceEpoch: Long) {
+        if (source !== surfaceTexture || sourceEpoch != inputSourceEpoch) return
+        if (unavailable()) {
+            pendingTarget?.complete?.invoke(RenderAck(AckStatus.STALE, 0, "RENDERER_CANCELLED"))
+            pendingTarget = null
+            return
+        }
         try {
             source.updateTexImage()
         } catch (_: Throwable) {
@@ -501,9 +507,15 @@ class EglFrameRenderer(
             handle.complete(RenderAck(AckStatus.ERROR, timestampNs, "TEXTURE_COPY_FAILED"))
             return
         }
+        if (unavailable()) {
+            GLES30.glDeleteTextures(1, intArrayOf(cached.textureId), 0)
+            handle.complete(RenderAck(AckStatus.STALE, timestampNs, "RENDERER_CANCELLED"))
+            return
+        }
         val prefetchBudget = prefetchBudgetDecision(cached.width, cached.height, byteBudget)
         val frameBytes = prefetchBudget.canonicalFrameBytes
-        val retained = frameBytes > 0 && cache.put(
+        val retained = frameBytes > 0 && publicationGate.runIfCurrent(handle.token) {
+            cache.put(
                 key = handle.expectedKey,
                 value = cached,
                 bytes = frameBytes,
@@ -514,6 +526,7 @@ class EglFrameRenderer(
                     byteBudget
                 },
             )
+        } == true
         completeCachedTextureTarget(
             publicationRequest = handle.publicationRequest,
             onCacheOnly = {
@@ -540,7 +553,8 @@ class EglFrameRenderer(
             request = request,
             textureTimestampNs = textureTimestampNs,
             surfaceValid = {
-                display != EGL14.EGL_NO_DISPLAY &&
+                !unavailable() &&
+                    display != EGL14.EGL_NO_DISPLAY &&
                     eglWindowSurface != EGL14.EGL_NO_SURFACE &&
                     windowSurface?.isValid == true
             },
@@ -713,6 +727,52 @@ class EglFrameRenderer(
         GLES30.glBindVertexArray(0)
     }
 
+    private fun rebindDecoderInputSurface() {
+        releaseDecoderInputSurface()
+        createDecoderInputSurface()
+    }
+
+    private fun createDecoderInputSurface() {
+        val texture = IntArray(1)
+        GLES30.glGenTextures(1, texture, 0)
+        oesTextureId = texture[0]
+        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+
+        val epoch = ++inputSourceEpoch
+        val textureSource = SurfaceTexture(oesTextureId).apply {
+            setDefaultBufferSize(sourceWidth, sourceHeight)
+        }
+        textureSource.setOnFrameAvailableListener(
+            { onFrameAvailable(textureSource, epoch) },
+            handler,
+        )
+        surfaceTexture = textureSource
+        synchronized(decoderSurfaceMonitor) {
+            decoderSurface = Surface(textureSource)
+            decoderSurfaceMonitor.notifyAll()
+        }
+    }
+
+    private fun releaseDecoderInputSurface() {
+        inputSourceEpoch += 1
+        surfaceTexture?.setOnFrameAvailableListener(null)
+        synchronized(decoderSurfaceMonitor) {
+            decoderSurface?.release()
+            decoderSurface = null
+            decoderSurfaceMonitor.notifyAll()
+        }
+        surfaceTexture?.release()
+        surfaceTexture = null
+        if (display != EGL14.EGL_NO_DISPLAY && oesTextureId != 0) {
+            GLES30.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
+        }
+        oesTextureId = 0
+    }
+
     private fun createProgram(vertexSource: String, fragmentSource: String): Int {
         fun compile(type: Int, source: String): Int {
             val shader = GLES30.glCreateShader(type)
@@ -745,19 +805,12 @@ class EglFrameRenderer(
             runCatching { EGL14.eglMakeCurrent(display, eglWindowSurface, eglWindowSurface, context) }
             cache.clear()
             lastPublishedKey = null
-            if (oesTextureId != 0) GLES30.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
             if (oesProgram != 0) GLES30.glDeleteProgram(oesProgram)
             if (textureProgram != 0) GLES30.glDeleteProgram(textureProgram)
             if (vertexBuffer != 0) GLES30.glDeleteBuffers(1, intArrayOf(vertexBuffer), 0)
             if (vertexArray != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(vertexArray), 0)
         }
-        synchronized(decoderSurfaceMonitor) {
-            decoderSurface?.release()
-            decoderSurface = null
-            decoderSurfaceMonitor.notifyAll()
-        }
-        surfaceTexture?.release()
-        surfaceTexture = null
+        releaseDecoderInputSurface()
         if (display != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
             if (eglWindowSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, eglWindowSurface)
@@ -777,6 +830,37 @@ class EglFrameRenderer(
         onDecoderSurfaceChanged(false)
     }
 
+    private fun <T> callOnRenderer(timeoutMs: Long, fallback: T, block: () -> T): T {
+        if (unavailable()) return fallback
+        val state = AtomicInteger(COMMAND_PENDING)
+        val result = AtomicReference(fallback)
+        val latch = CountDownLatch(1)
+        val posted = handler.post {
+            if (!state.compareAndSet(COMMAND_PENDING, COMMAND_RUNNING)) {
+                latch.countDown()
+                return@post
+            }
+            try {
+                result.set(block())
+            } catch (_: Throwable) {
+                result.set(fallback)
+            } finally {
+                state.set(COMMAND_COMPLETE)
+                latch.countDown()
+            }
+        }
+        if (!posted) return fallback
+        if (latch.await(timeoutMs, TimeUnit.MILLISECONDS)) return result.get()
+        if (state.compareAndSet(COMMAND_PENDING, COMMAND_CANCELLED)) return fallback
+        if (latch.await(COMMAND_RUNNING_GRACE_MS, TimeUnit.MILLISECONDS)) return result.get()
+        terminalFailure = true
+        publicationGate.tryInvalidateRequest()
+        synchronized(decoderSurfaceMonitor) { decoderSurfaceMonitor.notifyAll() }
+        return fallback
+    }
+
+    private fun unavailable(): Boolean = closed || terminalFailure
+
     private fun emptyPrefetchSnapshot(): PrefetchSnapshot = PrefetchSnapshot(
         budget = prefetchBudgetDecision(0, 0, byteBudget),
         cachedFrameKeys = emptySet(),
@@ -787,6 +871,11 @@ class EglFrameRenderer(
     )
 
     companion object {
+        private const val COMMAND_PENDING = 0
+        private const val COMMAND_RUNNING = 1
+        private const val COMMAND_CANCELLED = 2
+        private const val COMMAND_COMPLETE = 3
+        private const val COMMAND_RUNNING_GRACE_MS = 2_000L
         private const val TAG = "CcrEglRenderer"
         private val IDENTITY_MATRIX = floatArrayOf(
             1f, 0f, 0f, 0f,

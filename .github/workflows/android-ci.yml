@@ -7,10 +7,14 @@ on:
       - "codex/android-*"
     paths:
       - android/**
+      - local-samples/**
+      - .gitignore
       - .github/workflows/android-ci.yml
   pull_request:
     paths:
       - android/**
+      - local-samples/**
+      - .gitignore
       - .github/workflows/android-ci.yml
   workflow_dispatch:
 
@@ -55,20 +59,30 @@ jobs:
         run: .\gradlew.bat lintInternalDebug testInternalDebugUnitTest assembleInternalDebug assembleInternalDebugAndroidTest assembleInternalBenchmark :macrobenchmark:assembleInternalBenchmark --stacktrace
 
       - name: Verify APK privacy contract
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\verify-apk-privacy.ps1
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\verify-apk-privacy.ps1
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\verify-apk-privacy.ps1 -Apk .\android\app\build\outputs\apk\internal\benchmark\app-internal-benchmark.apk
 
-      - name: Upload internal APK and reports
+      - name: Upload internal app APKs and reports
         uses: actions/upload-artifact@v6
         with:
-          name: ccr-android-0.2.0-alpha.1-internal
+          name: ccr-android-0.2.0-alpha.2-internal
           path: |
             android/app/build/outputs/apk/internal/debug/app-internal-debug.apk
-            android/app/build/outputs/apk/androidTest/internal/debug/app-internal-debug-androidTest.apk
             android/app/build/outputs/apk/internal/benchmark/app-internal-benchmark.apk
-            android/macrobenchmark/build/outputs/apk/internal/benchmark/macrobenchmark-internal-benchmark.apk
             android/app/build/reports/**
             android/app/build/test-results/**
             android/macrobenchmark/build/reports/**
             android/macrobenchmark/build/outputs/androidTest-results/**
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload test-only instrumentation APKs
+        uses: actions/upload-artifact@v6
+        with:
+          name: ccr-android-0.2.0-alpha.2-test-tools
+          path: |
+            android/app/build/outputs/apk/androidTest/internal/debug/app-internal-debug-androidTest.apk
+            android/macrobenchmark/build/outputs/apk/internal/benchmark/macrobenchmark-internal-benchmark.apk
+          if-no-files-found: error
+          retention-days: 7

@@ -70,7 +70,7 @@ requireContract(gitignore.split(/\r?\n/).includes("*.keystore"), "recursive keys
 requireContract(gitignore.split(/\r?\n/).includes("signing.properties"), "recursive signing properties ignore is missing");
 requireContract(workflow.includes('      - "codex/android-*"'), "Android CI codex/android-* push filter is missing");
 requireContract(
-  workflow.includes("name: ccr-android-0.2.0-alpha.1-internal"),
+  workflow.includes("name: ccr-android-0.2.0-alpha.2-internal"),
   "Android CI artifact identity is stale",
 );
 

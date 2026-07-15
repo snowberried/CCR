@@ -19,11 +19,22 @@ class PublicationGate(
     private var stats = PublicationStats()
     private val recentEvents = ArrayDeque<PublicationEvent>(eventHistoryCapacity)
 
-    fun beginFile(): GenerationToken = lock.withLock {
+    fun beginFile(): GenerationToken = lock.withLock(::beginFileLocked)
+
+    fun tryBeginFile(): GenerationToken? {
+        if (!lock.tryLock()) return null
+        return try {
+            beginFileLocked()
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    private fun beginFileLocked(): GenerationToken {
         fileGeneration += 1
         requestGeneration += 1
         sequence += 1
-        GenerationToken(fileGeneration, requestGeneration)
+        return GenerationToken(fileGeneration, requestGeneration)
     }
 
     fun acceptRequest(
@@ -33,6 +44,19 @@ class PublicationGate(
     ): RequestAcceptance? = lock.withLock {
         if (fileGeneration != expectedFileGeneration) return null
         acceptLocked(requestedFrameIndex, expectedKey)
+    }
+
+    fun tryAcceptRequest(
+        expectedFileGeneration: Long,
+        requestedFrameIndex: Int,
+        expectedKey: FrameKey,
+    ): RequestAcceptance? {
+        if (!lock.tryLock()) return null
+        return try {
+            if (fileGeneration != expectedFileGeneration) null else acceptLocked(requestedFrameIndex, expectedKey)
+        } finally {
+            lock.unlock()
+        }
     }
 
     fun acceptInitialRequest(
@@ -60,14 +84,61 @@ class PublicationGate(
         return RequestAcceptance(request, sequence, clockNanos())
     }
 
-    fun invalidateRequest(): GenerationToken = lock.withLock {
+    fun invalidateRequest(): GenerationToken = lock.withLock(::invalidateRequestLocked)
+
+    fun tryInvalidateRequest(): GenerationToken? {
+        if (!lock.tryLock()) return null
+        return try {
+            invalidateRequestLocked()
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun invalidateIfCurrent(expectedToken: GenerationToken): GenerationToken? = lock.withLock {
+        if (fileGeneration != expectedToken.fileGeneration || requestGeneration != expectedToken.requestGeneration) {
+            return null
+        }
+        invalidateRequestLocked()
+    }
+
+    fun tryInvalidateIfCurrent(expectedToken: GenerationToken): GenerationToken? {
+        if (!lock.tryLock()) return null
+        return try {
+            if (fileGeneration != expectedToken.fileGeneration || requestGeneration != expectedToken.requestGeneration) {
+                null
+            } else {
+                invalidateRequestLocked()
+            }
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun <T> runIfCurrent(expectedToken: GenerationToken, action: () -> T): T? = lock.withLock {
+        if (fileGeneration != expectedToken.fileGeneration || requestGeneration != expectedToken.requestGeneration) {
+            return null
+        }
+        action()
+    }
+
+    private fun invalidateRequestLocked(): GenerationToken {
         requestGeneration += 1
         sequence += 1
-        GenerationToken(fileGeneration, requestGeneration)
+        return GenerationToken(fileGeneration, requestGeneration)
     }
 
     fun isCurrent(token: GenerationToken): Boolean = lock.withLock {
         token.fileGeneration == fileGeneration && token.requestGeneration == requestGeneration
+    }
+
+    fun tryIsCurrent(token: GenerationToken): Boolean? {
+        if (!lock.tryLock()) return null
+        return try {
+            token.fileGeneration == fileGeneration && token.requestGeneration == requestGeneration
+        } finally {
+            lock.unlock()
+        }
     }
 
     fun publish(
@@ -111,7 +182,25 @@ class PublicationGate(
 
     fun snapshotStats(): PublicationStats = lock.withLock { stats }
 
+    fun trySnapshotStats(): PublicationStats? {
+        if (!lock.tryLock()) return null
+        return try {
+            stats
+        } finally {
+            lock.unlock()
+        }
+    }
+
     fun recentEvents(): List<PublicationEvent> = lock.withLock { recentEvents.toList() }
+
+    fun tryRecentEvents(): List<PublicationEvent>? {
+        if (!lock.tryLock()) return null
+        return try {
+            recentEvents.toList()
+        } finally {
+            lock.unlock()
+        }
+    }
 
     private fun record(event: PublicationEvent) {
         if (recentEvents.size == eventHistoryCapacity) recentEvents.removeFirst()

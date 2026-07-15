@@ -27,15 +27,15 @@
 | Gate | 상태 | 판정 |
 | --- | --- | --- |
 | 0 — v0.5.9 동결 | 통과 | tag/Latest Release와 artifact 확인 |
-| 1 — Android 환경/프로젝트 | 통과 | local/Windows CI build와 privacy 검사 통과 |
+| 1 — Android 환경/프로젝트 | 통과 | local Windows build/test와 privacy 검사 통과; 현재 final SHA의 GitHub Actions CI는 원격 push 전까지 Pending |
 | 2 — exact decode/render | 통과 | JVM 계약·Lint·APK 검증 통과, 실기기 판정은 Gate 3에서 수행 |
-| 3 — golden/S24 | 통과 | Samsung `SM-S928N`에서 16개 fixture 정확성·burst·A→B 전환·읽기 전용 계약 통과 |
+| 3 — golden/S24 | 통과 | Samsung `SM-S928N`에서 17개 fixture 정확성·duplicate PTS·burst·A→B 전환·읽기 전용 계약 통과 |
 
 ## Gate 1 검증 기록
 
 - 독립 `android/` 단일 app module과 Gradle Wrapper 9.5.0을 사용한다.
 - `internalDebug` 설치 ID는 `com.snowberried.ctcinereviewer.internal`이다.
-- Windows Android CI run `29394192564`에서 wrapper 검증, Lint, JVM test, APK와 privacy 검사가 통과했다.
+- Gate 3 기준선 당시 Windows Android CI run `29394192564`는 wrapper 검증, Lint, JVM test, APK와 privacy 검사를 통과했다. 이후 로컬 final SHA는 원격에 push되지 않았으므로 해당 SHA의 GitHub Actions CI 상태는 `Pending`이다.
 - Android workflow는 APK와 test report만 Actions artifact로 보관하며 tag나 GitHub Release를 만들지 않는다.
 
 ## Gate 2 구현 계약
@@ -69,8 +69,8 @@
 
 ## Gate 3 고정 골든
 
-- `android/testdata/frame-accuracy/`에 비식별 합성 MP4 16개와 schemaVersion 1 JSON을 고정했다.
-- fixture는 H.264 IP/B-frame, VFR, long-GOP, nonzero PTS, 1/2 frame, 짧은 마지막 GOP, rotation 90/180/270, HEVC Main8, burst, A/B 전환과 PAR 8:9를 포함한다.
+- `android/testdata/frame-accuracy/`에 비식별 합성 MP4 17개와 schemaVersion 1 JSON을 고정했다.
+- fixture는 H.264 IP/B-frame, VFR, long-GOP, nonzero/duplicate PTS, 1/2 frame, 짧은 마지막 GOP, rotation 90/180/270, HEVC Main8, burst, A/B 전환과 PAR 8:9를 포함한다.
 - B-frame fixture만 RTX 4080 SUPER의 `h264_nvenc`로 한 번 생성했다. GPU driver, FFmpeg/FFprobe version과 encoder 인자는 `provenance.json`에 기록했다.
 - 모든 frame은 8×8 대형 흑백 cell의 finder pattern, 16-bit ID와 CRC-8을 포함한다. 생성기는 압축된 MP4를 다시 decode해 ID/CRC를 복원한 뒤에만 golden을 기록한다.
 - JSON은 source SHA, codec/profile, coded size, inclusive crop, clockwise rotation, PAR, frame count와 frame별 key/sample ordinal/embedded ID/sync/16×16 RGB signature를 포함한다.
@@ -90,7 +90,7 @@
 
 ## Gate 3 로컬·실기기 검증 기록
 
-- fixture SHA/wire contract: 16/16 통과
+- fixture SHA/wire contract: 17/17 통과
 - read-only/no-external-transmission source contract: 통과
 - JVM unit test: 15/15 통과
 - Android Lint: issue 0
@@ -100,7 +100,7 @@
 - instrumentation APK SHA-256: `1e2ded93b98ecca388afb75e7cdcaf7e97023d79d352b50f44f4ad0a0adf8f6e`
 - S24: Samsung `SM-S928N`, Android 16/API 36, build `BP4A.251205.006.S928NKSS6DZF3`, security patch `2026-06-05`, 1440×3120 @ 120 Hz
 - hardware codec: `c2.qti.avc.decoder`, `c2.qti.hevc.decoder`; software fallback 없음
-- instrumentation: 1/1 통과, fixture 16/16, frame/key/embedded ID/signature mismatch 0, stale publish 0, write open 0, decoder recreate 0
+- instrumentation: 1/1 통과, fixture 17/17, frame/key/embedded ID/signature mismatch 0, stale publish 0, write open 0, decoder recreate 0
 - 측정 latency 235건: p50 `50.244687 ms`, p95 `182.540937 ms`, max `283.309375 ms`; full-frame readback이 포함된 Exactness 측정이며 Pilot 제품 성능값이나 합격선이 아님
 - memory snapshot: Java used `21,672,320 bytes`, native heap `15,108,752 bytes`, PSS `192,143 KiB`; thermal status 0, battery 100%
 - 보고서: `android/reports/s24-frame-accuracy-report.json`, SHA-256 `04cfe47587106ea3d51b754379d6d1fbcee95cd1848be15c16ddbfddaa2a6bbd`

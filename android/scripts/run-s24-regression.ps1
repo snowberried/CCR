@@ -67,10 +67,10 @@ try {
     -ExpectedOk "OK (1 test)"
   Invoke-CheckedInstrumentation `
     -ClassName "com.snowberried.ctcinereviewer.NavigationRepeatTest" `
-    -ExpectedOk "OK (4 tests)"
+    -ExpectedOk "OK (8 tests)"
   Invoke-CheckedInstrumentation `
     -ClassName "com.snowberried.ctcinereviewer.NavigationHoldIntegrationTest" `
-    -ExpectedOk "OK (1 test)"
+    -ExpectedOk "OK (3 tests)"
   Invoke-CheckedInstrumentation `
     -ClassName "com.snowberried.ctcinereviewer.AdaptiveLayoutTest" `
     -ExpectedOk "OK (1 test)"
@@ -81,7 +81,7 @@ try {
   }
 
   $packageInfo = (& $adb -s $serial shell dumpsys package $appPackage) -join "`n"
-  if ($packageInfo -notmatch "versionName=0\.2\.0-alpha\.1" -or $packageInfo -notmatch "versionCode=2\b") {
+  if ($packageInfo -notmatch "versionName=0\.2\.0-alpha\.2" -or $packageInfo -notmatch "versionCode=3\b") {
     throw "S24_REGRESSION_INSTALLED_VERSION_MISMATCH"
   }
 } catch {
@@ -114,8 +114,8 @@ if ($LASTEXITCODE -ne 0) { throw "S24_INTERNAL_APP_LAUNCH_FAILED" }
 [PSCustomObject]@{
   status = "PASS"
   model = $model
-  versionName = "0.2.0-alpha.1"
-  versionCode = 2
+  versionName = "0.2.0-alpha.2"
+  versionCode = 3
   pilotReadbackGateRuns = 1
   navigationRepeatRuns = 1
   navigationHoldIntegrationRuns = 1

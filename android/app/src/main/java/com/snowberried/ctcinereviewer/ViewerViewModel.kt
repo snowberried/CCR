@@ -4,6 +4,8 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -109,6 +111,8 @@ class ViewerViewModel(
     private var inFlightAcceptedAtNs: Long? = null
     private var pendingRequestedFrame: Int? = null
     private val navigationGestureGate = NavigationGestureGate()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var gateActionGeneration = 0L
 
     var uiState by mutableStateOf(
         ViewerUiState(
@@ -131,12 +135,23 @@ class ViewerViewModel(
 
     fun openVideo(uri: Uri) {
         navigationGestureGate.invalidate()
+        val previousUri = currentUri
+        val previousPersisted = currentUriPersisted
         val persisted = runCatching {
             getApplication<Application>().contentResolver.takePersistableUriPermission(
                 uri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION,
             )
         }.isSuccess
+        if (previousPersisted && previousUri != null && previousUri != uri) {
+            runCatching {
+                getApplication<Application>().contentResolver.releasePersistableUriPermission(
+                    previousUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+        }
+        nextGateActionGeneration()
         currentUri = uri
         currentUriPersisted = persisted
         setAutoRecover(true)
@@ -199,6 +214,7 @@ class ViewerViewModel(
     fun requestFrame(frameIndex: Int) {
         val frameCount = uiState.metadata?.frameCount ?: return
         val target = frameIndex.coerceIn(0, frameCount - 1)
+        val gateGeneration = nextGateActionGeneration()
         setAutoRecover(true)
         savedState[KEY_REQUESTED_FRAME] = target
         uiState = uiState.copy(
@@ -216,15 +232,16 @@ class ViewerViewModel(
             pendingRequestedFrame = target
             uiState = uiState.copy(latestPendingRequest = target)
         } else {
-            submitFrameRequest(target)
+            submitFrameRequest(target, gateGeneration)
         }
     }
 
     fun cancel() {
         navigationGestureGate.invalidate()
+        val gateGeneration = nextGateActionGeneration()
         setAutoRecover(false)
         resetRequestPump()
-        session.cancel()
+        cancelSessionWhenAvailable(gateGeneration)
         uiState = uiState.copy(
             status = "cancelled",
             detail = null,
@@ -235,15 +252,17 @@ class ViewerViewModel(
 
     fun onForeground(owner: Any = this) {
         foregroundOwner = owner
+        nextGateActionGeneration()
         recoverIfReady()
     }
 
     fun onBackground(owner: Any = this) {
         if (foregroundOwner !== owner) return
         navigationGestureGate.invalidate()
+        val gateGeneration = nextGateActionGeneration()
         foregroundOwner = null
         resetRequestPump()
-        session.cancel()
+        cancelSessionWhenAvailable(gateGeneration)
         if (currentUri != null && autoRecoverEnabled) {
             uiState = uiState.copy(
                 status = "background",
@@ -344,6 +363,7 @@ class ViewerViewModel(
     }
 
     override fun onSurfaceAvailabilityChanged(available: Boolean) {
+        nextGateActionGeneration()
         val nextSurfaceGeneration = if (available && !uiState.surfaceAvailable) {
             uiState.surfaceGeneration + 1
         } else {
@@ -369,6 +389,7 @@ class ViewerViewModel(
 
     override fun onCleared() {
         navigationGestureGate.invalidate()
+        nextGateActionGeneration()
         foregroundOwner = null
         session.close()
     }
@@ -389,7 +410,7 @@ class ViewerViewModel(
         }
     }
 
-    private fun openCurrentUri() {
+    private fun openCurrentUri(gateGeneration: Long = gateActionGeneration) {
         val uri = currentUri ?: return
         if (currentUriPersisted && !hasPersistedReadPermission(uri)) {
             savedState.remove<String>(KEY_URI)
@@ -410,7 +431,15 @@ class ViewerViewModel(
             )
             return
         }
-        val token = session.open(uri, uiState.requestedFrameIndex) ?: return
+        val token = session.tryOpen(uri, uiState.requestedFrameIndex)
+        if (token == null) {
+            retryGateAction(gateGeneration) {
+                if (currentUri == uri && foreground && uiState.surfaceAvailable && autoRecoverEnabled) {
+                    openCurrentUri(gateGeneration)
+                }
+            }
+            return
+        }
         resetRequestPump()
         uiState = uiState.copy(
             status = "indexing",
@@ -425,8 +454,21 @@ class ViewerViewModel(
         )
     }
 
-    private fun submitFrameRequest(frameIndex: Int) {
-        val acceptance = session.requestFrame(frameIndex) ?: return
+    private fun submitFrameRequest(frameIndex: Int, gateGeneration: Long = gateActionGeneration) {
+        val acceptance = session.tryRequestFrame(frameIndex)
+        if (acceptance == null) {
+            retryGateAction(gateGeneration) {
+                if (
+                    !decodeInFlight &&
+                    foreground &&
+                    uiState.surfaceAvailable &&
+                    uiState.requestedFrameIndex == frameIndex
+                ) {
+                    submitFrameRequest(frameIndex, gateGeneration)
+                }
+            }
+            return
+        }
         decodeInFlight = true
         inFlightRequestGeneration = acceptance.request.token.requestGeneration
         inFlightAcceptedAtNs = acceptance.elapsedRealtimeNanos
@@ -451,6 +493,23 @@ class ViewerViewModel(
             return
         }
         submitFrameRequest(pending)
+    }
+
+    private fun cancelSessionWhenAvailable(gateGeneration: Long) {
+        if (session.tryCancel() != null) return
+        retryGateAction(gateGeneration) { cancelSessionWhenAvailable(gateGeneration) }
+    }
+
+    private fun retryGateAction(gateGeneration: Long, action: () -> Unit) {
+        mainHandler.postDelayed(
+            { if (gateGeneration == gateActionGeneration) action() },
+            GATE_RETRY_DELAY_MS,
+        )
+    }
+
+    private fun nextGateActionGeneration(): Long {
+        gateActionGeneration += 1
+        return gateActionGeneration
     }
 
     private fun resetRequestPump() {
@@ -478,6 +537,7 @@ class ViewerViewModel(
         private const val KEY_STATE_SCHEMA_VERSION = "viewer.state-schema-version"
         private const val VIEWER_STATE_SCHEMA_VERSION = 1
         private const val DIAGNOSTIC_LATENCY_HISTORY_LIMIT = 32
+        private const val GATE_RETRY_DELAY_MS = 1L
         private const val SESSION_ONLY_PERMISSION_NOTICE =
             "읽기 권한은 이번 실행에만 유지됩니다. 앱 재실행 뒤에는 영상을 다시 여세요."
     }

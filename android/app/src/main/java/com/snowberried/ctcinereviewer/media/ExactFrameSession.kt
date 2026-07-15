@@ -107,6 +107,8 @@ class ExactFrameSession(
 
     private var resources: DecoderResources? = null
     private var diagnostics = DecoderDiagnostics()
+    private var lastPublicationStats = PublicationStats()
+    private var lastPublicationEvents = emptyList<PublicationEvent>()
     private var lastPublishedFrameIndex: Int? = null
     private var activePrefetch: PrefetchRunState? = null
     private var prefetchCancellationWaste = 0L
@@ -116,6 +118,16 @@ class ExactFrameSession(
     fun open(uri: Uri, initialFrameIndex: Int = 0): GenerationToken? {
         if (closed.get()) return null
         val token = publicationGate.beginFile()
+        return enqueueOpen(uri, initialFrameIndex, token)
+    }
+
+    fun tryOpen(uri: Uri, initialFrameIndex: Int = 0): GenerationToken? {
+        if (closed.get()) return null
+        val token = publicationGate.tryBeginFile() ?: return null
+        return enqueueOpen(uri, initialFrameIndex, token)
+    }
+
+    private fun enqueueOpen(uri: Uri, initialFrameIndex: Int, token: GenerationToken): GenerationToken {
         currentVideo.set(null)
         latestRequest.clear()
         actor.removeCallbacksAndMessages(requestMessageToken)
@@ -124,7 +136,11 @@ class ExactFrameSession(
         return token
     }
 
-    fun requestFrame(frameIndex: Int): RequestAcceptance? {
+    fun requestFrame(frameIndex: Int): RequestAcceptance? = requestFrameInternal(frameIndex, nonBlocking = false)
+
+    fun tryRequestFrame(frameIndex: Int): RequestAcceptance? = requestFrameInternal(frameIndex, nonBlocking = true)
+
+    private fun requestFrameInternal(frameIndex: Int, nonBlocking: Boolean): RequestAcceptance? {
         val video = currentVideo.get() ?: run {
             notifyStatus(null, "error", "VIDEO_NOT_READY")
             return null
@@ -133,11 +149,11 @@ class ExactFrameSession(
             notifyStatus(video.fileGeneration, "error", "FRAME_INDEX_OUT_OF_RANGE")
             return null
         }
-        val acceptance = publicationGate.acceptRequest(
-            video.fileGeneration,
-            frameIndex,
-            video.frames[frameIndex].key,
-        ) ?: return null
+        val acceptance = if (nonBlocking) {
+            publicationGate.tryAcceptRequest(video.fileGeneration, frameIndex, video.frames[frameIndex].key)
+        } else {
+            publicationGate.acceptRequest(video.fileGeneration, frameIndex, video.frames[frameIndex].key)
+        } ?: return null
         latestRequest.offer(acceptance.request)
         actor.removeCallbacksAndMessages(requestMessageToken)
         actor.postAtTime(
@@ -151,9 +167,17 @@ class ExactFrameSession(
         return acceptance
     }
 
-    fun cancel(): GenerationToken? {
+    fun cancel(): GenerationToken? = cancelInternal(nonBlocking = false)
+
+    fun tryCancel(): GenerationToken? = cancelInternal(nonBlocking = true)
+
+    private fun cancelInternal(nonBlocking: Boolean): GenerationToken? {
         if (closed.get()) return null
-        val token = publicationGate.invalidateRequest()
+        val token = if (nonBlocking) {
+            publicationGate.tryInvalidateRequest()
+        } else {
+            publicationGate.invalidateRequest()
+        } ?: return null
         latestRequest.clear()
         actor.removeCallbacksAndMessages(requestMessageToken)
         notifyStatus(token.fileGeneration, "cancelled")
@@ -176,10 +200,12 @@ class ExactFrameSession(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        publicationGate.beginFile()
+        renderer.cancelImmediately()
+        publicationGate.tryInvalidateRequest()
         latestRequest.clear()
         actor.removeCallbacksAndMessages(requestMessageToken)
         actor.post {
+            publicationGate.tryBeginFile()
             closeResources()
             renderer.close()
             actorThread.quitSafely()
@@ -192,11 +218,11 @@ class ExactFrameSession(
         lastPublishedFrameIndex = null
         activePrefetch = null
         prefetchCancellationWaste = 0
-        renderer.beginFile(token.fileGeneration)
         var descriptor: ParcelFileDescriptor? = null
         var extractor: MediaExtractor? = null
         var codec: MediaCodec? = null
         try {
+            if (!renderer.beginFile(token.fileGeneration)) error("RENDER_FILE_REBIND_FAILED")
             descriptor = appContext.contentResolver.openFileDescriptor(uri, "r")
                 ?: error("SOURCE_OPEN_FAILED")
             extractor = MediaExtractor().apply { setDataSource(descriptor.fileDescriptor) }
@@ -212,7 +238,8 @@ class ExactFrameSession(
             val samples = mutableListOf<IndexedSample>()
             var ordinal = 0
             while (extractor.sampleTrackIndex >= 0) {
-                if (!publicationGate.isCurrent(token)) error("OPEN_STALE")
+                if (closed.get()) error("OPEN_STALE")
+                if (!isCurrent(token)) error("OPEN_STALE")
                 if (extractor.sampleTrackIndex == trackIndex) {
                     val ptsUs = extractor.sampleTime
                     if (ptsUs < 0) break
@@ -229,7 +256,7 @@ class ExactFrameSession(
             val video = buildFrameIndex(token.fileGeneration, samples)
             val indexBuildMs = SystemClock.elapsedRealtime() - startedAt
             diagnostics = diagnostics.copy(indexBuildMs = indexBuildMs)
-            if (!publicationGate.isCurrent(token)) error("OPEN_STALE")
+            if (!isCurrent(token)) error("OPEN_STALE")
 
             val codecInfo = selectHardwareDecoder(format) ?: error("HARDWARE_DECODER_REQUIRED")
             val outputSurface = renderer.awaitDecoderSurface(3_000) ?: error("RENDER_SURFACE_NOT_READY")
@@ -269,7 +296,7 @@ class ExactFrameSession(
             codec?.let(::releaseCodec)
             extractor?.release()
             descriptor?.close()
-            if (error.message != "OPEN_STALE" && publicationGate.isCurrent(token)) {
+            if (error.message != "OPEN_STALE" && isCurrent(token)) {
                 val code = sanitizeError(error)
                 notifyStatus(
                     token.fileGeneration,
@@ -281,12 +308,13 @@ class ExactFrameSession(
     }
 
     private fun decodeInternal(request: FrameRequest) {
-        if (!publicationGate.isCurrent(request.token)) {
+        if (closed.get()) return
+        if (!isCurrent(request.token)) {
             report(FrameResult.DiscardedStale(request, "before-decode"))
             return
         }
         beforeDecodeHookForTest?.invoke(request)
-        if (!publicationGate.isCurrent(request.token)) {
+        if (!isCurrent(request.token)) {
             report(FrameResult.DiscardedStale(request, "after-test-hook"))
             return
         }
@@ -300,7 +328,7 @@ class ExactFrameSession(
                 recreateCodec(current)
             } catch (_: Throwable) {
                 report(
-                    if (publicationGate.isCurrent(request.token)) {
+                    if (isCurrent(request.token)) {
                         FrameResult.Error(request, "DECODER_SURFACE_RECREATE_FAILED")
                     } else {
                         FrameResult.DiscardedStale(request, "surface-recreate")
@@ -352,7 +380,11 @@ class ExactFrameSession(
             val info = MediaCodec.BufferInfo()
             val deadline = SystemClock.elapsedRealtime() + 15_000
             while (SystemClock.elapsedRealtime() < deadline) {
-                if (!publicationGate.isCurrent(request.token)) {
+                if (closed.get()) {
+                    cancelPrefetch(prefetch)
+                    return
+                }
+                if (!isCurrent(request.token)) {
                     cancelPrefetch(prefetch)
                     diagnostics = diagnostics.copy(staleDiscardCount = diagnostics.staleDiscardCount + 1)
                     report(FrameResult.DiscardedStale(request, "decode-loop"))
@@ -419,7 +451,7 @@ class ExactFrameSession(
                             current.codec.releaseOutputBuffer(outputIndex, false)
                         } else if (outputFrame.key.displayFrameIndex < target.key.displayFrameIndex) {
                             if (prefetch?.direction == DirectionalPrefetchDirection.REVERSE && prefetch.contains(outputFrame.key.displayFrameIndex)) {
-                                if (!publicationGate.isCurrent(request.token)) {
+                                if (!isCurrent(request.token)) {
                                     current.codec.releaseOutputBuffer(outputIndex, false)
                                     cancelPrefetch(prefetch)
                                     diagnostics = diagnostics.copy(staleDiscardCount = diagnostics.staleDiscardCount + 1)
@@ -456,7 +488,7 @@ class ExactFrameSession(
                                 return
                             }
                             current.codec.releaseOutputBuffer(outputIndex, true)
-                            val ack = handle.await(3_000)
+                            val ack = renderer.awaitTarget(handle, 3_000)
                             when (ack.status) {
                                 EglFrameRenderer.AckStatus.PUBLISHED -> {
                                     if (prefetch?.direction == DirectionalPrefetchDirection.REVERSE) {
@@ -505,7 +537,7 @@ class ExactFrameSession(
             report(FrameResult.Error(request, "DECODE_TIMEOUT"))
         } catch (_: Throwable) {
             report(
-                if (publicationGate.isCurrent(request.token)) {
+                if (isCurrent(request.token)) {
                     FrameResult.Error(request, "DECODE_FAILED")
                 } else {
                     FrameResult.DiscardedStale(request, "decode-exception")
@@ -609,7 +641,7 @@ class ExactFrameSession(
             return EglFrameRenderer.RenderAck(EglFrameRenderer.AckStatus.ERROR, 0, "PREFETCH_TARGET_BUSY")
         }
         current.codec.releaseOutputBuffer(outputIndex, true)
-        return handle.await(3_000)
+        return renderer.awaitCacheTarget(handle, 3_000)
     }
 
     private fun prefetchForward(
@@ -625,9 +657,10 @@ class ExactFrameSession(
         val info = MediaCodec.BufferInfo()
         val deadline = SystemClock.elapsedRealtime() + 5_000
         while (
+            !closed.get() &&
             !prefetch.isComplete &&
             SystemClock.elapsedRealtime() < deadline &&
-            publicationGate.isCurrent(request.token)
+            isCurrent(request.token)
         ) {
             if (!inputEos) {
                 val inputIndex = current.codec.dequeueInputBuffer(0)
@@ -718,7 +751,9 @@ class ExactFrameSession(
                 }
             }
         }
-        if (!publicationGate.isCurrent(request.token) || !prefetch.isComplete) cancelPrefetch(prefetch)
+        if (!isCurrent(request.token) || !prefetch.isComplete) {
+            cancelPrefetch(prefetch)
+        }
     }
 
     private fun recreateCodec(current: DecoderResources): DecoderResources {
@@ -879,19 +914,20 @@ class ExactFrameSession(
     }
 
     private fun report(result: FrameResult) {
-        val publicationStats = publicationGate.snapshotStats()
+        publicationGate.trySnapshotStats()?.let { lastPublicationStats = it }
+        publicationGate.tryRecentEvents()?.let { lastPublicationEvents = it }
         val prefetch = renderer.prefetchSnapshot()
         val nextDiagnostics = diagnostics.copy(
             cacheBytes = renderer.cacheByteSize(),
             cacheHitCount = renderer.cacheHits(),
             cacheMissCount = renderer.cacheMisses(),
-            publishedSwapCount = publicationStats.publishedSwapCount,
-            staleBeforeSwapCount = publicationStats.staleBeforeSwapCount,
-            swapFailureCount = publicationStats.swapFailureCount,
-            surfaceInvalidCount = publicationStats.surfaceInvalidCount,
-            publicationInvariantViolationCount = publicationStats.publicationInvariantViolationCount,
+            publishedSwapCount = lastPublicationStats.publishedSwapCount,
+            staleBeforeSwapCount = lastPublicationStats.staleBeforeSwapCount,
+            swapFailureCount = lastPublicationStats.swapFailureCount,
+            surfaceInvalidCount = lastPublicationStats.surfaceInvalidCount,
+            publicationInvariantViolationCount = lastPublicationStats.publicationInvariantViolationCount,
             fullFrameReadbackCount = renderer.fullFrameReadbacks(),
-            publicationEventHistory = publicationGate.recentEvents(),
+            publicationEventHistory = lastPublicationEvents,
             prefetchCacheHit = prefetch.cacheHitCount,
             prefetchEvictedBeforeUse = prefetch.evictedBeforeUseCount,
             prefetchWasted = prefetchCancellationWaste + prefetch.wastedCount,
@@ -903,6 +939,9 @@ class ExactFrameSession(
         diagnostics = nextDiagnostics
         mainHandler.post { listener.onFrameResult(result, nextDiagnostics) }
     }
+
+    private fun isCurrent(token: GenerationToken): Boolean =
+        !closed.get() && publicationGate.tryIsCurrent(token) == true
 
     private fun notifyStatus(fileGeneration: Long?, status: String, detail: String? = null) {
         mainHandler.post { listener.onStatus(fileGeneration, status, detail) }

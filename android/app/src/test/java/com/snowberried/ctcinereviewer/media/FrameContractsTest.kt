@@ -139,6 +139,47 @@ class FrameContractsTest {
     }
 
     @Test
+    fun `UI try mutations never wait for an in flight swap`() {
+        val gate = PublicationGate()
+        val file = gate.beginFile()
+        val request = gate.acceptRequest(file.fileGeneration, 0, FrameKey(0, 0, 0))!!.request
+        val swapEntered = CountDownLatch(1)
+        val releaseSwap = CountDownLatch(1)
+        val publisher = Thread {
+            gate.publish(request, 0, { true }) {
+                swapEntered.countDown()
+                releaseSwap.await(2, TimeUnit.SECONDS)
+            }
+        }.apply { start() }
+        assertTrue(swapEntered.await(2, TimeUnit.SECONDS))
+
+        assertNull(gate.tryAcceptRequest(file.fileGeneration, 1, FrameKey(1, 1_000, 0)))
+        assertNull(gate.tryInvalidateRequest())
+        assertNull(gate.tryInvalidateIfCurrent(request.token))
+        assertNull(gate.tryBeginFile())
+        assertNull(gate.tryIsCurrent(request.token))
+        assertNull(gate.trySnapshotStats())
+        assertNull(gate.tryRecentEvents())
+
+        releaseSwap.countDown()
+        publisher.join(2_000)
+        assertEquals(1, gate.tryAcceptRequest(file.fileGeneration, 1, FrameKey(1, 1_000, 0))!!.request.requestedFrameIndex)
+    }
+
+    @Test
+    fun `timeout invalidation cannot cancel a newer request`() {
+        val gate = PublicationGate()
+        val file = gate.beginFile()
+        val old = gate.acceptRequest(file.fileGeneration, 0, FrameKey(0, 0, 0))!!.request
+        val newer = gate.acceptRequest(file.fileGeneration, 1, FrameKey(1, 1_000, 0))!!.request
+
+        assertNull(gate.invalidateIfCurrent(old.token))
+        assertTrue(gate.isCurrent(newer.token))
+        assertEquals(newer.token.fileGeneration, gate.invalidateIfCurrent(newer.token)?.fileGeneration)
+        assertFalse(gate.isCurrent(newer.token))
+    }
+
+    @Test
     fun `publication history is a bounded chronological ring`() {
         val gate = PublicationGate(eventHistoryCapacity = 2)
         val file = gate.beginFile()

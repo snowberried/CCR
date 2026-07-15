@@ -16,7 +16,13 @@ class MainThreadContractTest {
             "openFileDescriptor",
             "MediaCodec",
             "glReadPixels",
+            "session.open(",
+            "session.requestFrame(",
+            "session.cancel()",
         )) assertFalse(forbidden, source.contains(forbidden))
+        assertTrue(source.contains("session.tryOpen("))
+        assertTrue(source.contains("session.tryRequestFrame("))
+        assertTrue(source.contains("session.tryCancel()"))
     }
 
     @Test
@@ -31,6 +37,7 @@ class MainThreadContractTest {
             assertFalse(closePath.contains(".await("))
             assertFalse(closePath.contains(".join("))
         }
+        assertTrue(sessionClose.contains("renderer.cancelImmediately()"))
         assertTrue(rendererClose.contains("removeCallbacksAndMessages(null)"))
         assertTrue(rendererClose.contains("postAtFrontOfQueue"))
     }

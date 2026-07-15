@@ -1,7 +1,6 @@
 {
   "schemaVersion": 1,
   "localFixtureId": "sample-a",
-  "sha256": "replace-with-lowercase-sha256",
   "codec": "video/avc",
   "profile": "High 8-bit",
   "resolution": {
