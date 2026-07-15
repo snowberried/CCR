@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "CCR Android S24 Spike"
 include(":app")
+include(":macrobenchmark")

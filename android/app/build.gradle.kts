@@ -81,6 +81,12 @@ android {
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("internalRelease")
         }
+        create("benchmark") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+        }
     }
 
     buildFeatures {
@@ -102,6 +108,7 @@ android {
     }
 
     sourceSets.getByName("debug").assets.directories.add("../testdata")
+    sourceSets.getByName("benchmark").assets.directories.add("../testdata")
 }
 
 dependencies {
