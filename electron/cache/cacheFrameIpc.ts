@@ -1,6 +1,8 @@
 import { app, dialog, ipcMain, type WebContents } from "electron";
+import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { resolveCacheMemoryPreference } from "../../src/domain/cacheMemory.js";
 import { resolveFfmpegRuntimePaths } from "../runtimePaths.js";
 import { YuvCacheSession, type CachedFrame } from "./YuvCacheSession.js";
 
@@ -36,7 +38,7 @@ function serializeFrame(frame: CachedFrame, session: YuvCacheSession, generation
   };
 }
 
-async function openPath(filePath: string, sender: WebContents) {
+async function openPath(filePath: string, sender: WebContents, cacheMemoryPreference: unknown = "auto") {
   const generation = ++activeGeneration;
   openingController?.abort();
   const controller = new AbortController();
@@ -49,7 +51,19 @@ async function openPath(filePath: string, sender: WebContents) {
     resourcesPath: process.resourcesPath,
   });
   try {
-    const session = await YuvCacheSession.open(runtimePaths, filePath, controller.signal);
+    const totalMemoryBytes = os.totalmem();
+    const availableMemoryBytes = os.freemem();
+    const memory = resolveCacheMemoryPreference({
+      preference: cacheMemoryPreference,
+      totalMemoryBytes,
+      availableMemoryBytes,
+    });
+    const session = await YuvCacheSession.open(runtimePaths, filePath, controller.signal, {
+      totalMemoryBytes,
+      availableMemoryBytes,
+      cacheBudgetBytes: memory.cacheBudgetBytes,
+      cacheMemoryPreference: memory.preference,
+    });
     if (generation !== activeGeneration) {
       session.close();
       return { canceled: false as const, error: "OPEN_SUPERSEDED" };
@@ -78,15 +92,22 @@ export function openCachePathForQa(filePath: string, sender: WebContents) {
 }
 
 export function registerCacheFrameIpc(): void {
-  ipcMain.handle("frame:open", async (event) => {
+  ipcMain.handle("frame:open", async (event, input: unknown) => {
     const selection = await dialog.showOpenDialog({ properties: ["openFile"], filters: [{ name: "Video", extensions: ["mp4", "mov", "avi", "mkv"] }] });
     if (selection.canceled || selection.filePaths.length !== 1) return { canceled: true as const };
-    return openPath(selection.filePaths[0], event.sender);
+    const preference = typeof input === "object" && input !== null && "cacheMemoryPreference" in input
+      ? (input as { cacheMemoryPreference: unknown }).cacheMemoryPreference
+      : "auto";
+    return openPath(selection.filePaths[0], event.sender, preference);
   });
   ipcMain.handle("frame:openDropped", async (event, input: unknown) => {
-    const filePath = typeof input === "object" && input !== null && "filePath" in input ? (input as { filePath: unknown }).filePath : null;
+    const dropped = typeof input === "object" && input !== null
+      ? input as { filePath?: unknown; cacheMemoryPreference?: unknown }
+      : null;
+    const filePath = dropped?.filePath;
     if (!validVideoPath(filePath)) return { canceled: false as const, error: "INVALID_VIDEO_SOURCE" };
-    return openPath(filePath, event.sender);
+    const preference = dropped?.cacheMemoryPreference ?? "auto";
+    return openPath(filePath, event.sender, preference);
   });
   ipcMain.handle("frame:cacheAckFirst", (event, input: unknown) => {
     const session = activeSession;

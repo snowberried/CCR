@@ -60,9 +60,14 @@ test("uses the existing RGBA segment cache when the YUV policy falls back", asyn
       { ffmpegPath, ffprobePath },
       sourcePath,
       undefined,
-      { totalMemoryBytes: 1024 ** 3, availableMemoryBytes: 128 * 1024 ** 2 },
+      {
+        totalMemoryBytes: 8 * 1024 ** 3,
+        availableMemoryBytes: 128 * 1024 ** 2,
+        cacheMemoryPreference: 2,
+      },
     );
     assert.equal(session.metadata().cacheMode, "fallback");
+    assert.equal(session.metadata().cacheMemoryPreference, 2);
     assert.equal(session.firstFrame().pixelFormat, "i420");
     session.startBackground(() => undefined);
     await session.waitForBackground();

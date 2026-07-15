@@ -61,6 +61,8 @@ fallback은 검증된 Phase 2.1 RGBA segment cache와 direction policy를 그대
 
 ## 메모리 정책
 
+자동 기본값은 다음과 같다.
+
 ```text
 targetBudget = min(2GiB, totalRAM × 0.125, availableRAM × 0.25)
 ```
@@ -73,6 +75,16 @@ targetBudget = min(2GiB, totalRAM × 0.125, availableRAM × 0.25)
 - 전체 RGBA cache와 frame 디스크 cache 없음
 
 진단 패널은 실제 cache 사용량/budget, 준비된 frame 수, full·lru·fallback mode, 제거·재디코드·미리 읽기 횟수와 색 정책을 표시한다.
+
+### v0.5.9 수동 RAM 상한
+
+설정창은 감지한 전체 RAM에 따라 8GiB 미만은 자동만, 8/16/24/32GiB 구간부터 각각 2/4/6/8GiB까지 수동 상한을 제공한다. 수동 선택도 선예약하지 않으며 파일을 열 때 다음처럼 실제 상한을 다시 계산한다.
+
+```text
+manualBudget = min(selectedBudget, totalRAM × 0.25, availableRAM × 0.50)
+```
+
+최소 안전값 256MiB보다 작아지면 명시적 I420 상한을 사용하지 않고 기존 low-memory fallback으로 처리한다. 설정은 다음 파일부터 적용되며 정보 탭의 `RAM 설정`은 선택값, `메모리`는 실제 사용량과 적용 상한을 각각 표시한다.
 
 ## 2026-07-15 장시간·고해상도 LRU 보완
 

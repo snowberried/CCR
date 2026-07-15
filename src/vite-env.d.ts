@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 
+type CcrCacheMemoryPreference = "auto" | 2 | 4 | 6 | 8;
+
 type CcrFrameDescriptor = {
   frameIndex: number;
   pts: string | null;
@@ -107,6 +109,7 @@ type CcrOpenVideoResponse = {
     colorSource?: string;
     colorReason?: string;
     cacheMode?: "full" | "lru" | "fallback";
+    cacheMemoryPreference?: CcrCacheMemoryPreference;
   };
   frame?: CcrFrameResponse;
   error?: string;
@@ -118,6 +121,7 @@ interface Window {
       phase: string;
       decoderMode: "i420-cache" | "rgba-rollback";
       ffmpegConfigured: boolean;
+      totalMemoryBytes: number;
     }>;
     checkForUpdates: () => Promise<{
       currentVersion: string;
@@ -136,7 +140,7 @@ interface Window {
     setFullscreen: (value: boolean) => Promise<boolean>;
     toggleFullscreen: () => Promise<boolean>;
     onFullscreenChanged: (callback: (value: boolean) => void) => () => void;
-    openVideo: () => Promise<CcrOpenVideoResponse>;
+    openVideo: (cacheMemoryPreference: CcrCacheMemoryPreference) => Promise<CcrOpenVideoResponse>;
     savePng: (bytes: Uint8Array, defaultFileName: string) => Promise<{
       canceled: boolean;
       saved: boolean;
@@ -151,7 +155,7 @@ interface Window {
       byteLength?: number;
       error?: string;
     }>;
-    openDroppedVideo: (file: File) => Promise<CcrOpenVideoResponse>;
+    openDroppedVideo: (file: File, cacheMemoryPreference: CcrCacheMemoryPreference) => Promise<CcrOpenVideoResponse>;
     openQaVideo?: (sampleIndex: number) => Promise<CcrOpenVideoResponse>;
     getFrame: (sessionId: string, frameIndex: number, displayFormat?: "i420" | "rgba") => Promise<CcrFrameResponse>;
     ackFirstFrame?: (sessionId: string) => Promise<void>;

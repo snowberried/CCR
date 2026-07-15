@@ -315,6 +315,7 @@ dd { margin: 0; overflow-wrap: anywhere; color: var(--text-secondary); text-alig
 .settings-control-stack { flex: 0 0 144px; display: grid; gap: 8px; }
 .settings-control-stack select, .settings-control-stack input { width: 100%; padding: 0 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
 .settings-control-stack input { text-align: right; }
+.settings-memory-status { color: var(--text-muted); font-size: 10px; line-height: 1.4; text-align: right; }
 .settings-validation-error { margin: 8px 0 0; color: var(--danger); font-size: 11px; text-align: right; }
 .update-result { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--divider); color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .shortcut-settings-dialog { width: min(920px, 100%); max-height: calc(100vh - 40px); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-raised); box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48); }

@@ -2,6 +2,7 @@ import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { createHash } from "node:crypto";
+import type { CacheMemoryPreference } from "../../src/domain/cacheMemory.js";
 import { createI420Layout, chooseI420BlockFrames } from "../../src/domain/i420.js";
 import { createFrameCachePolicy } from "../../src/domain/frameCachePolicy.js";
 import {
@@ -24,6 +25,7 @@ export type YuvCacheSessionOptions = {
   totalMemoryBytes?: number;
   availableMemoryBytes?: number;
   cacheBudgetBytes?: number;
+  cacheMemoryPreference?: CacheMemoryPreference;
 };
 
 export type CacheColorSpace = {
@@ -176,6 +178,7 @@ export class YuvCacheSession {
       colorSource: this.colorSpace.source,
       colorReason: this.displayPolicy.reason,
       cacheMode: this.cacheMode,
+      cacheMemoryPreference: this.options.cacheMemoryPreference ?? "auto",
     };
   }
 

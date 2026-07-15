@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, Menu } from "electron";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { selectProductDecoderMode } from "../src/application/productDecoderMode.js";
@@ -51,6 +52,7 @@ ipcMain.handle("runtime:getStatus", () => {
     phase: "phase4b1-frame-export",
     decoderMode,
     ffmpegConfigured: existsSync(ffmpegPath) && existsSync(ffprobePath),
+    totalMemoryBytes: os.totalmem(),
   };
 });
 

@@ -24,7 +24,7 @@
 3. 검증: 가능한 명령, 테스트, 파일 확인으로 결과를 확인한다.
 4. 요약: 변경 내용과 남은 위험을 짧게 보고한다.
 
-## 현재 단계: v0.5.2 Modern Dark Professional
+## 현재 단계: v0.5.9 Configurable RAM Cache
 
 - Phase 0 기획은 완료됐다.
 - 기능 기준 커밋 `ae70761a098ce69cc47228881d3be08c348f0fd1`의 decoder/cache/navigation, View Transform, annotation, export와 crosshair 의미는 동결한다.
@@ -48,6 +48,8 @@
 - 실제 사용 피드백과 별도 사용자 승인 전 프로젝트 저장, JPEG 또는 clip/batch 내보내기로 범위를 넓히지 않는다. 개인정보 마스킹은 현재 제품 범위에서 제외한다.
 - Phase 2.3 NSIS 패키징, unpacked/privacy/checksum 검증, 실제 설치와 재설치를 완료했다.
 - 실제 설치 앱에서 Sample A~K, full cache, 직접 입력, Home/End, 휠, 파일 전환과 RGBA rollback을 검증했다.
+- v0.5.8은 5프레임 정·역방향 전체 이동 foreground 재디코드 0을 실사용 확인해 안정판으로 확정하고 공개 Release로 배포했다.
+- v0.5.9은 PC 전체 RAM 구간별 2/4/6/8GiB 수동 cache 상한을 제공하며, 파일 open 시 실제 상한을 현재 여유 RAM의 50% 이내로 제한한다. 기본값은 기존 자동 최대 2GiB다.
 - 실제 Explorer drag/drop, Windows 제거 등록 확인과 사용자 파일럿 피드백은 남아 있다.
 - 설치 UI 세부 항목과 동일 버전 덮어쓰기는 추후 통합 QA로 이월했으며 Phase 2.3 완료를 막지 않는다.
 

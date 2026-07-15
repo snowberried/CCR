@@ -85,6 +85,17 @@ import {
   type FastFrameStepStorage,
 } from "./ui/fastFrameStep";
 import {
+  manualCacheMemoryOptions,
+  parseCacheMemoryPreference,
+  type CacheMemoryGiB,
+  type CacheMemoryPreference,
+} from "./domain/cacheMemory";
+import {
+  loadCacheMemoryPreference,
+  saveCacheMemoryPreference,
+  type CacheMemoryPreferenceStorage,
+} from "./ui/cacheMemoryPreference";
+import {
   formatShortcutBinding,
   loadShortcutPreferences,
   matchShortcutAction,
@@ -222,6 +233,14 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
+function formatMemoryGiB(bytes: number): string {
+  return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+}
+
+function formatCacheMemoryPreference(preference: CcrCacheMemoryPreference | undefined): string {
+  return preference === undefined || preference === "auto" ? "자동 (최대 2 GiB)" : `${preference} GiB 상한`;
+}
+
 function formatZoomPercent(zoom: number): string {
   return `${Number((zoom * 100).toFixed(2))}%`;
 }
@@ -236,6 +255,14 @@ function exportFailureMessage(error: unknown, action: "save" | "copy"): string {
 }
 
 function browserFastFrameStepStorage(): FastFrameStepStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function browserCacheMemoryPreferenceStorage(): CacheMemoryPreferenceStorage | null {
   try {
     return window.localStorage;
   } catch {
@@ -312,6 +339,10 @@ export function App() {
   const [shortcutSettingsOpen, setShortcutSettingsOpen] = useState(false);
   const [shortcutPreferences, setShortcutPreferences] = useState(() => loadShortcutPreferences(browserShortcutStorage()));
   const [fastFrameStep, setFastFrameStep] = useState(() => loadFastFrameStep(browserFastFrameStepStorage()));
+  const [cacheMemoryPreference, setCacheMemoryPreference] = useState<CacheMemoryPreference>(() => (
+    loadCacheMemoryPreference(browserCacheMemoryPreferenceStorage())
+  ));
+  const [systemTotalMemoryBytes, setSystemTotalMemoryBytes] = useState<number | null>(null);
   const [customFastFrameStepSelected, setCustomFastFrameStepSelected] = useState(false);
   const [customFastFrameStepInput, setCustomFastFrameStepInput] = useState(() => String(fastFrameStep));
   const [fastFrameStepError, setFastFrameStepError] = useState<string | null>(null);
@@ -328,10 +359,20 @@ export function App() {
   const fastFrameStepSelectValue = customFastFrameStepSelected || !isFastFrameStepPreset(fastFrameStep)
     ? "custom"
     : String(fastFrameStep);
+  const allowedCacheMemoryOptions: CacheMemoryGiB[] = systemTotalMemoryBytes === null
+    ? []
+    : manualCacheMemoryOptions(systemTotalMemoryBytes);
 
   const applyFastFrameStep = (value: number) => {
     setFastFrameStep(value);
     saveFastFrameStep(browserFastFrameStepStorage(), value);
+  };
+
+  const applyCacheMemoryPreference = (value: unknown) => {
+    const parsed = parseCacheMemoryPreference(value);
+    if (parsed === null || (parsed !== "auto" && !allowedCacheMemoryOptions.includes(parsed))) return;
+    setCacheMemoryPreference(parsed);
+    saveCacheMemoryPreference(browserCacheMemoryPreferenceStorage(), parsed);
   };
 
   const commitCustomFastFrameStep = () => {
@@ -837,8 +878,8 @@ export function App() {
       setStatus("error");
       return;
     }
-    void acceptOpenedVideo(window.ccr.openVideo());
-  }, [acceptOpenedVideo]);
+    void acceptOpenedVideo(window.ccr.openVideo(cacheMemoryPreference));
+  }, [acceptOpenedVideo, cacheMemoryPreference]);
 
   const cancel = useCallback(() => {
     uiGenerationRef.current += 1;
@@ -1362,7 +1403,7 @@ export function App() {
       return;
     }
     clearViewer();
-    void acceptOpenedVideo(window.ccr.openDroppedVideo(file));
+    void acceptOpenedVideo(window.ccr.openDroppedVideo(file, cacheMemoryPreference));
   };
 
   useEffect(() => {
@@ -1540,6 +1581,21 @@ export function App() {
   useEffect(() => {
     void window.ccr?.getFullscreen?.().then(setIsFullscreen);
     return window.ccr?.onFullscreenChanged?.(setIsFullscreen);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void window.ccr?.getRuntimeStatus?.().then((runtime) => {
+      if (!active || !Number.isFinite(runtime.totalMemoryBytes) || runtime.totalMemoryBytes <= 0) return;
+      setSystemTotalMemoryBytes(runtime.totalMemoryBytes);
+      const allowed = manualCacheMemoryOptions(runtime.totalMemoryBytes);
+      setCacheMemoryPreference((current) => {
+        if (current === "auto" || allowed.includes(current)) return current;
+        saveCacheMemoryPreference(browserCacheMemoryPreferenceStorage(), "auto");
+        return "auto";
+      });
+    });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => window.ccr?.onCacheMetadata?.((update) => {
@@ -2165,6 +2221,7 @@ export function App() {
               <div><dt>방향</dt><dd>{cacheStatus?.direction ?? "-"}</dd></div>
               <div><dt>Hit / Miss</dt><dd>{cacheStatus ? `${cacheStatus.hits} / ${cacheStatus.misses}` : "-"}</dd></div>
               <div><dt>메모리</dt><dd>{cacheStatus ? `${formatBytes(cacheStatus.byteLength)} / ${formatBytes(cacheStatus.budgetBytes)}` : "-"}</dd></div>
+              <div><dt>RAM 설정</dt><dd>{metadata ? formatCacheMemoryPreference(metadata.cacheMemoryPreference) : "-"}</dd></div>
               <div><dt>캐시 준비</dt><dd>{cacheStatus?.readyFrameCount == null ? "-" : `${cacheStatus.readyFrameCount} / ${metadata?.frameCount ?? "-"}`}</dd></div>
               <div><dt>모드</dt><dd>{cacheStatus?.cacheMode ?? "-"}</dd></div>
               <div><dt>색 정책</dt><dd>{metadata?.colorSource ?? "-"}</dd></div>
@@ -2207,6 +2264,30 @@ export function App() {
               <button type="button" aria-label="설정 닫기" onClick={() => setSettingsOpen(false)}>×</button>
             </header>
             <div className="settings-dialog-content">
+              <div className="settings-row">
+                <div>
+                  <strong>프레임 캐시 RAM</strong>
+                  <p>{systemTotalMemoryBytes === null
+                    ? "PC RAM을 확인하고 있습니다."
+                    : `PC RAM ${formatMemoryGiB(systemTotalMemoryBytes)} 감지 · 선택값은 최대치이며 미리 점유하지 않습니다. 파일을 열 때 여유 RAM의 50% 이내로 다시 제한합니다.`}</p>
+                </div>
+                <div className="settings-control-stack">
+                  <select
+                    aria-label="프레임 캐시 RAM 상한"
+                    value={cacheMemoryPreference}
+                    disabled={systemTotalMemoryBytes === null}
+                    onChange={(event) => applyCacheMemoryPreference(event.currentTarget.value)}
+                  >
+                    <option value="auto">자동 (최대 2 GiB)</option>
+                    {allowedCacheMemoryOptions.map((value) => (
+                      <option key={value} value={value}>{value} GiB</option>
+                    ))}
+                  </select>
+                  <small className="settings-memory-status">{metadata && cacheStatus
+                    ? `현재 영상: ${formatCacheMemoryPreference(metadata.cacheMemoryPreference)} · ${formatBytes(cacheStatus.budgetBytes)} 적용`
+                    : "변경은 다음 파일부터 적용됩니다."}</small>
+                </div>
+              </div>
               <div className="settings-row">
                 <div>
                   <strong>빠른 프레임 이동</strong>

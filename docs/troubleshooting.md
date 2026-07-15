@@ -214,7 +214,7 @@ Electron 43.1.0 npm 패키지에는 자동 `postinstall` 스크립트가 없다.
 
 ## 2026-07-15 2GiB LRU 영상에서 빠른 이동 중 `디코딩 중`이 순간 표시되는 경우
 
-상태: v0.5.7 실사용 병목 확인, v0.5.8 자동 검증 완료·실사용 확인 대기
+상태: v0.5.8 자동 검증·실사용 확인 완료
 
 ### 증상
 
@@ -265,6 +265,13 @@ Electron 43.1.0 npm 패키지에는 자동 `postinstall` 스크립트가 없다.
 
 합성 강제 LRU에서 4-block 단일-process refill, foreground 중복 decode 0, 정→역방향 batch 전환과 budget 이하를 확인했다. 전체 자동 테스트 102/102, production build와 비식별 로컬 샘플 11개 경계 검사를 통과했다.
 
+### v0.5.8 최종 실사용 결과
+
+- 1280×720, 3,766-frame 영상의 5프레임 정·역방향 전체 이동에서 체감 정지가 사라졌다.
+- 두 방향 연속 이동의 foreground 재디코드는 0이었다.
+- 임의 구간 점프로 발생한 재디코드 뒤에도 탐색은 부드럽게 복귀했다.
+- 10프레임 이상 간격에서는 같은 증상이 재발할 수 있어 v0.5.8은 기본 5프레임 최적화 안정판으로 확정했다.
+
 ### 관련 변경
 
 - `src/domain/yuvCachePolicy.ts`
@@ -276,7 +283,7 @@ Electron 43.1.0 npm 패키지에는 자동 `postinstall` 스크립트가 없다.
 
 ## 2026-07-15 GitHub Release 사전 검사에서 `release not found`가 실패로 처리됨
 
-상태: 1차 보완 후 원인 추가 확인, GitHub Actions 재검증 대기
+상태: 검증 완료
 
 ### 증상
 
@@ -299,6 +306,8 @@ Electron 43.1.0 npm 패키지에는 자동 `postinstall` 스크립트가 없다.
 
 - 일반 `main` push에서 버전이 같으면 Windows job을 건너뛰는지 확인한다.
 - `workflow_dispatch`에 `0.5.8`을 입력해 전체 테스트·패키징 후 `v0.5.8` Latest Release와 네 자산이 공개되는지 확인한다.
+
+GitHub Actions run `29384819544`에서 사전 검사, 102개 테스트, Windows installer build, package 검증과 공개 Release 게시가 모두 성공했다. `v0.5.8` 정식 Release에 설치파일·checksum·blockmap·`latest.yml` 네 자산이 확인됐다.
 
 ### 관련 변경
 

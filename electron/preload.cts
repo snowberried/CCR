@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
+import type { CacheMemoryPreference } from "../src/domain/cacheMemory.js";
 
 contextBridge.exposeInMainWorld("ccr", {
   getRuntimeStatus: () => ipcRenderer.invoke("runtime:getStatus"),
@@ -17,12 +18,13 @@ contextBridge.exposeInMainWorld("ccr", {
     ipcRenderer.on("window:fullscreenChanged", listener);
     return () => ipcRenderer.removeListener("window:fullscreenChanged", listener);
   },
-  openVideo: () => ipcRenderer.invoke("frame:open"),
+  openVideo: (cacheMemoryPreference: CacheMemoryPreference) =>
+    ipcRenderer.invoke("frame:open", { cacheMemoryPreference }),
   savePng: (bytes: Uint8Array, defaultFileName: string) =>
     ipcRenderer.invoke("export:savePng", { bytes, defaultFileName }),
   copyPng: (bytes: Uint8Array) => ipcRenderer.invoke("export:copyPng", { bytes }),
-  openDroppedVideo: (file: File) =>
-    ipcRenderer.invoke("frame:openDropped", { filePath: webUtils.getPathForFile(file) }),
+  openDroppedVideo: (file: File, cacheMemoryPreference: CacheMemoryPreference) =>
+    ipcRenderer.invoke("frame:openDropped", { filePath: webUtils.getPathForFile(file), cacheMemoryPreference }),
   ...(process.env.CCR_PHASE23_QA === "1" ? {
     openQaVideo: (sampleIndex: number) => ipcRenderer.invoke("frame:openQa", { sampleIndex }),
   } : {}),
