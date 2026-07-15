@@ -1,5 +1,7 @@
 # Patient and local media
-local-samples/
+local-samples/*
+!local-samples/README.md
+!local-samples/manifest.example.json
 local-cache/
 temp/
 *.mp4

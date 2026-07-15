@@ -42,6 +42,8 @@
 | Android S24 Ultra Exact-Frame Spike | `24_ANDROID_S24_EXACT_FRAME_SPIKE.md` | v0.5.9 동결 기준선, Android 환경과 Gate 0~3 정확성 범위 |
 | Android Canonical Image Coordinates | `25_ANDROID_CANONICAL_COORDINATES.md` | inclusive crop, PAR, clockwise rotation, canonical image와 EGL 물리 픽셀 계약 |
 | Android S24 Gate 3 Evidence | `evidence/android/s24/README.md` | 비식별 Gate 3 PASS 요약, 기준 tag와 artifact/fixture checksum |
+| Android S24 Gate 3 Device Baseline | `../android/validation/device-baselines/sm-s928n-android16-2026-07-15/README.md` | 고정된 비식별 sanitized report와 재검증 가능한 checksum |
+| Android Local Sample Pilot | `../local-samples/README.md` | 실제 파일을 추적하지 않는 비식별 로컬 파일럿 manifest와 수동 체크리스트 |
 | v0.5.2 Design QA | `../design-qa.md` | 최종 시안과 1440×900·720×600 구현 비교 및 판정 |
 | v0.5.2 Modern Dark Handoff | `../HANDOFF_V052_MODERN_DARK.md` | 최신 UI·확대율 의미, 검증 결과, 설치본과 후속 작업 상태 |
 | v0.5.3 Handoff | `../HANDOFF_V053.md` | 버전 표시, 설정 모달, 수동 업데이트 확인과 검증된 설치본 |

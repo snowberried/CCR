@@ -31,6 +31,7 @@ const fixtures = [
   { fixture: "switch-a", frames: 12, seed: 14, encoder: "openh264", gop: 12 },
   { fixture: "switch-b", frames: 12, seed: 15, encoder: "openh264", gop: 12 },
   { fixture: "par-8-9", frames: 8, seed: 16, encoder: "openh264", gop: 8, sar: [8, 9] },
+  { fixture: "duplicate-pts", frames: 8, seed: 17, encoder: "nvenc", gop: 8, bFrames: 2, duplicatePts: true },
 ];
 
 function run(executable, args, options = {}) {
@@ -126,6 +127,7 @@ function encode(spec) {
   const encodedPath = spec.rotation ? join(outputDir, `${spec.fixture}.base.mp4`) : finalPath;
   const filters = [];
   if (spec.vfr) filters.push("setpts=(N+floor(N/3))/(12*TB)");
+  if (spec.duplicatePts) filters.push("setpts=floor(N/2)/(12*TB)");
   if (spec.ptsOffsetSeconds) filters.push(`setpts=PTS+${spec.ptsOffsetSeconds}/TB`);
   if (spec.sar) filters.push(`setsar=${spec.sar[0]}/${spec.sar[1]}`);
   const args = [
@@ -133,7 +135,7 @@ function encode(spec) {
     "-f", "rawvideo", "-pix_fmt", "rgb24", "-s:v", `${width}x${height}`, "-r", String(fps), "-i", "pipe:0",
     "-an",
     ...(filters.length ? ["-vf", filters.join(",")] : []),
-    ...(spec.vfr ? ["-fps_mode", "vfr"] : []),
+    ...(spec.duplicatePts ? ["-fps_mode", "passthrough"] : spec.vfr ? ["-fps_mode", "vfr"] : []),
     ...encoderArgs(spec),
     "-video_track_timescale", "12000", "-movflags", "+faststart", encodedPath,
   ];
@@ -305,13 +307,15 @@ function writeGolden(spec, commands) {
   });
   indexed.sort((left, right) => left.ptsUs - right.ptsUs || left.sampleOrdinal - right.sampleOrdinal);
   const duplicateCounts = new Map();
+  const decodedEmbeddedIds = [];
   const frames = indexed.map((entry, displayFrameIndex) => {
     const duplicateOrdinal = duplicateCounts.get(entry.ptsUs) ?? 0;
     duplicateCounts.set(entry.ptsUs, duplicateOrdinal + 1);
     const raw = decoded.subarray(entry.decodeIndex * frameBytes, (entry.decodeIndex + 1) * frameBytes);
     const actualId = decodeMarker(raw, geometry, rotation);
+    decodedEmbeddedIds.push(actualId);
     const expectedId = embeddedId(spec, entry.decodeIndex);
-    if (actualId !== expectedId) throw new Error(`${spec.fixture}: embedded ID ${actualId} != ${expectedId}`);
+    if (!spec.duplicatePts && actualId !== expectedId) throw new Error(`${spec.fixture}: embedded ID ${actualId} != ${expectedId}`);
     return {
       displayFrameIndex,
       ptsUs: entry.ptsUs,
@@ -322,6 +326,12 @@ function writeGolden(spec, commands) {
       imageSignature: imageSignature(raw, geometry.width, geometry.height),
     };
   });
+  if (spec.duplicatePts) {
+    const expectedIds = Array.from({ length: spec.frames }, (_, index) => embeddedId(spec, index)).sort((left, right) => left - right);
+    const actualIds = [...decodedEmbeddedIds].sort((left, right) => left - right);
+    if (JSON.stringify(actualIds) !== JSON.stringify(expectedIds)) throw new Error(`${spec.fixture}: embedded frame IDs were lost or duplicated`);
+    if (!frames.some((frame) => frame.duplicateOrdinal > 0)) throw new Error(`${spec.fixture}: encoded MP4 did not preserve duplicate PTS`);
+  }
   const sourceSha256 = createHash("sha256").update(readFileSync(path)).digest("hex");
   const golden = {
     schemaVersion: 1,
@@ -346,6 +356,18 @@ function firstLine(executable, args) {
 }
 
 mkdirSync(outputDir, { recursive: true });
+if (process.argv.includes("--duplicate-pts-only")) {
+  const spec = fixtures.find(({ fixture }) => fixture === "duplicate-pts");
+  for (const file of [`${spec.fixture}.mp4`, `${spec.fixture}.json`, `${spec.fixture}.base.mp4`]) rmSync(join(outputDir, file), { force: true });
+  const record = writeGolden(spec, encode(spec));
+  const provenancePath = join(outputDir, "provenance.json");
+  const provenance = JSON.parse(readFileSync(provenancePath, "utf8"));
+  provenance.fixtures = provenance.fixtures.filter(({ fixture }) => fixture !== record.fixture);
+  provenance.fixtures.push(record);
+  writeFileSync(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`);
+  console.log(`generated ${record.fixture} without touching existing fixtures`);
+  process.exit(0);
+}
 if (process.argv.includes("--compact-existing")) {
   for (const spec of fixtures) {
     const path = join(outputDir, `${spec.fixture}.json`);

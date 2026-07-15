@@ -780,6 +780,60 @@
           ]
         }
       ]
+    },
+    {
+      "fixture": "duplicate-pts.mp4",
+      "golden": "duplicate-pts.json",
+      "sourceSha256": "60eed4ddaf1740f17cdc89adbfd4e25f46f1db09e6550ed2fe95598fee73726b",
+      "commands": [
+        {
+          "purpose": "encode",
+          "args": [
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s:v",
+            "256x144",
+            "-r",
+            "12",
+            "-i",
+            "pipe:<synthetic-rgb>",
+            "-an",
+            "-vf",
+            "setpts=floor(N/2)/(12*TB)",
+            "-fps_mode",
+            "passthrough",
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "p7",
+            "-tune",
+            "hq",
+            "-rc",
+            "constqp",
+            "-qp",
+            "18",
+            "-profile:v",
+            "main",
+            "-g",
+            "8",
+            "-bf",
+            "2",
+            "-pix_fmt",
+            "yuv420p",
+            "-video_track_timescale",
+            "12000",
+            "-movflags",
+            "+faststart",
+            "<fixture.mp4>"
+          ]
+        }
+      ]
     }
   ]
 }

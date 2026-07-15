@@ -13,8 +13,10 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.snowberried.ctcinereviewer.media.DecoderDiagnostics
 import com.snowberried.ctcinereviewer.media.ContainerMetadata
 import com.snowberried.ctcinereviewer.media.DecodedOutputMetadata
+import com.snowberried.ctcinereviewer.media.FrameKey
 import com.snowberried.ctcinereviewer.media.FrameResult
 import com.snowberried.ctcinereviewer.media.IndexedVideo
+import com.snowberried.ctcinereviewer.media.PublicationEvent
 import com.snowberried.ctcinereviewer.media.PublicationResult
 import com.snowberried.ctcinereviewer.media.RequestAcceptance
 import org.json.JSONArray
@@ -46,6 +48,25 @@ private fun decodedOutputJson(metadata: DecodedOutputMetadata): JSONObject = JSO
     .put("profile", metadata.profile)
     .put("colorFormat", metadata.colorFormat)
     .put("hdrStaticInfoPresent", metadata.hdrStaticInfoPresent)
+
+private fun frameKeyJson(key: FrameKey): JSONObject = JSONObject()
+    .put("displayFrameIndex", key.displayFrameIndex)
+    .put("ptsUs", key.ptsUs)
+    .put("duplicateOrdinal", key.duplicateOrdinal)
+
+private fun publicationEventJson(event: PublicationEvent): JSONObject = JSONObject()
+    .put("eventSequence", event.eventSequence)
+    .put("elapsedRealtimeNanos", event.elapsedRealtimeNanos)
+    .put("fileGeneration", event.fileGeneration)
+    .put("requestGeneration", event.requestGeneration)
+    .put("requestedFrameIndex", event.requestedFrameIndex)
+    .put("expectedKey", frameKeyJson(event.expectedKey))
+    .put("currentFileGeneration", event.currentFileGeneration)
+    .put("currentRequestGeneration", event.currentRequestGeneration)
+    .put("textureTimestampNs", event.textureTimestampNs)
+    .put("swapAttempted", event.swapAttempted)
+    .put("eglSwapBuffersResult", event.eglSwapBuffersResult ?: JSONObject.NULL)
+    .put("result", event.result.name)
 
 @RunWith(AndroidJUnit4::class)
 class S24FrameAccuracyTest {
@@ -121,6 +142,7 @@ class S24FrameAccuracyTest {
                     )
             }
             exerciseNavigation(gate, loadGolden("burst"))
+            exercisePrefetchContract(gate, loadGolden("burst"), loadGolden("switch-a"), loadGolden("switch-b"))
             exerciseBurst(gate, loadGolden("burst"))
             exerciseFileSwitch(gate, loadGolden("switch-a"), loadGolden("switch-b"))
             assertEquals("source was opened for write", 0, ReadOnlyFixtureProvider.writeOpenCount.get())
@@ -207,6 +229,40 @@ class S24FrameAccuracyTest {
         assertEquals("publication invariant violation", 0L, lastDiagnostics.publicationInvariantViolationCount)
     }
 
+    private fun exercisePrefetchContract(
+        activity: GateActivity,
+        golden: Golden,
+        first: Golden,
+        second: Golden,
+    ) {
+        report.currentFixture = golden.fixture
+        openAndAwait(activity, golden)
+        activity.clearResults()
+        Thread.sleep(1_000)
+        assertTrue("cache-only prefetch emitted a publication event", activity.drainPublicationEvents().isEmpty())
+
+        val prefetchedIndex = minOf(DIRECTIONAL_PREFETCH_PROBE_INDEX, golden.frames.lastIndex)
+        onMain(activity) { activity.requestFrame(prefetchedIndex) }
+        val prefetched = awaitPublished(activity, golden, prefetchedIndex)
+        val published = prefetched.result as FrameResult.Published
+        assertTrue("look-ahead frame was not served from cache", published.cacheHit)
+        assertTrue("prefetch diagnostics did not advance", prefetched.diagnostics.prefetchedFrameCount > 0)
+
+        report.currentFixture = first.fixture
+        openAndAwait(activity, first)
+        activity.clearResults()
+        Thread.sleep(1_000)
+        assertTrue("file A prefetch emitted a publication event", activity.drainPublicationEvents().isEmpty())
+
+        report.currentFixture = second.fixture
+        open(activity, second.fixture)
+        requireNotNull(activity.awaitIndex()) { "${second.fixture}: index timeout" }
+        val secondMetadata = requireNotNull(activity.awaitMetadata()) { "${second.fixture}: metadata timeout" }
+        val secondFirst = awaitPublished(activity, second, 0)
+        assertEquals(secondMetadata.fileGeneration, secondFirst.result.request.token.fileGeneration)
+        assertEquals("file A texture survived file B generation", false, (secondFirst.result as FrameResult.Published).cacheHit)
+    }
+
     private fun exerciseFileSwitch(activity: GateActivity, first: Golden, second: Golden) {
         report.currentFixture = first.fixture
         openAndAwait(activity, first)
@@ -249,6 +305,12 @@ class S24FrameAccuracyTest {
     }
 
     private fun awaitPublished(activity: GateActivity, golden: Golden, expectedIndex: Int): GateActivity.ObservedResult {
+        val expected = golden.frames[expectedIndex]
+        report.expect(
+            fixture = golden.fixture,
+            frameIndex = expected.displayFrameIndex,
+            key = FrameKey(expected.displayFrameIndex, expected.ptsUs, expected.duplicateOrdinal),
+        )
         val deadline = SystemClock.elapsedRealtime() + 20_000
         while (SystemClock.elapsedRealtime() < deadline) {
             val observed = activity.awaitResult(2) ?: continue
@@ -270,6 +332,7 @@ class S24FrameAccuracyTest {
         val expected = golden.frames[actual.request.requestedFrameIndex]
         report.currentFixture = golden.fixture
         report.currentFrameIndex = expected.displayFrameIndex
+        report.observe(actual.request.expectedKey, actual.textureTimestampNs)
         mismatchCount += if (actual.request.expectedKey.displayFrameIndex != expected.displayFrameIndex) 1 else 0
         mismatchCount += if (actual.request.expectedKey.ptsUs != expected.ptsUs) 1 else 0
         mismatchCount += if (actual.request.expectedKey.duplicateOrdinal != expected.duplicateOrdinal) 1 else 0
@@ -386,6 +449,9 @@ class S24FrameAccuracyTest {
         val codecComponents = linkedSetOf<String>()
         var currentFixture: String? = null
         var currentFrameIndex: Int? = null
+        private var expectedFrameKey: FrameKey? = null
+        private var actualFrameKey: FrameKey? = null
+        private var textureTimestampNs: Long? = null
         private var displayWidth: Int? = null
         private var displayHeight: Int? = null
         private var refreshRate: Float? = null
@@ -394,6 +460,19 @@ class S24FrameAccuracyTest {
             displayWidth = width
             displayHeight = height
             this.refreshRate = refreshRate
+        }
+
+        fun expect(fixture: String, frameIndex: Int, key: FrameKey) {
+            currentFixture = fixture
+            currentFrameIndex = frameIndex
+            expectedFrameKey = key
+            actualFrameKey = null
+            textureTimestampNs = null
+        }
+
+        fun observe(key: FrameKey, timestampNs: Long) {
+            actualFrameKey = key
+            textureTimestampNs = timestampNs
         }
 
         fun finish(
@@ -433,6 +512,7 @@ class S24FrameAccuracyTest {
                 .put("decoder", JSONObject()
                     .put("cacheHits", diagnostics.cacheHitCount)
                     .put("cacheMisses", diagnostics.cacheMissCount)
+                    .put("prefetchedFrames", diagnostics.prefetchedFrameCount)
                     .put("cacheBytes", diagnostics.cacheBytes)
                     .put("decodedOutputs", diagnostics.decodeOrdinal)
                     .put("staleDiscard", diagnostics.staleDiscardCount)
@@ -445,6 +525,10 @@ class S24FrameAccuracyTest {
                     .put("outputFormatChanges", diagnostics.outputFormatChangeCount)
                     .put("configuredOutputMetadata", diagnostics.configuredOutputMetadata?.let(::decodedOutputJson))
                     .put("decodedOutputFormatHistory", JSONArray(diagnostics.decodedOutputFormatHistory.map(::decodedOutputJson)))
+                    .put(
+                        "publicationEventHistory",
+                        JSONArray(diagnostics.publicationEventHistory.map(::publicationEventJson)),
+                    )
                     .put("recreate", diagnostics.decoderRecreateCount))
                 .put("memory", JSONObject()
                     .put("javaUsedBytes", Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory())
@@ -461,6 +545,9 @@ class S24FrameAccuracyTest {
                     .put("message", failure.message ?: "unknown")
                     .put("fixture", currentFixture)
                     .put("frameIndex", currentFrameIndex)
+                    .put("expectedFrameKey", expectedFrameKey?.let(::frameKeyJson) ?: JSONObject.NULL)
+                    .put("actualFrameKey", actualFrameKey?.let(::frameKeyJson) ?: JSONObject.NULL)
+                    .put("textureTimestampNs", textureTimestampNs ?: JSONObject.NULL)
                     .put("minimalReproduction", "run-s24-gate.ps1 with only the reported synthetic fixture")
                     .put("suspectedCause", "undetermined; inspect FrameKey, texture timestamp, embedded ID and signature in that order")
                     .put("nextMinimalChange", "isolate the failing fixture and change only the first disproved decode/render hypothesis"))
@@ -484,10 +571,11 @@ class S24FrameAccuracyTest {
 
     companion object {
         const val REPORT_FILE = "s24-frame-accuracy-report.json"
+        private const val DIRECTIONAL_PREFETCH_PROBE_INDEX = 5
         val REQUIRED_FIXTURES = listOf(
             "h264-ip", "h264-bframes", "vfr", "long-gop", "nonzero-pts", "one-frame", "two-frame",
             "short-last-gop", "rotation-90", "rotation-180", "rotation-270", "hevc-main8", "burst",
-            "switch-a", "switch-b", "par-8-9",
+            "switch-a", "switch-b", "par-8-9", "duplicate-pts",
         )
     }
 }

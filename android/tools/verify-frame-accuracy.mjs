@@ -8,7 +8,7 @@ const fixtureDir = resolve(toolDir, "../testdata/frame-accuracy");
 const required = [
   "h264-ip", "h264-bframes", "vfr", "long-gop", "nonzero-pts", "one-frame", "two-frame",
   "short-last-gop", "rotation-90", "rotation-180", "rotation-270", "hevc-main8", "burst",
-  "switch-a", "switch-b", "par-8-9",
+  "switch-a", "switch-b", "par-8-9", "duplicate-pts",
 ];
 
 function fail(message) {
@@ -31,6 +31,7 @@ for (const name of required) {
   if (golden.pixelAspectRatio?.numerator <= 0 || golden.pixelAspectRatio?.denominator <= 0) fail(`${name}: PAR`);
   if (golden.frameCount !== golden.frames?.length || golden.frameCount < 1) fail(`${name}: frameCount`);
   const keys = new Set();
+  const duplicateCounts = new Map();
   golden.frames.forEach((frame, index) => {
     if (frame.displayFrameIndex !== index) fail(`${name}: displayFrameIndex ${index}`);
     if (!Number.isSafeInteger(frame.ptsUs) || !Number.isInteger(frame.duplicateOrdinal)) fail(`${name}: frame key ${index}`);
@@ -38,10 +39,17 @@ for (const name of required) {
     if (typeof frame.sync !== "boolean") fail(`${name}: sync ${index}`);
     if (!Array.isArray(frame.imageSignature) || frame.imageSignature.length !== 16 * 16 * 3) fail(`${name}: signature ${index}`);
     if (frame.imageSignature.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) fail(`${name}: signature value ${index}`);
+    const expectedDuplicateOrdinal = duplicateCounts.get(frame.ptsUs) ?? 0;
+    if (frame.duplicateOrdinal !== expectedDuplicateOrdinal) fail(`${name}: duplicate ordinal sequence ${index}`);
+    duplicateCounts.set(frame.ptsUs, expectedDuplicateOrdinal + 1);
     const key = `${frame.ptsUs}:${frame.duplicateOrdinal}`;
     if (keys.has(key)) fail(`${name}: duplicate FrameKey ${key}`);
     keys.add(key);
   });
+  if (name === "duplicate-pts") {
+    if (![...duplicateCounts.values()].some((count) => count > 1)) fail(`${name}: no duplicated presentation timestamp`);
+    if (new Set(golden.frames.map((frame) => frame.embeddedFrameId)).size !== golden.frameCount) fail(`${name}: embedded frame IDs are not unique`);
+  }
 }
 
 const mp4Names = readdirSync(fixtureDir).filter((name) => name.endsWith(".mp4")).sort();
@@ -51,6 +59,7 @@ const provenance = JSON.parse(readFileSync(join(fixtureDir, "provenance.json"), 
 if (provenance.schemaVersion !== 1 || provenance.syntheticOnly !== true) fail("provenance contract");
 if (!String(provenance.ffmpeg).includes("n8.1.2-21-gce3c09c101")) fail("FFmpeg version pin");
 if (!String(provenance.nvencHost).includes("RTX 4080 SUPER")) fail("NVENC provenance");
+if (!provenance.fixtures.some((entry) => entry.fixture === "duplicate-pts.mp4")) fail("duplicate PTS provenance");
 const reportFormat = JSON.parse(readFileSync(join(fixtureDir, "s24-report-format.json"), "utf8"));
 if (reportFormat.schemaVersion !== 2 || !String(reportFormat.status).startsWith("Pending")) fail("pending report format");
 for (const field of [
