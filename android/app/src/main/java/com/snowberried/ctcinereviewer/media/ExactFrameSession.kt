@@ -27,15 +27,28 @@ internal fun androidVideoBitDepth(mime: String, profile: Int?): Int = when (mime
     else -> 8
 }
 
+internal fun androidDecodedVideoBitDepth(mime: String, profile: Int?, colorFormat: Int?): Int =
+    if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010) {
+        10
+    } else {
+        androidVideoBitDepth(mime, profile)
+    }
+
+internal fun androidDecodedOutputIsHdr(colorTransfer: Int?, hdrStaticInfoPresent: Boolean): Boolean =
+    colorTransfer == MediaFormat.COLOR_TRANSFER_ST2084 ||
+        colorTransfer == MediaFormat.COLOR_TRANSFER_HLG ||
+        (colorTransfer == null && hdrStaticInfoPresent)
+
 class ExactFrameSession(
     context: Context,
     private val listener: Listener,
 ) : AutoCloseable {
     interface Listener {
         fun onStatus(status: String, detail: String? = null)
-        fun onVideoOpened(metadata: VideoMetadata)
+        fun onVideoOpened(metadata: ContainerMetadata)
         fun onVideoIndexed(video: IndexedVideo) = Unit
         fun onFrameResult(result: FrameResult, diagnostics: DecoderDiagnostics)
+        fun onPublicationEvent(event: PublicationEvent) = Unit
     }
 
     private data class DecoderResources(
@@ -48,12 +61,14 @@ class ExactFrameSession(
         var codec: MediaCodec,
         var outputSurface: Surface,
         val video: IndexedVideo,
-        val metadata: VideoMetadata,
+        val metadata: ContainerMetadata,
     )
 
     private val appContext = context.applicationContext
     private val mainHandler = Handler(appContext.mainLooper)
-    private val publicationGate = PublicationGate()
+    private val publicationGate = PublicationGate(SystemClock::elapsedRealtimeNanos) { event ->
+        mainHandler.post { listener.onPublicationEvent(event) }
+    }
     private val actorThread = HandlerThread("ccr-media-actor").apply { start() }
     private val actor = Handler(actorThread.looper)
     private val latestRequest = LatestRequestSlot<FrameRequest>()
@@ -80,18 +95,21 @@ class ExactFrameSession(
         actor.post { openInternal(uri, token) }
     }
 
-    fun requestFrame(frameIndex: Int) {
+    fun requestFrame(frameIndex: Int): RequestAcceptance? {
         val video = currentVideo.get() ?: run {
             notifyStatus("error", "VIDEO_NOT_READY")
-            return
+            return null
         }
         if (frameIndex !in video.frames.indices) {
             notifyStatus("error", "FRAME_INDEX_OUT_OF_RANGE")
-            return
+            return null
         }
-        val token = publicationGate.beginRequest(video.fileGeneration) ?: return
-        val request = FrameRequest(token, frameIndex, video.frames[frameIndex].key)
-        latestRequest.offer(request)
+        val acceptance = publicationGate.acceptRequest(
+            video.fileGeneration,
+            frameIndex,
+            video.frames[frameIndex].key,
+        ) ?: return null
+        latestRequest.offer(acceptance.request)
         actor.removeCallbacksAndMessages(requestMessageToken)
         actor.postAtTime(
             {
@@ -101,6 +119,7 @@ class ExactFrameSession(
             SystemClock.uptimeMillis(),
         )
         notifyStatus("decoding")
+        return acceptance
     }
 
     fun cancel() {
@@ -172,7 +191,9 @@ class ExactFrameSession(
             val codecInfo = selectHardwareDecoder(format) ?: error("HARDWARE_DECODER_REQUIRED")
             val outputSurface = renderer.awaitDecoderSurface(3_000) ?: error("RENDER_SURFACE_NOT_READY")
             val metadata = metadataFrom(format, token.fileGeneration, video.frameCount, codecInfo)
-            renderer.configureFrame(metadata)
+            val configuredOutputMetadata = decodedOutputMetadataFrom(format)
+            diagnostics = diagnostics.copy(configuredOutputMetadata = configuredOutputMetadata)
+            renderer.configureFrame(metadata, configuredOutputMetadata)
             format.setInteger(MediaFormat.KEY_ROTATION, 0)
             codec = createCodec(codecInfo, format, outputSurface)
             resources = DecoderResources(
@@ -194,8 +215,12 @@ class ExactFrameSession(
             surfaceChanged.set(false)
             notifyOpened(metadata, video)
 
-            val firstToken = publicationGate.beginRequest(video.fileGeneration) ?: return
-            decodeInternal(FrameRequest(firstToken, 0, video.frames[0].key))
+            val firstRequest = publicationGate.acceptRequest(
+                video.fileGeneration,
+                0,
+                video.frames[0].key,
+            )?.request ?: return
+            decodeInternal(firstRequest)
         } catch (error: Throwable) {
             codec?.let(::releaseCodec)
             extractor?.release()
@@ -295,9 +320,27 @@ class ExactFrameSession(
                 }
 
                 when (val outputIndex = current.codec.dequeueOutputBuffer(info, 10_000)) {
-                    MediaCodec.INFO_TRY_AGAIN_LATER,
-                    MediaCodec.INFO_OUTPUT_FORMAT_CHANGED,
-                    -> Unit
+                    MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+                    MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        val decoded = runCatching {
+                            decodedOutputMetadataFrom(current.codec.outputFormat)
+                        }.getOrElse {
+                            report(FrameResult.Unsupported(request, "OUTPUT_FORMAT_UNSUPPORTED"))
+                            return
+                        }
+                        diagnostics = diagnostics.copy(
+                            outputFormatChangeCount = diagnostics.outputFormatChangeCount + 1,
+                            decodedOutputFormatHistory = diagnostics.decodedOutputFormatHistory
+                                .let { history -> if (history.lastOrNull() == decoded) history else history + decoded },
+                        )
+                        when (val support = classifyDecodedOutput(current.metadata, decoded)) {
+                            VideoSupport.Supported -> renderer.configureFrame(current.metadata, decoded)
+                            is VideoSupport.Unsupported -> {
+                                report(FrameResult.Unsupported(request, support.reason))
+                                return
+                            }
+                        }
+                    }
                     else -> if (outputIndex >= 0) {
                         decodeOrdinal += 1
                         diagnostics = diagnostics.copy(decodeOrdinal = diagnostics.decodeOrdinal + 1)
@@ -393,19 +436,6 @@ class ExactFrameSession(
     private fun classifyAndroidFormat(format: MediaFormat): VideoSupport {
         val mime = format.getString(MediaFormat.KEY_MIME) ?: return VideoSupport.Unsupported("MIME_MISSING")
         val profile = format.intOrNull(MediaFormat.KEY_PROFILE)
-        val avcAllowed = setOf(
-            MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
-            MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline,
-            MediaCodecInfo.CodecProfileLevel.AVCProfileMain,
-            MediaCodecInfo.CodecProfileLevel.AVCProfileExtended,
-            MediaCodecInfo.CodecProfileLevel.AVCProfileHigh,
-            MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedHigh,
-        )
-        val profileSupported = when (mime) {
-            MediaFormat.MIMETYPE_VIDEO_AVC -> profile in avcAllowed
-            MediaFormat.MIMETYPE_VIDEO_HEVC -> profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
-            else -> false
-        }
         val bitDepth = androidVideoBitDepth(mime, profile)
         val transfer = format.intOrNull(MediaFormat.KEY_COLOR_TRANSFER)
         val hdr = transfer == MediaFormat.COLOR_TRANSFER_ST2084 ||
@@ -419,7 +449,7 @@ class ExactFrameSession(
         return classifyVideoFormat(
             VideoFormatDescriptor(
                 mime = mime,
-                profileSupported = profileSupported,
+                profileSupported = isProfileSupported(mime, profile),
                 bitDepth = bitDepth,
                 hdr = hdr,
                 dolbyVision = mime == MediaFormat.MIMETYPE_VIDEO_DOLBY_VISION,
@@ -427,12 +457,25 @@ class ExactFrameSession(
         )
     }
 
+    private fun isProfileSupported(mime: String, profile: Int?): Boolean = when (mime) {
+        MediaFormat.MIMETYPE_VIDEO_AVC -> profile in setOf(
+            MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
+            MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline,
+            MediaCodecInfo.CodecProfileLevel.AVCProfileMain,
+            MediaCodecInfo.CodecProfileLevel.AVCProfileExtended,
+            MediaCodecInfo.CodecProfileLevel.AVCProfileHigh,
+            MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedHigh,
+        )
+        MediaFormat.MIMETYPE_VIDEO_HEVC -> profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
+        else -> false
+    }
+
     private fun metadataFrom(
         format: MediaFormat,
         fileGeneration: Long,
         frameCount: Int,
         codecInfo: MediaCodecInfo,
-    ): VideoMetadata = VideoMetadata(
+    ): ContainerMetadata = ContainerMetadata(
         fileGeneration = fileGeneration,
         mime = format.getString(MediaFormat.KEY_MIME) ?: "video/unknown",
         profile = format.intOrNull(MediaFormat.KEY_PROFILE),
@@ -451,6 +494,48 @@ class ExactFrameSession(
         hardwareAccelerated = codecInfo.isHardwareAccelerated,
     )
 
+    private fun decodedOutputMetadataFrom(format: MediaFormat): DecodedOutputMetadata {
+        val width = format.intOrNull(MediaFormat.KEY_WIDTH) ?: error("OUTPUT_FORMAT_UNSUPPORTED")
+        val height = format.intOrNull(MediaFormat.KEY_HEIGHT) ?: error("OUTPUT_FORMAT_UNSUPPORTED")
+        return DecodedOutputMetadata(
+            width = width,
+            height = height,
+            cropLeft = cropLeft(format),
+            cropTop = cropTop(format),
+            cropRight = cropRight(format),
+            cropBottom = cropBottom(format),
+            colorStandard = format.intOrNull(MediaFormat.KEY_COLOR_STANDARD),
+            colorRange = format.intOrNull(MediaFormat.KEY_COLOR_RANGE),
+            colorTransfer = format.intOrNull(MediaFormat.KEY_COLOR_TRANSFER),
+            mime = format.getString(MediaFormat.KEY_MIME),
+            profile = format.intOrNull(MediaFormat.KEY_PROFILE),
+            colorFormat = format.intOrNull(MediaFormat.KEY_COLOR_FORMAT),
+            hdrStaticInfoPresent = runCatching {
+                format.getByteBuffer(MediaFormat.KEY_HDR_STATIC_INFO)?.hasRemaining() == true
+            }.getOrDefault(false),
+        )
+    }
+
+    private fun classifyDecodedOutput(
+        container: ContainerMetadata,
+        output: DecodedOutputMetadata,
+    ): VideoSupport {
+        val mime = container.mime
+        val profile = if (output.mime == container.mime) output.profile ?: container.profile else container.profile
+        val bitDepth = androidDecodedVideoBitDepth(mime, profile, output.colorFormat)
+        val hdr = androidDecodedOutputIsHdr(output.colorTransfer, output.hdrStaticInfoPresent)
+        return classifyDecodedOutputFormat(
+            output,
+            VideoFormatDescriptor(
+                mime = mime,
+                profileSupported = isProfileSupported(mime, profile),
+                bitDepth = bitDepth,
+                hdr = hdr,
+                dolbyVision = mime == MediaFormat.MIMETYPE_VIDEO_DOLBY_VISION,
+            ),
+        )
+    }
+
     private fun closeResources() {
         currentVideo.set(null)
         resources?.let {
@@ -467,10 +552,16 @@ class ExactFrameSession(
     }
 
     private fun report(result: FrameResult) {
+        val publicationStats = publicationGate.snapshotStats()
         val nextDiagnostics = diagnostics.copy(
             cacheBytes = renderer.cacheByteSize(),
             cacheHitCount = renderer.cacheHits(),
             cacheMissCount = renderer.cacheMisses(),
+            publishedSwapCount = publicationStats.publishedSwapCount,
+            staleBeforeSwapCount = publicationStats.staleBeforeSwapCount,
+            swapFailureCount = publicationStats.swapFailureCount,
+            surfaceInvalidCount = publicationStats.surfaceInvalidCount,
+            publicationInvariantViolationCount = publicationStats.publicationInvariantViolationCount,
         )
         diagnostics = nextDiagnostics
         mainHandler.post { listener.onFrameResult(result, nextDiagnostics) }
@@ -480,7 +571,7 @@ class ExactFrameSession(
         mainHandler.post { listener.onStatus(status, detail) }
     }
 
-    private fun notifyOpened(metadata: VideoMetadata, video: IndexedVideo) {
+    private fun notifyOpened(metadata: ContainerMetadata, video: IndexedVideo) {
         mainHandler.post {
             listener.onVideoIndexed(video)
             listener.onVideoOpened(metadata)
@@ -501,6 +592,7 @@ class ExactFrameSession(
             "MIME_MISSING",
             "ROTATION_UNSUPPORTED",
             "PIXEL_ASPECT_RATIO_UNSUPPORTED",
+            "OUTPUT_FORMAT_UNSUPPORTED",
         )
         return error.message?.takeIf(allowed::contains) ?: "VIDEO_OPEN_FAILED"
     }
@@ -527,6 +619,7 @@ class ExactFrameSession(
             "ROTATION_UNSUPPORTED",
             "PIXEL_ASPECT_RATIO_UNSUPPORTED",
             "HARDWARE_DECODER_REQUIRED",
+            "OUTPUT_FORMAT_UNSUPPORTED",
         )
     }
 }

@@ -5,6 +5,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 class FrameContractsTest {
     @Test
@@ -33,16 +37,74 @@ class FrameContractsTest {
     }
 
     @Test
-    fun `publication gate rejects stale request and file generations`() {
+    fun `publication gate distinguishes stale swap failure and invalid surface`() {
         val gate = PublicationGate()
         val fileA = gate.beginFile()
-        val requestA = gate.beginRequest(fileA.fileGeneration)!!
-        val requestB = gate.beginRequest(fileA.fileGeneration)!!
-        assertFalse(gate.isCurrent(requestA))
-        assertTrue(gate.publishIfCurrent(requestB) { true })
+        val keyA = FrameKey(0, 0, 0)
+        val requestA = gate.acceptRequest(fileA.fileGeneration, 0, keyA)!!.request
+        val requestB = gate.acceptRequest(fileA.fileGeneration, 1, FrameKey(1, 1_000, 0))!!.request
+        assertFalse(gate.isCurrent(requestA.token))
+        var swapCalled = false
+        val stale = gate.publish(requestA, 0, { true }) {
+            swapCalled = true
+            true
+        }
+        assertEquals(PublicationResult.STALE_BEFORE_SWAP, stale.result)
+        assertFalse(swapCalled)
+
+        val swapFailed = gate.publish(requestB, 1_000_000, { true }) { false }
+        assertEquals(PublicationResult.SWAP_FAILED, swapFailed.result)
+        assertTrue(swapFailed.swapAttempted)
+        assertEquals(false, swapFailed.eglSwapBuffersResult)
+
+        val surfaceInvalid = gate.publish(requestB, 1_000_000, { false }) { true }
+        assertEquals(PublicationResult.SURFACE_INVALID, surfaceInvalid.result)
+        assertFalse(surfaceInvalid.swapAttempted)
+        assertNull(surfaceInvalid.eglSwapBuffersResult)
+
+        val published = gate.publish(requestB, 1_000_000, { true }) { true }
+        assertEquals(PublicationResult.PUBLISHED, published.result)
+        assertEquals(0, publicationInvariantViolationCount(listOf(published)))
         gate.beginFile()
-        assertFalse(gate.publishIfCurrent(requestB) { true })
-        assertNull(gate.beginRequest(fileA.fileGeneration))
+        assertEquals(
+            PublicationResult.STALE_BEFORE_SWAP,
+            gate.publish(requestB, 1_000_000, { true }) { true }.result,
+        )
+        assertNull(gate.acceptRequest(fileA.fileGeneration, 0, keyA))
+    }
+
+    @Test
+    fun `request acceptance cannot pass a generation check while prior swap is in flight`() {
+        val gate = PublicationGate()
+        val file = gate.beginFile()
+        val oldRequest = gate.acceptRequest(file.fileGeneration, 0, FrameKey(0, 0, 0))!!.request
+        val swapEntered = CountDownLatch(1)
+        val releaseSwap = CountDownLatch(1)
+        val oldEvent = AtomicReference<PublicationEvent>()
+        val acceptFinished = AtomicBoolean(false)
+
+        val publisher = Thread {
+            oldEvent.set(gate.publish(oldRequest, 0, { true }) {
+                swapEntered.countDown()
+                assertTrue(releaseSwap.await(2, TimeUnit.SECONDS))
+                true
+            })
+        }.apply { start() }
+        assertTrue(swapEntered.await(2, TimeUnit.SECONDS))
+
+        val acceptance = AtomicReference<RequestAcceptance>()
+        val accepter = Thread {
+            acceptance.set(gate.acceptRequest(file.fileGeneration, 1, FrameKey(1, 1_000, 0)))
+            acceptFinished.set(true)
+        }.apply { start() }
+        Thread.sleep(50)
+        assertFalse("new request must wait for the publication linearization lock", acceptFinished.get())
+        releaseSwap.countDown()
+        publisher.join(2_000)
+        accepter.join(2_000)
+
+        assertEquals(PublicationResult.PUBLISHED, oldEvent.get().result)
+        assertTrue(oldEvent.get().eventSequence < acceptance.get().eventSequence)
     }
 
     @Test

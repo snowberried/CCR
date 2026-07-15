@@ -52,6 +52,42 @@ data class FrameRequest(
     val expectedKey: FrameKey,
 )
 
+data class RequestAcceptance(
+    val request: FrameRequest,
+    val eventSequence: Long,
+    val elapsedRealtimeNanos: Long,
+)
+
+enum class PublicationResult {
+    PUBLISHED,
+    STALE_BEFORE_SWAP,
+    SWAP_FAILED,
+    SURFACE_INVALID,
+}
+
+data class PublicationEvent(
+    val eventSequence: Long,
+    val elapsedRealtimeNanos: Long,
+    val fileGeneration: Long,
+    val requestGeneration: Long,
+    val requestedFrameIndex: Int,
+    val expectedKey: FrameKey,
+    val currentFileGeneration: Long,
+    val currentRequestGeneration: Long,
+    val textureTimestampNs: Long,
+    val swapAttempted: Boolean,
+    val eglSwapBuffersResult: Boolean?,
+    val result: PublicationResult,
+)
+
+data class PublicationStats(
+    val publishedSwapCount: Long = 0,
+    val staleBeforeSwapCount: Long = 0,
+    val swapFailureCount: Long = 0,
+    val surfaceInvalidCount: Long = 0,
+    val publicationInvariantViolationCount: Long = 0,
+)
+
 data class FrameImageProbe(
     val embeddedFrameId: Int?,
     val imageSignature: List<Int>,
@@ -83,7 +119,7 @@ sealed interface FrameResult {
     ) : FrameResult
 }
 
-data class VideoMetadata(
+data class ContainerMetadata(
     val fileGeneration: Long,
     val mime: String,
     val profile: Int?,
@@ -102,6 +138,22 @@ data class VideoMetadata(
     val hardwareAccelerated: Boolean,
 )
 
+data class DecodedOutputMetadata(
+    val width: Int,
+    val height: Int,
+    val cropLeft: Int,
+    val cropTop: Int,
+    val cropRight: Int,
+    val cropBottom: Int,
+    val colorStandard: Int?,
+    val colorRange: Int?,
+    val colorTransfer: Int?,
+    val mime: String?,
+    val profile: Int?,
+    val colorFormat: Int?,
+    val hdrStaticInfoPresent: Boolean,
+)
+
 data class DecoderDiagnostics(
     val indexBuildMs: Long = 0,
     val decodeOrdinal: Long = 0,
@@ -110,9 +162,25 @@ data class DecoderDiagnostics(
     val cacheMissCount: Long = 0,
     val cacheBytes: Long = 0,
     val staleDiscardCount: Long = 0,
-    val stalePublishCount: Long = 0,
     val decoderRecreateCount: Long = 0,
+    val configuredOutputMetadata: DecodedOutputMetadata? = null,
+    val decodedOutputFormatHistory: List<DecodedOutputMetadata> = emptyList(),
+    val outputFormatChangeCount: Long = 0,
+    val publishedSwapCount: Long = 0,
+    val staleBeforeSwapCount: Long = 0,
+    val swapFailureCount: Long = 0,
+    val surfaceInvalidCount: Long = 0,
+    val publicationInvariantViolationCount: Long = 0,
 )
+
+fun publicationInvariantViolationCount(events: Iterable<PublicationEvent>): Long = events.count { event ->
+    event.result == PublicationResult.PUBLISHED && (
+        event.fileGeneration != event.currentFileGeneration ||
+            event.requestGeneration != event.currentRequestGeneration ||
+            !event.swapAttempted ||
+            event.eglSwapBuffersResult != true
+        )
+}.toLong()
 
 fun buildFrameIndex(fileGeneration: Long, samples: List<IndexedSample>): IndexedVideo {
     require(samples.isNotEmpty())

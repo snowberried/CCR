@@ -11,9 +11,12 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.snowberried.ctcinereviewer.media.DecoderDiagnostics
+import com.snowberried.ctcinereviewer.media.ContainerMetadata
+import com.snowberried.ctcinereviewer.media.DecodedOutputMetadata
 import com.snowberried.ctcinereviewer.media.FrameResult
 import com.snowberried.ctcinereviewer.media.IndexedVideo
-import com.snowberried.ctcinereviewer.media.VideoMetadata
+import com.snowberried.ctcinereviewer.media.PublicationResult
+import com.snowberried.ctcinereviewer.media.RequestAcceptance
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -28,6 +31,21 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.ceil
+
+private fun decodedOutputJson(metadata: DecodedOutputMetadata): JSONObject = JSONObject()
+    .put("width", metadata.width)
+    .put("height", metadata.height)
+    .put("cropLeft", metadata.cropLeft)
+    .put("cropTop", metadata.cropTop)
+    .put("cropRight", metadata.cropRight)
+    .put("cropBottom", metadata.cropBottom)
+    .put("colorStandard", metadata.colorStandard)
+    .put("colorRange", metadata.colorRange)
+    .put("colorTransfer", metadata.colorTransfer)
+    .put("mime", metadata.mime)
+    .put("profile", metadata.profile)
+    .put("colorFormat", metadata.colorFormat)
+    .put("hdrStaticInfoPresent", metadata.hdrStaticInfoPresent)
 
 @RunWith(AndroidJUnit4::class)
 class S24FrameAccuracyTest {
@@ -93,6 +111,14 @@ class S24FrameAccuracyTest {
                     .put("codec", golden.codec)
                     .put("profile", golden.profile)
                     .put("frameCount", golden.frames.size)
+                    .put(
+                        "configuredOutputMetadata",
+                        lastDiagnostics.configuredOutputMetadata?.let(::decodedOutputJson) ?: JSONObject.NULL,
+                    )
+                    .put(
+                        "decodedOutputFormatHistory",
+                        JSONArray(lastDiagnostics.decodedOutputFormatHistory.map(::decodedOutputJson)),
+                    )
             }
             exerciseNavigation(gate, loadGolden("burst"))
             exerciseBurst(gate, loadGolden("burst"))
@@ -149,7 +175,10 @@ class S24FrameAccuracyTest {
         openAndAwait(activity, golden)
         activity.clearResults()
         val sequence = listOf(1, 6, 12, 24, golden.frames.lastIndex)
-        onMain(activity) { sequence.forEach(activity::requestFrame) }
+        val lastAcceptance = AtomicReference<RequestAcceptance>()
+        onMain(activity) {
+            sequence.forEach { index -> activity.requestFrame(index)?.let(lastAcceptance::set) }
+        }
         var finalPublished = false
         val deadline = SystemClock.elapsedRealtime() + 20_000
         while (SystemClock.elapsedRealtime() < deadline && !finalPublished) {
@@ -166,7 +195,16 @@ class S24FrameAccuracyTest {
             }
         }
         assertTrue("burst final frame was not published", finalPublished)
-        assertEquals("stale frame was published", 0, lastDiagnostics.stalePublishCount)
+        val accepted = requireNotNull(lastAcceptance.get())
+        Thread.sleep(100)
+        val invalidSuccessfulSwap = activity.drainPublicationEvents().any { event ->
+            event.eventSequence > accepted.eventSequence &&
+                event.result == PublicationResult.PUBLISHED &&
+                (event.fileGeneration != accepted.request.token.fileGeneration ||
+                    event.requestGeneration != accepted.request.token.requestGeneration)
+        }
+        assertEquals("old generation swapped after final request acceptance", false, invalidSuccessfulSwap)
+        assertEquals("publication invariant violation", 0L, lastDiagnostics.publicationInvariantViolationCount)
     }
 
     private fun exerciseFileSwitch(activity: GateActivity, first: Golden, second: Golden) {
@@ -264,7 +302,7 @@ class S24FrameAccuracyTest {
         }
     }
 
-    private fun validateMetadata(golden: Golden, actual: VideoMetadata) {
+    private fun validateMetadata(golden: Golden, actual: ContainerMetadata) {
         assertEquals(if (golden.codec == "h264") "video/avc" else "video/hevc", actual.mime)
         assertEquals(golden.codedWidth, actual.codedWidth)
         assertEquals(golden.codedHeight, actual.codedHeight)
@@ -370,7 +408,7 @@ class S24FrameAccuracyTest {
             val power = context.getSystemService(PowerManager::class.java)
             val battery = context.getSystemService(BatteryManager::class.java)
             val json = JSONObject()
-                .put("schemaVersion", 1)
+                .put("schemaVersion", 2)
                 .put("status", status)
                 .put("gate", "Samsung SM-S928* S24 Ultra")
                 .put("device", JSONObject()
@@ -397,7 +435,14 @@ class S24FrameAccuracyTest {
                     .put("cacheBytes", diagnostics.cacheBytes)
                     .put("decodedOutputs", diagnostics.decodeOrdinal)
                     .put("staleDiscard", diagnostics.staleDiscardCount)
-                    .put("stalePublish", diagnostics.stalePublishCount)
+                    .put("publishedSwaps", diagnostics.publishedSwapCount)
+                    .put("staleBeforeSwap", diagnostics.staleBeforeSwapCount)
+                    .put("swapFailures", diagnostics.swapFailureCount)
+                    .put("surfaceInvalid", diagnostics.surfaceInvalidCount)
+                    .put("publicationInvariantViolations", diagnostics.publicationInvariantViolationCount)
+                    .put("outputFormatChanges", diagnostics.outputFormatChangeCount)
+                    .put("configuredOutputMetadata", diagnostics.configuredOutputMetadata?.let(::decodedOutputJson))
+                    .put("decodedOutputFormatHistory", JSONArray(diagnostics.decodedOutputFormatHistory.map(::decodedOutputJson)))
                     .put("recreate", diagnostics.decoderRecreateCount))
                 .put("memory", JSONObject()
                     .put("javaUsedBytes", Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory())

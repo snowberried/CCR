@@ -24,3 +24,18 @@ fun classifyVideoFormat(format: VideoFormatDescriptor): VideoSupport {
     if (format.hdr) return VideoSupport.Unsupported("HDR_UNSUPPORTED")
     return VideoSupport.Supported
 }
+
+fun classifyDecodedOutputFormat(
+    output: DecodedOutputMetadata,
+    format: VideoFormatDescriptor,
+): VideoSupport {
+    if (
+        output.width <= 0 || output.height <= 0 ||
+        output.cropLeft < 0 || output.cropTop < 0 ||
+        output.cropRight !in output.cropLeft until output.width ||
+        output.cropBottom !in output.cropTop until output.height
+    ) {
+        return VideoSupport.Unsupported("OUTPUT_FORMAT_UNSUPPORTED")
+    }
+    return classifyVideoFormat(format)
+}

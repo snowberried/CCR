@@ -52,5 +52,12 @@ if (provenance.schemaVersion !== 1 || provenance.syntheticOnly !== true) fail("p
 if (!String(provenance.ffmpeg).includes("n8.1.2-21-gce3c09c101")) fail("FFmpeg version pin");
 if (!String(provenance.nvencHost).includes("RTX 4080 SUPER")) fail("NVENC provenance");
 const reportFormat = JSON.parse(readFileSync(join(fixtureDir, "s24-report-format.json"), "utf8"));
-if (reportFormat.schemaVersion !== 1 || !String(reportFormat.status).startsWith("Pending")) fail("pending report format");
+if (reportFormat.schemaVersion !== 2 || !String(reportFormat.status).startsWith("Pending")) fail("pending report format");
+for (const field of [
+  "publishedSwaps", "staleBeforeSwap", "swapFailures", "surfaceInvalid",
+  "publicationInvariantViolations", "outputFormatChanges", "configuredOutputMetadata",
+  "decodedOutputFormatHistory",
+]) {
+  if (!(field in reportFormat.decoder)) fail(`pending report decoder field ${field}`);
+}
 console.log(`verified ${required.length} synthetic frame-accuracy fixtures`);

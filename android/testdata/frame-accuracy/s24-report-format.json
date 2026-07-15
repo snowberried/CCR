@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "status": "Pending — device not connected",
   "gate": "Samsung SM-S928* S24 Ultra",
   "device": {
@@ -23,7 +23,14 @@
     "cacheBytes": null,
     "decodedOutputs": null,
     "staleDiscard": null,
-    "stalePublish": null,
+    "publishedSwaps": null,
+    "staleBeforeSwap": null,
+    "swapFailures": null,
+    "surfaceInvalid": null,
+    "publicationInvariantViolations": null,
+    "outputFormatChanges": null,
+    "configuredOutputMetadata": null,
+    "decodedOutputFormatHistory": [],
     "recreate": null
   },
   "memory": {

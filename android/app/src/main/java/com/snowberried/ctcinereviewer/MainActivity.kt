@@ -32,10 +32,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.snowberried.ctcinereviewer.media.DecoderDiagnostics
+import com.snowberried.ctcinereviewer.media.ContainerMetadata
 import com.snowberried.ctcinereviewer.media.ExactFrameSession
 import com.snowberried.ctcinereviewer.media.FrameKey
 import com.snowberried.ctcinereviewer.media.FrameResult
-import com.snowberried.ctcinereviewer.media.VideoMetadata
 import com.snowberried.ctcinereviewer.media.boundedFrameIndex
 
 internal object SpikeBuildContract {
@@ -47,7 +47,7 @@ internal object SpikeBuildContract {
 private data class DiagnosticUiState(
     val status: String = "파일을 여세요",
     val detail: String? = null,
-    val metadata: VideoMetadata? = null,
+    val metadata: ContainerMetadata? = null,
     val frame: FrameKey? = null,
     val diagnostics: DecoderDiagnostics = DecoderDiagnostics(),
     val notice: String? = null,
@@ -82,7 +82,7 @@ class MainActivity : ComponentActivity(), ExactFrameSession.Listener {
         uiState = uiState.copy(status = status, detail = detail)
     }
 
-    override fun onVideoOpened(metadata: VideoMetadata) {
+    override fun onVideoOpened(metadata: ContainerMetadata) {
         uiState = uiState.copy(
             status = "decoding",
             detail = null,
@@ -254,6 +254,8 @@ private fun DiagnosticPanel(state: DiagnosticUiState, modifier: Modifier = Modif
         }
         Text("인덱스: ${diagnostics.indexBuildMs} ms · 디코드 출력: ${diagnostics.decodeOrdinal}")
         Text("캐시: ${diagnostics.cacheHitCount}/${diagnostics.cacheMissCount} · ${diagnostics.cacheBytes} bytes")
-        Text("stale discard/publish: ${diagnostics.staleDiscardCount}/${diagnostics.stalePublishCount} · recreate: ${diagnostics.decoderRecreateCount}")
+        Text("stale discard/before-swap: ${diagnostics.staleDiscardCount}/${diagnostics.staleBeforeSwapCount} · recreate: ${diagnostics.decoderRecreateCount}")
+        Text("swap 성공/실패/invalid: ${diagnostics.publishedSwapCount}/${diagnostics.swapFailureCount}/${diagnostics.surfaceInvalidCount}")
+        Text("publication invariant violation: ${diagnostics.publicationInvariantViolationCount}")
     }
 }

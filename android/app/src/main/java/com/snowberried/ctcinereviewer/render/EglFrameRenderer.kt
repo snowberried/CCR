@@ -13,11 +13,14 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.view.Surface
 import com.snowberried.ctcinereviewer.cache.DirectionalByteCache
+import com.snowberried.ctcinereviewer.media.ContainerMetadata
+import com.snowberried.ctcinereviewer.media.DecodedOutputMetadata
 import com.snowberried.ctcinereviewer.media.FrameImageProbe
 import com.snowberried.ctcinereviewer.media.FrameKey
 import com.snowberried.ctcinereviewer.media.FrameRequest
+import com.snowberried.ctcinereviewer.media.PublicationEvent
 import com.snowberried.ctcinereviewer.media.PublicationGate
-import com.snowberried.ctcinereviewer.media.VideoMetadata
+import com.snowberried.ctcinereviewer.media.PublicationResult
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
@@ -73,6 +76,7 @@ class EglFrameRenderer(
     private var display: EGLDisplay = EGL14.EGL_NO_DISPLAY
     private var context: EGLContext = EGL14.EGL_NO_CONTEXT
     private var eglWindowSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+    private var windowSurface: Surface? = null
     private var config: EGLConfig? = null
     private var surfaceTexture: SurfaceTexture? = null
     private var oesTextureId = 0
@@ -141,20 +145,29 @@ class EglFrameRenderer(
         latch.await(1, TimeUnit.SECONDS)
     }
 
-    fun configureFrame(metadata: VideoMetadata) {
+    fun configureFrame(
+        container: ContainerMetadata,
+        decoded: DecodedOutputMetadata? = null,
+    ) {
         val latch = CountDownLatch(1)
         handler.post {
-            sourceWidth = metadata.codedWidth.coerceAtLeast(1)
-            sourceHeight = metadata.codedHeight.coerceAtLeast(1)
-            canonicalGeometry = CanonicalGeometry.fromInclusiveCrop(
-                cropLeft = metadata.cropLeft,
-                cropTop = metadata.cropTop,
-                cropRight = metadata.cropRight,
-                cropBottom = metadata.cropBottom,
-                pixelAspectRatioWidth = metadata.pixelAspectRatioWidth,
-                pixelAspectRatioHeight = metadata.pixelAspectRatioHeight,
-                rotationDegrees = metadata.rotationDegrees,
+            val nextSourceWidth = (decoded?.width ?: container.codedWidth).coerceAtLeast(1)
+            val nextSourceHeight = (decoded?.height ?: container.codedHeight).coerceAtLeast(1)
+            val nextGeometry = CanonicalGeometry.fromInclusiveCrop(
+                cropLeft = decoded?.cropLeft ?: container.cropLeft,
+                cropTop = decoded?.cropTop ?: container.cropTop,
+                cropRight = decoded?.cropRight ?: container.cropRight,
+                cropBottom = decoded?.cropBottom ?: container.cropBottom,
+                pixelAspectRatioWidth = container.pixelAspectRatioWidth,
+                pixelAspectRatioHeight = container.pixelAspectRatioHeight,
+                rotationDegrees = container.rotationDegrees,
             )
+            if (nextSourceWidth != sourceWidth || nextSourceHeight != sourceHeight || nextGeometry != canonicalGeometry) {
+                if (display != EGL14.EGL_NO_DISPLAY) cache.clear()
+                sourceWidth = nextSourceWidth
+                sourceHeight = nextSourceHeight
+                canonicalGeometry = nextGeometry
+            }
             surfaceTexture?.setDefaultBufferSize(sourceWidth, sourceHeight)
             latch.countDown()
         }
@@ -172,14 +185,10 @@ class EglFrameRenderer(
                 val cached = cache.get(request.expectedKey)
                 if (cached != null) {
                     drawTextureToWindow(cached)
-                    val published = publicationGate.publishIfCurrent(request.token) {
-                        EGL14.eglSwapBuffers(display, eglWindowSurface)
-                    }
+                    val event = publish(request, cached.timestampNs)
                     result.set(
-                        RenderAck(
-                            if (published) AckStatus.PUBLISHED else AckStatus.STALE,
-                            cached.timestampNs,
-                            if (published) null else "CACHE_PUBLISH_STALE",
+                        renderAckFor(
+                            event,
                             cacheHit = true,
                             imageProbe = cached.imageProbe,
                         ),
@@ -258,6 +267,7 @@ class EglFrameRenderer(
             0,
         )
         check(eglWindowSurface != EGL14.EGL_NO_SURFACE)
+        windowSurface = surface
         check(EGL14.eglMakeCurrent(display, eglWindowSurface, eglWindowSurface, context))
 
         windowWidth = width.coerceAtLeast(1)
@@ -319,16 +329,52 @@ class EglFrameRenderer(
         }
         cache.put(handle.request.expectedKey, cached, cached.width.toLong() * cached.height.toLong() * 4L)
         drawTextureToWindow(cached)
-        val published = publicationGate.publishIfCurrent(handle.request.token) {
-            EGL14.eglSwapBuffers(display, eglWindowSurface)
-        }
-        handle.complete(
-            RenderAck(
-                if (published) AckStatus.PUBLISHED else AckStatus.STALE,
-                timestampNs,
-                if (published) null else "SWAP_GENERATION_STALE",
-                imageProbe = cached.imageProbe,
-            ),
+        handle.complete(renderAckFor(publish(handle.request, timestampNs), imageProbe = cached.imageProbe))
+    }
+
+    private fun publish(request: FrameRequest, textureTimestampNs: Long): PublicationEvent =
+        publicationGate.publish(
+            request = request,
+            textureTimestampNs = textureTimestampNs,
+            surfaceValid = {
+                display != EGL14.EGL_NO_DISPLAY &&
+                    eglWindowSurface != EGL14.EGL_NO_SURFACE &&
+                    windowSurface?.isValid == true
+            },
+            swap = { EGL14.eglSwapBuffers(display, eglWindowSurface) },
+        )
+
+    private fun renderAckFor(
+        event: PublicationEvent,
+        cacheHit: Boolean = false,
+        imageProbe: FrameImageProbe? = null,
+    ): RenderAck = when (event.result) {
+        PublicationResult.PUBLISHED -> RenderAck(
+            AckStatus.PUBLISHED,
+            event.textureTimestampNs,
+            cacheHit = cacheHit,
+            imageProbe = imageProbe,
+        )
+        PublicationResult.STALE_BEFORE_SWAP -> RenderAck(
+            AckStatus.STALE,
+            event.textureTimestampNs,
+            "STALE_BEFORE_SWAP",
+            cacheHit = cacheHit,
+            imageProbe = imageProbe,
+        )
+        PublicationResult.SWAP_FAILED -> RenderAck(
+            AckStatus.ERROR,
+            event.textureTimestampNs,
+            "EGL_SWAP_FAILED",
+            cacheHit = cacheHit,
+            imageProbe = imageProbe,
+        )
+        PublicationResult.SURFACE_INVALID -> RenderAck(
+            AckStatus.ERROR,
+            event.textureTimestampNs,
+            "SURFACE_INVALID",
+            cacheHit = cacheHit,
+            imageProbe = imageProbe,
         )
     }
 
@@ -513,6 +559,7 @@ class EglFrameRenderer(
         display = EGL14.EGL_NO_DISPLAY
         context = EGL14.EGL_NO_CONTEXT
         eglWindowSurface = EGL14.EGL_NO_SURFACE
+        windowSurface = null
         config = null
         oesTextureId = 0
         oesProgram = 0

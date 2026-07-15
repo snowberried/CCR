@@ -6,10 +6,12 @@ import android.os.Bundle
 import android.view.SurfaceHolder
 import android.widget.FrameLayout
 import com.snowberried.ctcinereviewer.media.DecoderDiagnostics
+import com.snowberried.ctcinereviewer.media.ContainerMetadata
 import com.snowberried.ctcinereviewer.media.ExactFrameSession
 import com.snowberried.ctcinereviewer.media.FrameResult
 import com.snowberried.ctcinereviewer.media.IndexedVideo
-import com.snowberried.ctcinereviewer.media.VideoMetadata
+import com.snowberried.ctcinereviewer.media.PublicationEvent
+import com.snowberried.ctcinereviewer.media.RequestAcceptance
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -19,10 +21,11 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
 
     private lateinit var session: ExactFrameSession
     private val surfaceReady = CountDownLatch(1)
-    private val metadata = LinkedBlockingQueue<VideoMetadata>()
+    private val metadata = LinkedBlockingQueue<ContainerMetadata>()
     private val indexes = LinkedBlockingQueue<IndexedVideo>()
     private val results = LinkedBlockingQueue<ObservedResult>()
     private val statuses = LinkedBlockingQueue<Pair<String, String?>>()
+    private val publicationEvents = LinkedBlockingQueue<PublicationEvent>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,20 +49,24 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
         session.open(uri)
     }
 
-    fun requestFrame(index: Int) = session.requestFrame(index)
+    fun requestFrame(index: Int): RequestAcceptance? = session.requestFrame(index)
     fun cancel() = session.cancel()
-    fun clearResults() = results.clear()
-    fun awaitMetadata(timeoutSeconds: Long = 10): VideoMetadata? = metadata.poll(timeoutSeconds, TimeUnit.SECONDS)
+    fun clearResults() {
+        results.clear()
+        publicationEvents.clear()
+    }
+    fun awaitMetadata(timeoutSeconds: Long = 10): ContainerMetadata? = metadata.poll(timeoutSeconds, TimeUnit.SECONDS)
     fun awaitIndex(timeoutSeconds: Long = 10): IndexedVideo? = indexes.poll(timeoutSeconds, TimeUnit.SECONDS)
     fun awaitResult(timeoutSeconds: Long = 20): ObservedResult? = results.poll(timeoutSeconds, TimeUnit.SECONDS)
     fun drainResults(): List<ObservedResult> = buildList { results.drainTo(this) }
     fun drainStatuses(): List<Pair<String, String?>> = buildList { statuses.drainTo(this) }
+    fun drainPublicationEvents(): List<PublicationEvent> = buildList { publicationEvents.drainTo(this) }
 
     override fun onStatus(status: String, detail: String?) {
         statuses += status to detail
     }
 
-    override fun onVideoOpened(metadata: VideoMetadata) {
+    override fun onVideoOpened(metadata: ContainerMetadata) {
         this.metadata += metadata
     }
 
@@ -69,6 +76,10 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
 
     override fun onFrameResult(result: FrameResult, diagnostics: DecoderDiagnostics) {
         results += ObservedResult(result, diagnostics)
+    }
+
+    override fun onPublicationEvent(event: PublicationEvent) {
+        publicationEvents += event
     }
 
     override fun onDestroy() {
