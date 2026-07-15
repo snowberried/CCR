@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "status": "PASS",
+  "baseline": {
+    "tag": "android-v0.1.0-gate3-pass",
+    "commit": "61e85dcec314b1ec94faf554262db8586abdef51"
+  },
+  "device": {
+    "manufacturer": "samsung",
+    "model": "SM-S928N",
+    "androidSdk": 36,
+    "build": "BP4A.251205.006.S928NKSS6DZF3",
+    "securityPatch": "2026-06-05",
+    "displayWidth": 1440,
+    "displayHeight": 3120,
+    "refreshRate": 120.00001
+  },
+  "codecComponents": [
+    "c2.qti.avc.decoder",
+    "c2.qti.hevc.decoder"
+  ],
+  "gate": {
+    "fixtureCount": 16,
+    "instrumentationTests": 1,
+    "frameIdentityMismatch": 0,
+    "publicationInvariantViolation": 0,
+    "writeOpenCount": 0,
+    "softwareDecoderFallback": 0,
+    "decoderRecreateCount": 0
+  },
+  "artifacts": {
+    "appApkSha256": "a07b46817d1b52934d2b1d5d63245b61f6738a2cb632ba5357de2cedebd401eb",
+    "testApkSha256": "1e2ded93b98ecca388afb75e7cdcaf7e97023d79d352b50f44f4ad0a0adf8f6e",
+    "localSourceReportSha256": "04cfe47587106ea3d51b754379d6d1fbcee95cd1848be15c16ddbfddaa2a6bbd"
+  },
+  "performanceSnapshotOnly": {
+    "gateApplied": false,
+    "latencyCount": 235,
+    "latencyP50Ms": 50.244687,
+    "latencyP95Ms": 182.540937,
+    "latencyMaxMs": 283.309375,
+    "javaUsedBytes": 21672320,
+    "nativeHeapBytes": 15108752,
+    "pssKb": 192143,
+    "thermalStatus": 0,
+    "batteryPercent": 100
+  },
+  "fixtureSha256": {
+    "h264-ip.mp4": "e84c39f433dbed61bfa3e5c96eff5eb74ffe86c53edc2d055166ce3884c44532",
+    "h264-bframes.mp4": "d9846a89dfef2d41350f16c71ece7627c38eccdddd0f737b5daca75e7929f49b",
+    "vfr.mp4": "484319c1bd4a541281f36718bc95603f1ea813569d2a1266208303a961a15c89",
+    "long-gop.mp4": "5a01ab30e92bbac508444d35338c14c147abf8cb711473ec4a4f80b70aa7b02e",
+    "nonzero-pts.mp4": "d35a9cccb82c918e8b5dfe7af1b921744cfd71cef40c8e30d87e2f047a6239bc",
+    "one-frame.mp4": "bb41e94f085dde4f15b332a3688337b257c2e88c26bba58514ad907f434236d7",
+    "two-frame.mp4": "46119eb353f0744b2f67b92712b5ed6b9f8527aca97cb6f7c0c5fd295811f039",
+    "short-last-gop.mp4": "78c32ed500b3011261bc1b8eabf2483e69ff6120e86650b6e4fce093b41576cf",
+    "rotation-90.mp4": "2e858e42fb4e25f05d9747000f4fb282c4b65d9540cc7112c69ce96e0bb67438",
+    "rotation-180.mp4": "4a700620f84f752f222fe27eeef8dc15c22d95bd668eef94d1e72d56b3ae88b1",
+    "rotation-270.mp4": "5e7b76c6c6a6066580d72a94f41dbe3c50d87d94b9c1384c8c63faa1becec77a",
+    "hevc-main8.mp4": "2210b6b2f3a31f6970df27b898075f97fce4e5d30d9c1efa21e292ef9fab564c",
+    "burst.mp4": "da1377a4940d03f298f9ce9c3089ef4bebb77be887dad8f0dd9992dfea24275b",
+    "switch-a.mp4": "1e04f98d3739f919c5b448e1bd5f674cd1f8c1abc1890727075490ff7562d172",
+    "switch-b.mp4": "6f2e2d935ddbc1e3e961b394df527f9aae4e5dabb60acb7632aa8a2f2d4c0396",
+    "par-8-9.mp4": "7ce1506fe28cdb60af3fbe191153b2b5bd431761c02b732382a5388a71e34aa8"
+  }
+}
