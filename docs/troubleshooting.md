@@ -273,3 +273,33 @@ Electron 43.1.0 npm 패키지에는 자동 `postinstall` 스크립트가 없다.
 - `src/App.tsx`
 - `tests/yuvCachePolicy.test.ts`
 - `tests/yuvCacheSession.test.ts`
+
+## 2026-07-15 GitHub Release 사전 검사에서 `release not found`가 실패로 처리됨
+
+상태: 수정 완료, GitHub Actions 재검증 대기
+
+### 증상
+
+- v0.5.8 버전 커밋을 `main`에 푸시한 뒤 version detection은 성공했지만 Windows `Validate release target` 단계에서 중단됐다.
+- 생성 대상인 `v0.5.8` 태그와 공개 Release는 아직 없었다.
+
+### 원인
+
+- Windows PowerShell 5 환경에서 `gh release view`가 출력한 정상적인 `release not found` stderr가 `NativeCommandError`로 승격됐다.
+- 스크립트가 의도한 `$LASTEXITCODE` 검사에 도달하기 전에 GitHub Actions 단계가 실패했다.
+
+### 해결 절차
+
+- Release 존재 확인을 실행하는 동안에만 PowerShell의 오류 출력을 억제하고 종료 코드를 별도로 보관한다.
+- 워크플로 실패로 태그와 Release가 모두 없는 경우, 현재 `package.json` 버전과 정확히 일치하는 수동 입력으로 같은 커밋을 재검증·배포할 수 있게 한다.
+- 입력 버전 불일치나 기존 태그·Release가 있으면 기존과 같이 배포 전에 실패한다.
+
+### 검증 방법
+
+- 일반 `main` push에서 버전이 같으면 Windows job을 건너뛰는지 확인한다.
+- `workflow_dispatch`에 `0.5.8`을 입력해 전체 테스트·패키징 후 `v0.5.8` Latest Release와 네 자산이 공개되는지 확인한다.
+
+### 관련 변경
+
+- `.github/workflows/release-windows.yml`
+- `docs/23_GITHUB_RELEASE_AUTOMATION.md`

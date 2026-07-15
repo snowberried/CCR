@@ -6,7 +6,7 @@ CT Cine Reviewer의 버전을 올린 커밋이 `main`에 푸시되면 검증된 
 
 ## 배포 조건
 
-워크플로 `.github/workflows/release-windows.yml`은 `main` push로 실행된다. 먼저 가벼운 version detection job이 현재 push 직전의 `package.json`과 새 커밋을 비교한다. 버전이 같으면 Windows job과 배포를 건너뛴다. 버전이 바뀌었다면 공개 배포 전에 다음 조건을 모두 검사한다.
+워크플로 `.github/workflows/release-windows.yml`은 `main` push로 실행된다. 먼저 가벼운 version detection job이 현재 push 직전의 `package.json`과 새 커밋을 비교한다. 버전이 같으면 Windows job과 배포를 건너뛴다. 버전이 바뀌었다면 공개 배포 전에 다음 조건을 모두 검사한다. 실패로 태그와 Release가 모두 생성되지 않은 경우에만 Actions의 `Run workflow`에서 현재 `package.json` 버전을 입력해 같은 커밋을 다시 검증·배포할 수 있다.
 
 1. 새 버전과 이전 버전이 모두 정확한 `숫자.숫자.숫자` 형식이다.
 2. 새 버전이 이전 `main` 버전보다 크다.
@@ -41,6 +41,8 @@ git push origin main
 ```
 
 워크플로가 `v0.5.7` 태그와 Latest Release를 자동 생성하고 설치 파일·체크섬·blockmap·`latest.yml`을 게시한다. 버전 변경이 없는 일반 `main` push에서는 version detection job만 성공하고 Windows 패키징과 Release는 실행하지 않는다.
+
+워크플로 자체의 일시적 오류를 고친 뒤 같은 버전의 누락된 Release를 복구할 때는 GitHub Actions에서 `CCR Windows Release`의 `Run workflow`를 열고 현재 버전만 입력한다. 입력 버전이 `package.json`과 다르거나 같은 태그·Release가 이미 있으면 배포 전에 실패하므로 기존 공개 자산을 덮어쓰지 않는다.
 
 ## 제한
 

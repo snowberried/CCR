@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Retry a missing release for the package.json version
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -44,12 +50,24 @@ jobs:
           const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
           const currentVersion = String(packageJson.version ?? "");
           const lockRootVersion = String(packageLock.packages?.[""]?.version ?? "");
+          const requestedVersion = String(process.env.REQUESTED_VERSION ?? "").trim();
+          const output = (name, value) => appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
 
           if (!versionPattern.test(currentVersion)) {
             throw new Error(`package.json version must match X.Y.Z: ${currentVersion}`);
           }
           if (String(packageLock.version ?? "") !== currentVersion || lockRootVersion !== currentVersion) {
             throw new Error(`package-lock.json version must match package.json version ${currentVersion}`);
+          }
+
+          if (requestedVersion) {
+            if (!versionPattern.test(requestedVersion) || requestedVersion !== currentVersion) {
+              throw new Error(`Requested version must match package.json version ${currentVersion}: ${requestedVersion}`);
+            }
+            output("changed", "true");
+            output("version", currentVersion);
+            output("tag", `v${currentVersion}`);
+            process.exit(0);
           }
 
           const before = process.env.BEFORE_SHA ?? "";
@@ -62,7 +80,6 @@ jobs:
             { encoding: "utf8" },
           ));
           const previousVersion = String(previousPackage.version ?? "");
-          const output = (name, value) => appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
 
           if (previousVersion === currentVersion) {
             output("changed", "false");
@@ -86,6 +103,7 @@ jobs:
           NODE
         env:
           BEFORE_SHA: ${{ github.event.before }}
+          REQUESTED_VERSION: ${{ inputs.version }}
 
   release-windows:
     needs: detect-version
@@ -115,8 +133,12 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             throw "Release tag already exists: $env:RELEASE_TAG"
           }
+          $originalErrorActionPreference = $ErrorActionPreference
+          $ErrorActionPreference = "SilentlyContinue"
           gh release view $env:RELEASE_TAG *> $null
-          if ($LASTEXITCODE -eq 0) {
+          $releaseExitCode = $LASTEXITCODE
+          $ErrorActionPreference = $originalErrorActionPreference
+          if ($releaseExitCode -eq 0) {
             throw "GitHub Release already exists: $env:RELEASE_TAG"
           }
         env:
