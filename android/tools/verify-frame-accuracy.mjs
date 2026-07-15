@@ -56,7 +56,7 @@ if (reportFormat.schemaVersion !== 2 || !String(reportFormat.status).startsWith(
 for (const field of [
   "publishedSwaps", "staleBeforeSwap", "swapFailures", "surfaceInvalid",
   "publicationInvariantViolations", "outputFormatChanges", "configuredOutputMetadata",
-  "decodedOutputFormatHistory",
+  "decodedOutputFormatHistory", "fullFrameReadbacks",
 ]) {
   if (!(field in reportFormat.decoder)) fail(`pending report decoder field ${field}`);
 }

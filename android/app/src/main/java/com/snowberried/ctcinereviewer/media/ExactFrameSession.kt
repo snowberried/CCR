@@ -13,6 +13,7 @@ import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.view.Surface
 import com.snowberried.ctcinereviewer.render.EglFrameRenderer
+import com.snowberried.ctcinereviewer.render.FrameRenderMode
 import com.snowberried.ctcinereviewer.render.VideoViewport
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -42,6 +43,7 @@ internal fun androidDecodedOutputIsHdr(colorTransfer: Int?, hdrStaticInfoPresent
 class ExactFrameSession(
     context: Context,
     private val listener: Listener,
+    renderMode: FrameRenderMode = FrameRenderMode.PILOT,
 ) : AutoCloseable {
     interface Listener {
         fun onStatus(status: String, detail: String? = null)
@@ -76,9 +78,9 @@ class ExactFrameSession(
     private val surfaceChanged = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val requestMessageToken = Any()
-    private val renderer = EglFrameRenderer(publicationGate) {
+    private val renderer = EglFrameRenderer(publicationGate, {
         surfaceChanged.set(true)
-    }
+    }, renderMode)
 
     private var resources: DecoderResources? = null
     private var diagnostics = DecoderDiagnostics()
@@ -256,18 +258,13 @@ class ExactFrameSession(
             when (cached.status) {
                 EglFrameRenderer.AckStatus.PUBLISHED -> {
                     diagnostics = diagnostics.copy(cacheHitCount = diagnostics.cacheHitCount + 1)
-                    val imageProbe = cached.imageProbe
                     report(
-                        if (imageProbe != null) {
-                            FrameResult.Published(
-                                request,
-                                cached.textureTimestampNs,
-                                cacheHit = true,
-                                imageProbe = imageProbe,
-                            )
-                        } else {
-                            FrameResult.Error(request, "IMAGE_PROBE_MISSING")
-                        },
+                        FrameResult.Published(
+                            request,
+                            cached.textureTimestampNs,
+                            cacheHit = true,
+                            imageProbe = cached.imageProbe,
+                        ),
                     )
                 }
                 EglFrameRenderer.AckStatus.STALE -> report(FrameResult.DiscardedStale(request, cached.code ?: "cache"))
@@ -365,18 +362,13 @@ class ExactFrameSession(
                             val ack = handle.await(3_000)
                             when (ack.status) {
                                 EglFrameRenderer.AckStatus.PUBLISHED -> {
-                                    val imageProbe = ack.imageProbe
                                     report(
-                                        if (imageProbe != null) {
-                                            FrameResult.Published(
-                                                request,
-                                                ack.textureTimestampNs,
-                                                cacheHit = false,
-                                                imageProbe = imageProbe,
-                                            )
-                                        } else {
-                                            FrameResult.Error(request, "IMAGE_PROBE_MISSING")
-                                        },
+                                        FrameResult.Published(
+                                            request,
+                                            ack.textureTimestampNs,
+                                            cacheHit = false,
+                                            imageProbe = ack.imageProbe,
+                                        ),
                                     )
                                 }
                                 EglFrameRenderer.AckStatus.STALE -> {
@@ -562,6 +554,7 @@ class ExactFrameSession(
             swapFailureCount = publicationStats.swapFailureCount,
             surfaceInvalidCount = publicationStats.surfaceInvalidCount,
             publicationInvariantViolationCount = publicationStats.publicationInvariantViolationCount,
+            fullFrameReadbackCount = renderer.fullFrameReadbacks(),
         )
         diagnostics = nextDiagnostics
         mainHandler.post { listener.onFrameResult(result, nextDiagnostics) }

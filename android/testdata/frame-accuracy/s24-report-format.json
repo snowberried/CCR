@@ -28,6 +28,7 @@
     "swapFailures": null,
     "surfaceInvalid": null,
     "publicationInvariantViolations": null,
+    "fullFrameReadbacks": null,
     "outputFormatChanges": null,
     "configuredOutputMetadata": null,
     "decodedOutputFormatHistory": [],

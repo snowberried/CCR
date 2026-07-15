@@ -83,7 +83,9 @@
 - 표시 결과는 FrameKey·texture timestamp·finder/CRC ID가 exact 일치해야 한다. 16×16 signature 허용치는 MAE 6, p99 16, max 40이다.
 - 실제 연결 장치의 manufacturer가 Samsung이고 model이 `SM-S928*`일 때만 test를 실행한다.
 - report schema는 `s24-report-format.json`, 실행 진입점은 `android/scripts/run-s24-gate.ps1`이다.
-- 보고서는 app/fixture SHA, device/build/security patch/display, hardware codec component, latency p50/p95/max, cache/redecode/stale/recreate, Java/native/PSS, thermal과 battery를 기록한다. 성능 합격선은 적용하지 않는다.
+- 보고서는 app/fixture SHA, device/build/security patch/display, hardware codec component, latency p50/p95/max, cache/redecode/publication/recreate, Java/native/PSS, thermal과 battery를 기록한다. 성능 합격선은 적용하지 않는다.
+- Gate 3의 `Exactness` 모드는 embedded ID/signature 검증을 위해 cache miss마다 full-frame `glReadPixels`를 수행한다. 따라서 아래 latency는 정확성 검증 경로의 측정값이며 `Pilot` 제품 표시 성능이나 성능 합격선으로 사용하지 않는다.
+- `Pilot` 모드는 같은 decode, canonical GL texture, byte cache와 swap 경로를 사용하지만 full-frame CPU RGBA readback과 `FrameImageProbe` 생성을 하지 않는다.
 - Samsung `SM-S928N` 실기기에서 gate를 실행했고 `PASS` 보고서를 회수했다. 실행 스크립트는 앱과 test APK를 직접 설치해 package 제거 전에 보고서를 복사하며 test APK만 제거한다.
 
 ## Gate 3 로컬·실기기 검증 기록
@@ -99,7 +101,7 @@
 - S24: Samsung `SM-S928N`, Android 16/API 36, build `BP4A.251205.006.S928NKSS6DZF3`, security patch `2026-06-05`, 1440×3120 @ 120 Hz
 - hardware codec: `c2.qti.avc.decoder`, `c2.qti.hevc.decoder`; software fallback 없음
 - instrumentation: 1/1 통과, fixture 16/16, frame/key/embedded ID/signature mismatch 0, stale publish 0, write open 0, decoder recreate 0
-- 측정 latency 235건: p50 `50.244687 ms`, p95 `182.540937 ms`, max `283.309375 ms`; 성능 합격선은 적용하지 않음
+- 측정 latency 235건: p50 `50.244687 ms`, p95 `182.540937 ms`, max `283.309375 ms`; full-frame readback이 포함된 Exactness 측정이며 Pilot 제품 성능값이나 합격선이 아님
 - memory snapshot: Java used `21,672,320 bytes`, native heap `15,108,752 bytes`, PSS `192,143 KiB`; thermal status 0, battery 100%
 - 보고서: `android/reports/s24-frame-accuracy-report.json`, SHA-256 `04cfe47587106ea3d51b754379d6d1fbcee95cd1848be15c16ddbfddaa2a6bbd`
 

@@ -31,6 +31,7 @@ import kotlin.math.min
 class EglFrameRenderer(
     private val publicationGate: PublicationGate,
     private val onDecoderSurfaceChanged: () -> Unit,
+    renderMode: FrameRenderMode,
 ) : AutoCloseable {
     enum class AckStatus { PUBLISHED, STALE, ERROR }
 
@@ -63,7 +64,7 @@ class EglFrameRenderer(
         val width: Int,
         val height: Int,
         val timestampNs: Long,
-        val imageProbe: FrameImageProbe,
+        val imageProbe: FrameImageProbe?,
     )
 
     private val thread = HandlerThread("ccr-egl-render").apply { start() }
@@ -91,6 +92,7 @@ class EglFrameRenderer(
     private var canonicalGeometry = CanonicalGeometry(1, 1, 1, 1, 0)
     private var fileGeneration = 0L
     private var pendingTarget: TargetHandle? = null
+    private val probePolicy = FrameProbePolicy(renderMode)
 
     private val byteBudget = min(128L * 1024L * 1024L, Runtime.getRuntime().maxMemory() / 4L)
     private val cache = DirectionalByteCache<FrameKey, CachedTexture>(
@@ -137,6 +139,7 @@ class EglFrameRenderer(
         val latch = CountDownLatch(1)
         handler.post {
             fileGeneration = nextFileGeneration
+            probePolicy.reset()
             pendingTarget?.complete(RenderAck(AckStatus.STALE, 0, "FILE_CHANGED"))
             pendingTarget = null
             if (display != EGL14.EGL_NO_DISPLAY) cache.clear()
@@ -219,6 +222,7 @@ class EglFrameRenderer(
     fun cacheByteSize(): Long = cache.byteSize
     fun cacheHits(): Long = cache.hitCount
     fun cacheMisses(): Long = cache.missCount
+    fun fullFrameReadbacks(): Long = probePolicy.readbackCount()
 
     override fun close() {
         if (closed) return
@@ -420,6 +424,13 @@ class EglFrameRenderer(
         GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         draw(oesProgram, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId, textureMatrix, 1f, 1f, rotationDegrees)
+        val imageProbe = probePolicy.capture { readbackProbe(outputWidth, outputHeight) }
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glDeleteFramebuffers(1, framebuffers, 0)
+        return CachedTexture(textureId, outputWidth, outputHeight, timestampNs, imageProbe)
+    }
+
+    private fun readbackProbe(outputWidth: Int, outputHeight: Int): FrameImageProbe {
         val rgba = ByteBuffer.allocateDirect(outputWidth * outputHeight * 4)
         GLES30.glReadPixels(
             0,
@@ -433,10 +444,7 @@ class EglFrameRenderer(
         rgba.rewind()
         val bytes = ByteArray(rgba.remaining())
         rgba.get(bytes)
-        val imageProbe = FrameProbe.fromRgbaBottomUp(bytes, outputWidth, outputHeight, canonicalGeometry)
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-        GLES30.glDeleteFramebuffers(1, framebuffers, 0)
-        return CachedTexture(textureId, outputWidth, outputHeight, timestampNs, imageProbe)
+        return FrameProbe.fromRgbaBottomUp(bytes, outputWidth, outputHeight, canonicalGeometry)
     }
 
     private fun drawTextureToWindow(texture: CachedTexture) {

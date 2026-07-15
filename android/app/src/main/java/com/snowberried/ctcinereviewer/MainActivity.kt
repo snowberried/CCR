@@ -257,5 +257,6 @@ private fun DiagnosticPanel(state: DiagnosticUiState, modifier: Modifier = Modif
         Text("stale discard/before-swap: ${diagnostics.staleDiscardCount}/${diagnostics.staleBeforeSwapCount} · recreate: ${diagnostics.decoderRecreateCount}")
         Text("swap 성공/실패/invalid: ${diagnostics.publishedSwapCount}/${diagnostics.swapFailureCount}/${diagnostics.surfaceInvalidCount}")
         Text("publication invariant violation: ${diagnostics.publicationInvariantViolationCount}")
+        Text("full-frame readback: ${diagnostics.fullFrameReadbackCount}")
     }
 }

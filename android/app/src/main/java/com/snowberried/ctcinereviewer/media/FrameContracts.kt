@@ -100,7 +100,7 @@ sealed interface FrameResult {
         override val request: FrameRequest,
         val textureTimestampNs: Long,
         val cacheHit: Boolean,
-        val imageProbe: FrameImageProbe,
+        val imageProbe: FrameImageProbe?,
     ) : FrameResult
 
     data class DiscardedStale(
@@ -171,6 +171,7 @@ data class DecoderDiagnostics(
     val swapFailureCount: Long = 0,
     val surfaceInvalidCount: Long = 0,
     val publicationInvariantViolationCount: Long = 0,
+    val fullFrameReadbackCount: Long = 0,
 )
 
 fun publicationInvariantViolationCount(events: Iterable<PublicationEvent>): Long = events.count { event ->

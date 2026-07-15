@@ -274,8 +274,9 @@ class S24FrameAccuracyTest {
         mismatchCount += if (actual.request.expectedKey.ptsUs != expected.ptsUs) 1 else 0
         mismatchCount += if (actual.request.expectedKey.duplicateOrdinal != expected.duplicateOrdinal) 1 else 0
         mismatchCount += if (actual.textureTimestampNs != expected.ptsUs * 1_000L) 1 else 0
-        mismatchCount += if (actual.imageProbe.embeddedFrameId != expected.embeddedFrameId) 1 else 0
-        val errors = actual.imageProbe.imageSignature.zip(expected.imageSignature) { left, right -> kotlin.math.abs(left - right) }.sorted()
+        val imageProbe = requireNotNull(actual.imageProbe) { "${golden.fixture}: exactness probe missing" }
+        mismatchCount += if (imageProbe.embeddedFrameId != expected.embeddedFrameId) 1 else 0
+        val errors = imageProbe.imageSignature.zip(expected.imageSignature) { left, right -> kotlin.math.abs(left - right) }.sorted()
         val mean = errors.average()
         val p99 = errors[(ceil(errors.size * 0.99).toInt() - 1).coerceAtLeast(0)]
         val maximum = errors.last()
@@ -284,7 +285,7 @@ class S24FrameAccuracyTest {
         assertEquals("${golden.fixture}: FrameKey PTS", expected.ptsUs, actual.request.expectedKey.ptsUs)
         assertEquals("${golden.fixture}: duplicate ordinal", expected.duplicateOrdinal, actual.request.expectedKey.duplicateOrdinal)
         assertEquals("${golden.fixture}: texture timestamp", expected.ptsUs * 1_000L, actual.textureTimestampNs)
-        assertEquals("${golden.fixture}: embedded ID", expected.embeddedFrameId, actual.imageProbe.embeddedFrameId)
+        assertEquals("${golden.fixture}: embedded ID", expected.embeddedFrameId, imageProbe.embeddedFrameId)
         assertTrue("${golden.fixture}: signature MAE $mean", mean <= 6.0)
         assertTrue("${golden.fixture}: signature p99 $p99", p99 <= 16)
         assertTrue("${golden.fixture}: signature max $maximum", maximum <= 40)
@@ -440,6 +441,7 @@ class S24FrameAccuracyTest {
                     .put("swapFailures", diagnostics.swapFailureCount)
                     .put("surfaceInvalid", diagnostics.surfaceInvalidCount)
                     .put("publicationInvariantViolations", diagnostics.publicationInvariantViolationCount)
+                    .put("fullFrameReadbacks", diagnostics.fullFrameReadbackCount)
                     .put("outputFormatChanges", diagnostics.outputFormatChangeCount)
                     .put("configuredOutputMetadata", diagnostics.configuredOutputMetadata?.let(::decodedOutputJson))
                     .put("decodedOutputFormatHistory", JSONArray(diagnostics.decodedOutputFormatHistory.map(::decodedOutputJson)))

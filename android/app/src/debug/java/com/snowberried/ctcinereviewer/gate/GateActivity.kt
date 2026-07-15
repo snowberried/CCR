@@ -12,6 +12,7 @@ import com.snowberried.ctcinereviewer.media.FrameResult
 import com.snowberried.ctcinereviewer.media.IndexedVideo
 import com.snowberried.ctcinereviewer.media.PublicationEvent
 import com.snowberried.ctcinereviewer.media.RequestAcceptance
+import com.snowberried.ctcinereviewer.render.FrameRenderMode
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -29,7 +30,12 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        session = ExactFrameSession(this, this)
+        val renderMode = if (intent.getBooleanExtra(EXTRA_PILOT_MODE, false)) {
+            FrameRenderMode.PILOT
+        } else {
+            FrameRenderMode.EXACTNESS
+        }
+        session = ExactFrameSession(this, this, renderMode)
         val viewport = session.createViewport(this)
         viewport.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) = surfaceReady.countDown()
@@ -85,5 +91,9 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
     override fun onDestroy() {
         session.close()
         super.onDestroy()
+    }
+
+    companion object {
+        const val EXTRA_PILOT_MODE = "pilot-mode"
     }
 }
