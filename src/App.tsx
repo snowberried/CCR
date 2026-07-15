@@ -491,6 +491,7 @@ export function App() {
       document.documentElement.dataset.qaRgbaDisplayProcesses = "0";
       document.documentElement.dataset.qaBackgroundComplete = "false";
       document.documentElement.dataset.qaSeekDecodeCount = "0";
+      document.documentElement.dataset.qaPrefetchDecodeCount = "0";
     }
   }, [hideCrosshairs, setActivePane]);
 
@@ -1555,6 +1556,7 @@ export function App() {
     if (!window.ccr?.openQaVideo) return;
     document.documentElement.dataset.qaBackgroundComplete = String(cacheStatus?.backgroundComplete === true);
     document.documentElement.dataset.qaSeekDecodeCount = String(cacheStatus?.seekDecodeCount ?? 0);
+    document.documentElement.dataset.qaPrefetchDecodeCount = String(cacheStatus?.prefetchDecodeCount ?? 0);
   }, [cacheStatus]);
 
   useEffect(() => {
@@ -2163,9 +2165,12 @@ export function App() {
               <div><dt>방향</dt><dd>{cacheStatus?.direction ?? "-"}</dd></div>
               <div><dt>Hit / Miss</dt><dd>{cacheStatus ? `${cacheStatus.hits} / ${cacheStatus.misses}` : "-"}</dd></div>
               <div><dt>메모리</dt><dd>{cacheStatus ? `${formatBytes(cacheStatus.byteLength)} / ${formatBytes(cacheStatus.budgetBytes)}` : "-"}</dd></div>
+              <div><dt>캐시 준비</dt><dd>{cacheStatus?.readyFrameCount == null ? "-" : `${cacheStatus.readyFrameCount} / ${metadata?.frameCount ?? "-"}`}</dd></div>
               <div><dt>모드</dt><dd>{cacheStatus?.cacheMode ?? "-"}</dd></div>
               <div><dt>색 정책</dt><dd>{metadata?.colorSource ?? "-"}</dd></div>
               <div><dt>재사용 / 디코드</dt><dd>{cacheStatus ? `${cacheStatus.reusedFrames} / ${cacheStatus.decodedFrames}` : "-"}</dd></div>
+              <div><dt>제거 / 재디코드</dt><dd>{cacheStatus ? `${cacheStatus.evictions ?? 0} / ${cacheStatus.seekDecodeCount ?? 0}` : "-"}</dd></div>
+              <div><dt>미리 읽기</dt><dd>{cacheStatus ? `${cacheStatus.prefetchDecodeCount ?? 0}${cacheStatus.prefetchInFlight ? " · 진행 중" : ""}` : "-"}</dd></div>
               <div><dt>결과</dt><dd>{cacheResult}</dd></div>
               <div><dt>요청</dt><dd>{requestMs === null ? "-" : `${requestMs.toFixed(1)} ms`}</dd></div>
               <div><dt>Probe</dt><dd>{metadata ? `${metadata.probeMs.toFixed(1)} ms` : "-"}</dd></div>

@@ -7,7 +7,7 @@
 | 문서 | 위치 | 용도 |
 | --- | --- | --- |
 | 프로젝트 개요 | `../README.md` | CT Cine Reviewer 명칭, 현재 단계, v0.1 범위와 제외 범위 |
-| Latest Project Handoff | `../HANDOFF_V056.md` | v0.5.6 화면 조정 단순화, 빠른 이동과 사용자 지정 단축키 검증 상태 |
+| Latest Project Handoff | `../HANDOFF_V058.md` | v0.5.8 5프레임 이동용 묶음 방향성 선읽기 실사용 검증 상태 |
 | Phase 1 Handoff | `../HANDOFF_PHASE1.md` | Phase 1~2 구현 과정과 이전 기준선 |
 | 프로젝트 작업 지침 | `../AGENTS.md` | 중요한 결정 전 사용자 확인, 의료·보안 경계, 단계별 검증 원칙 |
 
@@ -38,13 +38,15 @@
 | v0.5.1 UI Polish | `20_V051_UI_POLISH.md` | Electron 메뉴 제거, 전역 명령 계층, 한국어 label과 반응형 QA |
 | Frame Navigation & Right Panel Tabs | `21_FRAME_NAVIGATION_LAYOUT.md` | 프레임 시간 표시, 시각적 타임라인과 조정·정보 탭 패널 |
 | v0.5.2 Modern Dark Professional | `22_V052_MODERN_DARK_PROFESSIONAL.md` | 기능 동결을 유지한 Modern Dark UI, SVG 자산, 3:1:3 탐색과 시각 QA |
-| GitHub Windows Release Automation | `23_GITHUB_RELEASE_AUTOMATION.md` | v 태그 검증, Windows 설치본·체크섬 자동 GitHub Release 절차 |
+| GitHub Windows Release Automation | `23_GITHUB_RELEASE_AUTOMATION.md` | main 버전 증가 감지, 자동 태그와 Windows Latest Release 절차 |
 | v0.5.2 Design QA | `../design-qa.md` | 최종 시안과 1440×900·720×600 구현 비교 및 판정 |
 | v0.5.2 Modern Dark Handoff | `../HANDOFF_V052_MODERN_DARK.md` | 최신 UI·확대율 의미, 검증 결과, 설치본과 후속 작업 상태 |
 | v0.5.3 Handoff | `../HANDOFF_V053.md` | 버전 표시, 설정 모달, 수동 업데이트 확인과 검증된 설치본 |
 | v0.5.4 Handoff | `../HANDOFF_V054.md` | 앱·바로가기·설치 프로그램 공통 아이콘과 설치 안내 메시지 |
 | v0.5.5 Handoff | `../HANDOFF_V055.md` | Electron 배포본 설치, 명시적 GitHub Release와 v0.5.4 실패 기록 |
 | v0.5.6 Handoff | `../HANDOFF_V056.md` | 프리셋 제거, 빈 화면 열기, 빠른 이동 간격과 사용자 지정 단축키 |
+| v0.5.7 Handoff | `../HANDOFF_V057.md` | 2GiB 초과 영상의 현재 위치 중심 LRU와 방향성 선읽기 |
+| v0.5.8 Handoff | `../HANDOFF_V058.md` | 8-block high-water와 최대 4-block 묶음 선읽기 |
 | Phase 2.2 Handoff | `../HANDOFF_PHASE2_2.md` | 최종 검증 상태와 제품 통합 전 승인 사항 |
 | Phase 2.3 Handoff | `../HANDOFF_PHASE2_3.md` | 제품 통합 최종 상태와 Phase 3 진입 조건 |
 | Phase 3A Handoff | `../HANDOFF_PHASE3A.md` | View Transform 최종 상태와 Phase 3B 진입 조건 |
@@ -65,7 +67,7 @@
 - Phase 2.3에서 검증된 I420 cache를 제품 기본 경로로 통합하고 NSIS·실제 설치 앱 검증을 완료했다.
 - Phase 3A View Transform과 Phase 3B 플랫폼 중립 Video Display를 통합하고 설치 검증을 완료했다.
 - Phase 3B 승인 후 고정 10%p zoom과 PACS식 Pan/Zoom 도구 막대를 추가하고 WebGL/RGBA 회귀를 완료했다.
-- 2GiB dynamic soft cap의 I420 full/LRU를 기본 사용하며 72MiB 방향성 cache는 RGBA rollback으로 유지한다.
+- 2GiB dynamic soft cap의 I420 full/LRU를 기본 사용하며, 초과 영상의 LRU는 현재 위치 중심 warmup과 8-block high-water·최대 4-block 묶음 선읽기를 사용한다. 72MiB 방향성 cache는 RGBA rollback으로 유지한다.
 - Phase 4A 세션 전용 주석과 annotated timeline을 구현하고 WebGL/RGBA·cached navigation 회귀를 완료했다.
 - Phase 4B-1 displayed-frame PNG 저장과 clipboard 복사를 구현하고 양 renderer·privacy 회귀를 완료했다.
 - Phase 5에서 같은 frame/pixels를 공유하는 View A/B 비교 뷰와 image-space linked crosshair를 구현했다.
@@ -75,9 +77,11 @@
 - 확대율 셀은 원본 픽셀 기준 현재 `%`를 표시하고 Fit·50~200% 선택과 실제 배율 10%p step을 제공한다.
 - v0.5.3에서 상단 버전 표시, 조정 패널의 구분선 UI와 독립 설정창·수동 업데이트 확인을 추가하고 NSIS 설치본을 검증했다.
 - v0.5.4에서 앱·바탕화면 바로가기·설치/제거 프로그램의 아이콘을 통일하고 설치 시작 안내 페이지를 추가했다.
-- v0.5.4부터 main의 버전 태그를 기준으로 Windows 설치본과 체크섬을 GitHub Release에 자동 배포한다.
+- `main`에서 앱 버전이 증가하면 Windows 설치본과 업데이트 메타데이터를 검증한 뒤 태그와 GitHub Latest Release를 자동 생성한다.
 - v0.5.5에서 깨끗한 GitHub Windows 러너의 Electron 배포본 설치와 명시적 publish 경로를 보완했다.
 - v0.5.6에서 화면 보정 프리셋을 제거하고 빈 화면 파일 열기, 빠른 이동 간격과 사용자 지정 단축키를 추가했다.
+- v0.5.7에서 2GiB 초과 영상의 LRU를 현재 위치 중심 warmup과 최대 4-block 방향성 선읽기로 보완했다.
+- v0.5.8에서 5프레임 연속 이동 중 남은 foreground 재디코드를 줄이기 위해 최대 4-block 단일-process refill을 추가했다.
 - 사용자 승인 전 프로젝트 저장, 마스크와 DICOM/PACS를 시작하지 않는다.
 
 ## 갱신 규칙

@@ -96,6 +96,80 @@ export class YuvBlockCache {
     return this.blocks.has(blockIndex);
   }
 
+  hasBlockOrPending(blockIndex: number): boolean {
+    return this.blocks.has(blockIndex) || this.inFlight.has(blockIndex);
+  }
+
+  async loadBatch(
+    blockIndexes: readonly number[],
+    load: (accept: (block: YuvCacheBlock) => void) => Promise<void>,
+  ): Promise<boolean> {
+    const uniqueIndexes = [...new Set(blockIndexes)];
+    if (
+      uniqueIndexes.length === 0 || uniqueIndexes.length !== blockIndexes.length ||
+      uniqueIndexes.some((blockIndex) => !Number.isInteger(blockIndex) || blockIndex < 0)
+    ) {
+      throw new RangeError("INVALID_YUV_BATCH_BLOCKS");
+    }
+    if (uniqueIndexes.some((blockIndex) => this.hasBlockOrPending(blockIndex))) return false;
+
+    type Deferred = {
+      promise: Promise<YuvCacheBlock>;
+      resolve: (block: YuvCacheBlock) => void;
+      reject: (error: unknown) => void;
+      settled: boolean;
+    };
+    const deferreds = new Map<number, Deferred>();
+    for (const blockIndex of uniqueIndexes) {
+      let resolve!: (block: YuvCacheBlock) => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<YuvCacheBlock>((accept, fail) => {
+        resolve = accept;
+        reject = fail;
+      });
+      deferreds.set(blockIndex, { promise, resolve, reject, settled: false });
+      this.inFlight.set(blockIndex, promise);
+    }
+
+    try {
+      await load((block) => {
+        const deferred = deferreds.get(block.blockIndex);
+        if (!deferred || deferred.settled) throw new Error("YUV_BATCH_BLOCK_UNEXPECTED");
+        this.insert(block);
+        deferred.settled = true;
+        deferred.resolve(block);
+      });
+      if ([...deferreds.values()].some((deferred) => !deferred.settled)) {
+        throw new Error("YUV_BATCH_BLOCK_MISSING");
+      }
+      return true;
+    } catch (error) {
+      for (const deferred of deferreds.values()) {
+        if (deferred.settled) continue;
+        deferred.settled = true;
+        deferred.reject(error);
+      }
+      await Promise.allSettled([...deferreds.values()].map((deferred) => deferred.promise));
+      throw error;
+    } finally {
+      for (const [blockIndex, deferred] of deferreds) {
+        if (this.inFlight.get(blockIndex) === deferred.promise) this.inFlight.delete(blockIndex);
+      }
+    }
+  }
+
+  touchBlock(blockIndex: number): boolean {
+    const block = this.blocks.get(blockIndex);
+    if (!block) return false;
+    this.blocks.delete(blockIndex);
+    this.blocks.set(blockIndex, block);
+    return true;
+  }
+
+  blockIndexes(): number[] {
+    return [...this.blocks.keys()];
+  }
+
   clear(): void {
     this.blocks.clear();
     this.inFlight.clear();

@@ -211,3 +211,65 @@ Electron 43.1.0 npm 패키지에는 자동 `postinstall` 스크립트가 없다.
 - Latest Release의 설치 파일과 `.sha256` 자산을 확인한다.
 
 `v0.5.5` 실행 `29303904117`에서 모든 단계가 통과했고, 공개 설치 파일의 GitHub asset digest와 `.sha256` 파일 내용이 일치했다.
+
+## 2026-07-15 2GiB LRU 영상에서 빠른 이동 중 `디코딩 중`이 순간 표시되는 경우
+
+상태: v0.5.7 실사용 병목 확인, v0.5.8 자동 검증 완료·실사용 확인 대기
+
+### 증상
+
+- 장시간·고해상도 영상을 처음부터 빠르게 이동할 때 `디코딩 중`이 짧게 표시되고 다시 `준비`로 돌아온다.
+- 멈춘 뒤 같은 프레임의 정보 탭을 확인하면 이미 cache hit로 바뀌어 원인을 캡처하기 어렵다.
+
+### 재현 조건
+
+- 1280×720, 3,766-frame I420 영상은 frame당 1,382,400 bytes, 전체 약 4.85GiB다.
+- 2GiB budget과 24-frame block에서는 최대 64개 block, 약 1,536 frames만 동시에 유지할 수 있다.
+- cache mode가 `lru`이고 background가 전체 영상을 끝까지 디코딩하는 이전 정책에서 재현됐다.
+
+### 원인
+
+- 디코더 자체의 절대 한계가 아니라 cache 정책과 사용 흐름의 불일치였다.
+- 이전 background 작업이 2GiB보다 큰 영상 전체를 훑으면서 먼저 준비한 앞부분 block을 제거했다.
+- 사용자가 처음부터 검토할 때 제거된 block을 다시 요청해 foreground seek decode가 발생했고, UI의 100ms 상태 기준을 넘는 순간 `디코딩 중`이 표시됐다.
+
+### 해결 절차
+
+- LRU background는 예산에 들어가는 첫 window까지만 준비한다.
+- 현재 block과 이동 방향 앞쪽 최대 4개 block을 보호·선읽기한다.
+- 방향이 바뀌면 선읽기 방향도 바꾸고, foreground와 선읽기의 같은 block 요청은 병합한다.
+- 2GiB RAM cap과 디스크 cache 없음 원칙은 유지한다.
+
+### 검증 방법
+
+- 3-block budget의 합성 H.264 영상에서 background eviction 0과 첫 window hit를 확인한다.
+- 다음 traversal block을 선읽은 뒤 cache 경계를 요청해 foreground `seekDecodeCount`가 0인지 확인한다.
+- 전체 자동 테스트 100/100과 production build를 통과시킨다.
+- 비식별 로컬 샘플 11개의 128MiB 강제 LRU에서 background eviction 0, 경계 hit 11/11, 경계 foreground seek decode 0과 fingerprint 오류 0을 확인한다.
+- 실제 사용자 영상에서는 정보 탭의 `제거 / 재디코드`, `미리 읽기` 값을 함께 보고 처음→끝 빠른 이동의 체감을 재확인한다.
+
+### v0.5.7 후속 실사용 결과
+
+- 1프레임 정·역방향 연속 이동에서는 끊김이 사라졌다.
+- 5프레임 정·역방향 연속 이동에서는 특정 cache 경계에서 간헐적으로 멈췄다.
+- 진단에서 prefetch process 175회와 foreground seek decode 4회가 확인됐다.
+- 1280×720의 24-frame block을 5프레임씩 소비하면 약 5번의 반복 입력마다 다음 block에 도달하므로, block마다 FFmpeg를 새로 시작하는 선읽기가 네 차례 뒤처진 것으로 판정했다.
+
+### v0.5.8 추가 해결 절차
+
+- 이동 방향 앞쪽 8-block을 high-water 범위로 사용한다.
+- 준비된 앞쪽 block이 4개 미만이면 연속된 최대 4-block을 FFmpeg 한 번으로 decode한다.
+- batch 대상 block을 in-flight로 예약하고 도착한 block부터 foreground가 즉시 재사용한다.
+- 최신 이동 방향 요청을 하나만 보관하고 prefetch process는 동시에 하나만 실행한다.
+- cache 보호 범위 밖의 제거 가능한 block 수에 맞춰 batch 크기를 줄여 2GiB cap을 넘지 않는다.
+
+합성 강제 LRU에서 4-block 단일-process refill, foreground 중복 decode 0, 정→역방향 batch 전환과 budget 이하를 확인했다. 전체 자동 테스트 102/102, production build와 비식별 로컬 샘플 11개 경계 검사를 통과했다.
+
+### 관련 변경
+
+- `src/domain/yuvCachePolicy.ts`
+- `electron/adapters/YuvBlockCache.ts`
+- `electron/cache/YuvCacheSession.ts`
+- `src/App.tsx`
+- `tests/yuvCachePolicy.test.ts`
+- `tests/yuvCacheSession.test.ts`

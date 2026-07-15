@@ -31,10 +31,15 @@ type CcrCacheStatus = {
   backgroundDecodedFrames?: number;
   backgroundDecodeCount?: number;
   seekDecodeCount?: number;
+  seekDecodedFrames?: number;
+  prefetchDecodeCount?: number;
+  prefetchedFrames?: number;
+  prefetchInFlight?: boolean;
   analysisReady?: boolean;
   backgroundCacheMs?: number | null;
   fullProbeMs?: number | null;
   backgroundError?: string | null;
+  prefetchError?: string | null;
   cacheMode?: "full" | "lru" | "fallback";
 };
 

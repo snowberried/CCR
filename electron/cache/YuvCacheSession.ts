@@ -4,7 +4,13 @@ import { performance } from "node:perf_hooks";
 import { createHash } from "node:crypto";
 import { createI420Layout, chooseI420BlockFrames } from "../../src/domain/i420.js";
 import { createFrameCachePolicy } from "../../src/domain/frameCachePolicy.js";
-import { createYuvCachePolicy } from "../../src/domain/yuvCachePolicy.js";
+import {
+  createYuvCachePolicy,
+  lruPrefetchBlockCandidates,
+  YUV_LRU_PREFETCH_LOW_WATER_BLOCKS,
+  YUV_LRU_PREFETCH_REFILL_BLOCKS,
+  type YuvPrefetchDirection,
+} from "../../src/domain/yuvCachePolicy.js";
 import { selectYuvDisplayPolicy, type YuvDisplayPolicy } from "../../src/domain/yuvDisplayPolicy.js";
 import type { FramePoint } from "../../src/domain/frameSequence.js";
 import { FfmpegFrameIndexProvider } from "../adapters/FfmpegFrameIndexProvider.js";
@@ -83,12 +89,20 @@ export class YuvCacheSession {
   private backgroundDecodedFrames = 0;
   private backgroundDecodeCount = 0;
   private seekDecodeCount = 0;
+  private seekDecodedFrames = 0;
+  private prefetchDecodeCount = 0;
+  private prefetchedFrames = 0;
   private backgroundCacheMs: number | null = null;
   private fullProbeMs: number | null = null;
   private backgroundError: string | null = null;
+  private prefetchError: string | null = null;
   private closed = false;
   private cacheMode: "full" | "lru" | "fallback";
   private readonly initialBudgetBytes: number;
+  private navigationDirection: YuvPrefetchDirection = "forward";
+  private lastRequestedFrameIndex: number | null = null;
+  private pendingPrefetch: { frameIndex: number; direction: YuvPrefetchDirection } | null = null;
+  private prefetchPromise: Promise<void> | null = null;
   private rgbaProvider: FfmpegSegmentFrameProvider | null = null;
   private rgbaRequestId = 0;
 
@@ -200,7 +214,9 @@ export class YuvCacheSession {
     const probePromise = probeStart.then(runProbe);
     this.backgroundDecodeCount += 1;
     const cacheStartedAt = performance.now();
+    const warmFrameCount = this.cacheMode === "lru" ? this.lruWarmFrameCount() : undefined;
     const decodePromise = this.decoder.decodeSequential({
+      frameCount: warmFrameCount,
       signal: this.controller.signal,
       onBlock: (block) => {
         this.cache.insert(block);
@@ -210,7 +226,6 @@ export class YuvCacheSession {
       },
     }).then((stats) => {
       this.backgroundDecodedFrames = stats.frameCount;
-      this.backgroundComplete = true;
       this.backgroundCacheMs = performance.now() - cacheStartedAt;
     }).finally(() => {
       startProbe?.();
@@ -218,9 +233,9 @@ export class YuvCacheSession {
     });
     this.cachePromise = decodePromise;
     this.backgroundPromise = Promise.all([decodePromise, probePromise]).then(([, probe]) => {
-      if (this.backgroundDecodedFrames !== probe.frames.length) {
-        this.backgroundComplete = false;
-      }
+      this.backgroundComplete = this.cacheMode === "lru"
+        ? this.backgroundDecodedFrames > 0
+        : this.backgroundDecodedFrames === probe.frames.length;
       onMetadata(this.metadata());
     });
     void this.backgroundPromise.catch((error) => this.recordBackgroundError(error, onMetadata));
@@ -244,6 +259,7 @@ export class YuvCacheSession {
     if (format === "rgba" || (this.cacheMode === "fallback" && this.analysisReady)) {
       return this.requestRgba(frameIndex, startedAt);
     }
+    const direction = this.observeNavigationDirection(frameIndex);
     let pixels = this.cache.getFrame(frameIndex, this.blockFrames);
     let cache: "hit" | "miss" = "hit";
     if (!pixels) {
@@ -251,35 +267,23 @@ export class YuvCacheSession {
       cache = "miss";
       const blockIndex = Math.floor(frameIndex / this.blockFrames);
       const nextBackgroundBlock = Math.floor(this.backgroundDecodedFrames / this.blockFrames);
+      const backgroundBlockLimit = this.cacheMode === "lru"
+        ? Math.ceil(this.lruWarmFrameCount() / this.blockFrames)
+        : Math.ceil(this.frameCount / this.blockFrames);
       if (
         this.backgroundStarted && !this.backgroundComplete &&
+        blockIndex < backgroundBlockLimit &&
         blockIndex >= nextBackgroundBlock && blockIndex <= nextBackgroundBlock + 1
       ) {
         await this.waitForNearbyBackgroundBlock(blockIndex);
         pixels = this.cache.getFrame(frameIndex, this.blockFrames);
       }
-      if (pixels) return this.serializeI420(frameIndex, pixels, cache, performance.now() - startedAt);
-      const blockStart = blockIndex * this.blockFrames;
-      const count = Math.min(this.blockFrames, this.frameCount - blockStart);
-      const ptsSeconds = this.frames[blockStart]?.ptsSeconds;
-      if (blockStart > 0 && ptsSeconds === null) throw new Error("FRAME_PTS_MISSING");
-      await this.cache.getOrLoad(blockIndex, async () => {
-        this.seekDecodeCount += 1;
-        let loaded: YuvCacheBlock | null = null;
-        await this.decoder.decodeSequential({
-          startFrameIndex: blockStart,
-          startPtsSeconds: blockStart > 0 ? ptsSeconds ?? undefined : undefined,
-          frameCount: count,
-          signal: this.controller.signal,
-          onBlock: (block) => { loaded = block; },
-        });
-        if (!loaded) throw new Error("YUV_BLOCK_MISSING");
-        return loaded;
-      });
+      if (pixels) return this.finishI420Request(frameIndex, pixels, cache, startedAt, direction);
+      await this.loadI420Blocks([blockIndex], "seek");
       pixels = this.cache.getFrame(frameIndex, this.blockFrames);
     }
     if (!pixels) throw new Error("YUV_FRAME_MISSING");
-    return this.serializeI420(frameIndex, pixels, cache, performance.now() - startedAt);
+    return this.finishI420Request(frameIndex, pixels, cache, startedAt, direction);
   }
 
   status() {
@@ -292,12 +296,13 @@ export class YuvCacheSession {
       byteLength: rgbaCache?.byteLength ?? cache.byteLength,
       hits: rgbaCache?.hits ?? cache.hits,
       misses: rgbaCache?.misses ?? cache.misses,
-      direction: rgbaCache?.direction ?? "balanced" as const,
+      direction: rgbaCache?.direction ?? this.navigationDirection,
       budgetBytes: rgbaCache?.budgetBytes ?? cache.budgetBytes,
       bytesPerFrame: rgbaCache?.bytesPerFrame ?? this.layout.byteLength,
       frameCapacity: rgbaCache?.frameCapacity ?? Math.floor(cache.budgetBytes / this.layout.byteLength),
       reusedFrames: rgbaCache?.reusedFrames ?? cache.hits,
-      decodedFrames: rgbaCache?.decodedFrames ?? this.backgroundDecodedFrames,
+      decodedFrames: rgbaCache?.decodedFrames
+        ?? this.backgroundDecodedFrames + this.seekDecodedFrames + this.prefetchedFrames,
       blockCount: cache.blockCount,
       readyFrameCount: cache.readyFrameCount,
       evictions: cache.evictions,
@@ -305,10 +310,15 @@ export class YuvCacheSession {
       backgroundDecodedFrames: this.backgroundDecodedFrames,
       backgroundDecodeCount: this.backgroundDecodeCount,
       seekDecodeCount: this.seekDecodeCount,
+      seekDecodedFrames: this.seekDecodedFrames,
+      prefetchDecodeCount: this.prefetchDecodeCount,
+      prefetchedFrames: this.prefetchedFrames,
+      prefetchInFlight: this.prefetchPromise !== null,
       analysisReady: this.analysisReady,
       backgroundCacheMs: this.backgroundCacheMs,
       fullProbeMs: this.fullProbeMs,
       backgroundError: this.backgroundError,
+      prefetchError: this.prefetchError,
       cacheMode: this.cacheMode,
     };
   }
@@ -330,10 +340,170 @@ export class YuvCacheSession {
 
   close(): void {
     this.closed = true;
+    this.pendingPrefetch = null;
     this.controller.abort();
     if (this.rgbaProvider) void this.rgbaProvider.closeSession(this.sessionId);
     this.rgbaProvider = null;
     this.cache.clear();
+  }
+
+  private lruWarmFrameCount(): number {
+    const blockByteLength = this.layout.byteLength * this.blockFrames;
+    const blockCapacity = Math.max(1, Math.floor(this.initialBudgetBytes / blockByteLength));
+    return Math.min(this.frameCount, blockCapacity * this.blockFrames);
+  }
+
+  private observeNavigationDirection(frameIndex: number): YuvPrefetchDirection {
+    if (this.lastRequestedFrameIndex !== null) {
+      if (frameIndex > this.lastRequestedFrameIndex) this.navigationDirection = "forward";
+      else if (frameIndex < this.lastRequestedFrameIndex) this.navigationDirection = "reverse";
+    }
+    this.lastRequestedFrameIndex = frameIndex;
+    return this.navigationDirection;
+  }
+
+  private finishI420Request(
+    frameIndex: number,
+    pixels: Buffer,
+    cache: "hit" | "miss",
+    startedAt: number,
+    direction: YuvPrefetchDirection,
+  ): CachedFrame {
+    const frame = this.serializeI420(frameIndex, pixels, cache, performance.now() - startedAt);
+    this.scheduleLruPrefetch(frameIndex, direction);
+    return frame;
+  }
+
+  private scheduleLruPrefetch(frameIndex: number, direction: YuvPrefetchDirection): void {
+    if (this.cacheMode !== "lru" || !this.analysisReady || !this.backgroundComplete || this.closed) return;
+    this.pendingPrefetch = { frameIndex, direction };
+    if (this.prefetchPromise) return;
+
+    const promise = new Promise<void>((resolve) => setImmediate(resolve)).then(() => this.drainLruPrefetch());
+    this.prefetchPromise = promise;
+    void promise.catch((error) => {
+      if (!this.closed && !this.controller.signal.aborted) {
+        this.prefetchError = error instanceof Error ? error.message : "YUV_PREFETCH_FAILED";
+      }
+    }).finally(() => {
+      if (this.prefetchPromise === promise) this.prefetchPromise = null;
+      if (this.pendingPrefetch && !this.closed) {
+        this.scheduleLruPrefetch(this.pendingPrefetch.frameIndex, this.pendingPrefetch.direction);
+      }
+    });
+  }
+
+  private async drainLruPrefetch(): Promise<void> {
+    while (this.pendingPrefetch && !this.closed) {
+      const request = this.pendingPrefetch;
+      this.pendingPrefetch = null;
+      const currentBlockIndex = Math.floor(request.frameIndex / this.blockFrames);
+      const blockCount = Math.ceil(this.frameCount / this.blockFrames);
+      const candidates = lruPrefetchBlockCandidates(currentBlockIndex, blockCount, request.direction);
+
+      for (const blockIndex of [...candidates].reverse()) this.cache.touchBlock(blockIndex);
+      this.cache.touchBlock(currentBlockIndex);
+
+      let readyAhead = 0;
+      while (
+        readyAhead < candidates.length &&
+        this.cache.hasBlockOrPending(candidates[readyAhead])
+      ) {
+        readyAhead += 1;
+      }
+      if (readyAhead >= YUV_LRU_PREFETCH_LOW_WATER_BLOCKS || readyAhead === candidates.length) continue;
+
+      const refillCandidates: number[] = [];
+      for (const blockIndex of candidates.slice(readyAhead)) {
+        if (this.cache.hasBlockOrPending(blockIndex)) break;
+        refillCandidates.push(blockIndex);
+        if (refillCandidates.length === YUV_LRU_PREFETCH_REFILL_BLOCKS) break;
+      }
+      if (refillCandidates.length === 0) continue;
+
+      const cacheStatus = this.cache.status();
+      const protectedBlocks = new Set([currentBlockIndex, ...candidates]);
+      const evictableBlocks = this.cache.blockIndexes()
+        .filter((blockIndex) => !protectedBlocks.has(blockIndex)).length;
+      const blockByteLength = this.layout.byteLength * this.blockFrames;
+      const freeBlocks = Math.floor(
+        Math.max(0, cacheStatus.budgetBytes - cacheStatus.byteLength) / blockByteLength,
+      );
+      const availableRefillSlots = freeBlocks + evictableBlocks > 0
+        ? freeBlocks + evictableBlocks
+        : cacheStatus.blockCount === 1 ? 1 : 0;
+      const safeRefillCount = Math.min(
+        refillCandidates.length,
+        availableRefillSlots,
+      );
+      if (safeRefillCount === 0) continue;
+
+      await this.loadI420Blocks(refillCandidates.slice(0, safeRefillCount), "prefetch");
+      this.prefetchError = null;
+    }
+  }
+
+  private async loadI420Blocks(
+    blockIndexes: readonly number[],
+    source: "seek" | "prefetch",
+  ): Promise<void> {
+    const orderedBlockIndexes = [...blockIndexes].sort((left, right) => left - right);
+    if (
+      orderedBlockIndexes.length === 0 ||
+      orderedBlockIndexes.some((blockIndex, index) => (
+        !Number.isInteger(blockIndex) || blockIndex < 0 || blockIndex >= Math.ceil(this.frameCount / this.blockFrames) ||
+        (index > 0 && blockIndex !== orderedBlockIndexes[index - 1] + 1)
+      )) ||
+      (source === "seek" && orderedBlockIndexes.length !== 1)
+    ) {
+      throw new RangeError("INVALID_YUV_BLOCK_LOAD");
+    }
+
+    const firstBlockIndex = orderedBlockIndexes[0];
+    const lastBlockIndex = orderedBlockIndexes.at(-1)!;
+    const blockStart = firstBlockIndex * this.blockFrames;
+    const count = Math.min(
+      this.frameCount - blockStart,
+      (lastBlockIndex - firstBlockIndex + 1) * this.blockFrames,
+    );
+    const ptsSeconds = this.frames[blockStart]?.ptsSeconds;
+    if (blockStart > 0 && ptsSeconds === null) throw new Error("FRAME_PTS_MISSING");
+
+    if (source === "prefetch") {
+      let decodedFrames = 0;
+      const started = await this.cache.loadBatch(orderedBlockIndexes, async (accept) => {
+        this.prefetchDecodeCount += 1;
+        const stats = await this.decoder.decodeSequential({
+          startFrameIndex: blockStart,
+          startPtsSeconds: blockStart > 0 ? ptsSeconds ?? undefined : undefined,
+          frameCount: count,
+          signal: this.controller.signal,
+          onBlock: (block) => {
+            decodedFrames += block.frameCount;
+            accept(block);
+          },
+        });
+        if (stats.frameCount !== count) throw new Error("YUV_BATCH_FRAME_COUNT_MISMATCH");
+      });
+      if (started) this.prefetchedFrames += decodedFrames;
+      return;
+    }
+
+    await this.cache.getOrLoad(firstBlockIndex, async () => {
+      this.seekDecodeCount += 1;
+      let loaded: YuvCacheBlock | null = null;
+      await this.decoder.decodeSequential({
+        startFrameIndex: blockStart,
+        startPtsSeconds: blockStart > 0 ? ptsSeconds ?? undefined : undefined,
+        frameCount: count,
+        signal: this.controller.signal,
+        onBlock: (block) => { loaded = block; },
+      });
+      const completed = loaded as YuvCacheBlock | null;
+      if (!completed) throw new Error("YUV_BLOCK_MISSING");
+      this.seekDecodedFrames += completed.frameCount;
+      return completed;
+    });
   }
 
   private createPolicy(frameCount: number) {

@@ -41,7 +41,10 @@ Zoom/Pan, 영상 보정, 자동 재생, 주석, 이미지 저장, DICOM/PACS는 
 ### 제한 block LRU
 
 - I420/WebGL 조건은 충족하지만 전체 예상 payload가 budget의 80%를 초과
-- 방문 block은 soft cap까지 유지
+- background에서는 전체 영상을 끝까지 훑지 않고 RAM 예산에 들어가는 첫 window만 준비
+- 현재 block과 이동 방향 앞쪽 8개 block을 후보로 보호하고 준비된 앞쪽 block이 4개 미만이면 최대 4개를 한 번에 미리 읽음
+- 반대 방향으로 움직이면 선읽기 방향도 즉시 전환
+- 방문 block은 soft cap까지 유지하며 현재·직전 이동 방향의 block보다 오래된 block부터 제거
 - background와 seek가 같은 block을 요청하면 load를 병합
 - pressure 축소 시 least-recently-used block부터 제거
 
@@ -69,7 +72,37 @@ targetBudget = min(2GiB, totalRAM × 0.125, availableRAM × 0.25)
 - session close와 파일 변경에서 block 참조 해제
 - 전체 RGBA cache와 frame 디스크 cache 없음
 
-진단 패널은 실제 cache 사용량/budget, full·lru·fallback mode, 색 정책을 표시한다.
+진단 패널은 실제 cache 사용량/budget, 준비된 frame 수, full·lru·fallback mode, 제거·재디코드·미리 읽기 횟수와 색 정책을 표시한다.
+
+## 2026-07-15 장시간·고해상도 LRU 보완
+
+1280×720, 3,766-frame I420 영상의 raw payload는 약 4.85GiB라 2GiB soft cap 안에 전부 들어가지 않는다. 기존 LRU는 background에서 전체 영상을 한 번 훑으면서 앞부분 block을 제거했기 때문에, 첫 검토 중 이미 읽은 앞부분을 다시 디코딩하는 순간이 생겼다.
+
+후속 보완은 다음처럼 cache 정책만 최소 변경했다.
+
+- LRU background warmup을 전체 영상이 아니라 예산에 들어가는 block 수로 제한
+- 현재 요청 위치와 실제 이동 방향을 관찰해 앞쪽 8개 block을 선읽기 후보로 사용
+- 현재 block과 바로 앞 후보는 eviction 우선순위에서 보호
+- foreground 요청과 같은 block의 선읽기가 겹치면 기존 `getOrLoad`로 한 번만 디코딩
+- 2GiB soft cap, full mode, RGBA rollback, 프레임·PTS·표시 경로는 유지
+
+이 변경은 순차 검토와 빠른 이동의 cache 경계 정지를 줄이기 위한 것이다. 준비 window와 선읽기 범위를 벗어난 직접 점프는 물리적으로 새 디코딩이 필요할 수 있다.
+
+검증 결과는 전체 자동 테스트 100/100과 production build 통과다. 비식별 로컬 샘플 11개를 128MiB 강제 LRU로 실행했을 때 background eviction 0, 첫 frame miss 0, 첫 window 경계 hit 11/11, 경계 foreground seek decode 0, fingerprint 오류 0이었다.
+
+### v0.5.8 5프레임 이동용 묶음 선읽기
+
+v0.5.7 실사용에서 1프레임 연속 이동은 끊김이 없었지만 5프레임 연속 이동은 간헐적으로 멈췄다. 진단은 2,025MiB/2,048MiB, 1,536/3,766 frames 준비, prefetch process 175회, eviction 178회와 foreground seek decode 4회를 기록했다. 1280×720에서는 한 block이 24 frames이므로 5프레임 이동은 약 5번의 반복 입력만으로 다음 block에 도달했고, block마다 새 FFmpeg process를 시작하는 v0.5.7 선읽기가 네 차례 뒤처졌다.
+
+v0.5.8은 다음처럼 처리량만 보완한다.
+
+- 앞쪽 준비량이 4-block 미만일 때 8-block high-water 범위 안의 연속 block을 최대 4개 선택
+- 선택한 최대 4-block을 FFmpeg 한 번으로 순차 decode해 process 시작·seek 비용을 분산
+- batch의 모든 block을 in-flight로 먼저 등록하고 각 block 도착 즉시 cache에 넣어 foreground 중복 decode 차단
+- 현재 batch가 끝나면 최신 요청 방향으로 전환하며 동시에 두 prefetch process를 실행하지 않음
+- 보호 block을 제거하지 않는 범위에서만 batch 크기를 자동 축소해 2GiB cap 유지
+
+묶음·방향 전환·foreground 병합과 메모리 제한을 포함한 전체 자동 테스트 102/102, production build와 비식별 로컬 샘플 11개 경계 검사를 통과했다. 1280×720 실제 5프레임 정·역방향 체감과 foreground seek decode 0 여부는 v0.5.8 설치본에서 재확인한다.
 
 ## 색상 정책
 
@@ -174,7 +207,7 @@ $env:CCR_FORCE_RGBA = "1"
 
 - metadata 없는 새로운 공급원은 RGBA fallback되므로 현재 공급원과 성능 특성이 다를 수 있다.
 - 다양한 GPU/driver의 WebGL context behavior는 2시간 장기 QA와 함께 후속 통합 QA로 남긴다.
-- 2GiB를 넘는 실제 장시간·고해상도 영상은 LRU 정확성을 통과했지만 실제 사용 체감 표본이 더 필요하다.
+- 2GiB를 넘는 실제 장시간·고해상도 영상은 묶음 방향성 선읽기를 적용했지만, v0.5.8 실제 5프레임 이동 체감 재확인이 필요하다.
 - 새 설치 직후 첫 I420 실행에서 10.47초 cold-start outlier가 1회 관찰됐다. 같은 설치본의 후속 실행은 180.2ms, 최종 재설치본은 160.1ms였으므로 파일럿에서 최초 실행 재현 여부를 확인한다.
 - 코드 서명이 없어 Windows 경고가 나타날 수 있다.
 

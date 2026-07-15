@@ -10,6 +10,35 @@ export type YuvCachePolicy = {
   mode: "full" | "lru" | "fallback";
 };
 
+export type YuvPrefetchDirection = "forward" | "reverse";
+
+export const YUV_LRU_PREFETCH_LOOKAHEAD_BLOCKS = 8;
+export const YUV_LRU_PREFETCH_LOW_WATER_BLOCKS = 4;
+export const YUV_LRU_PREFETCH_REFILL_BLOCKS = 4;
+
+export function lruPrefetchBlockCandidates(
+  currentBlockIndex: number,
+  blockCount: number,
+  direction: YuvPrefetchDirection,
+  lookaheadBlocks = YUV_LRU_PREFETCH_LOOKAHEAD_BLOCKS,
+): number[] {
+  if (
+    !Number.isInteger(currentBlockIndex) || currentBlockIndex < 0 ||
+    !Number.isInteger(blockCount) || blockCount <= 0 || currentBlockIndex >= blockCount ||
+    !Number.isInteger(lookaheadBlocks) || lookaheadBlocks <= 0
+  ) {
+    throw new RangeError("INVALID_YUV_PREFETCH_POLICY");
+  }
+  const step = direction === "forward" ? 1 : -1;
+  const candidates: number[] = [];
+  for (let distance = 1; distance <= lookaheadBlocks; distance += 1) {
+    const blockIndex = currentBlockIndex + step * distance;
+    if (blockIndex < 0 || blockIndex >= blockCount) break;
+    candidates.push(blockIndex);
+  }
+  return candidates;
+}
+
 export function createYuvCachePolicy(input: {
   totalMemoryBytes: number;
   availableMemoryBytes: number;
