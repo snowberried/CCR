@@ -5,13 +5,19 @@ import kotlin.concurrent.withLock
 
 class PublicationGate(
     private val clockNanos: () -> Long = System::nanoTime,
+    private val eventHistoryCapacity: Int = 64,
     private val onPublicationEvent: (PublicationEvent) -> Unit = {},
 ) {
+    init {
+        require(eventHistoryCapacity > 0)
+    }
+
     private val lock = ReentrantLock()
     private var fileGeneration = 0L
     private var requestGeneration = 0L
     private var sequence = 0L
     private var stats = PublicationStats()
+    private val recentEvents = ArrayDeque<PublicationEvent>(eventHistoryCapacity)
 
     fun beginFile(): GenerationToken = lock.withLock {
         fileGeneration += 1
@@ -105,7 +111,11 @@ class PublicationGate(
 
     fun snapshotStats(): PublicationStats = lock.withLock { stats }
 
+    fun recentEvents(): List<PublicationEvent> = lock.withLock { recentEvents.toList() }
+
     private fun record(event: PublicationEvent) {
+        if (recentEvents.size == eventHistoryCapacity) recentEvents.removeFirst()
+        recentEvents.addLast(event)
         stats = when (event.result) {
             PublicationResult.PUBLISHED -> stats.copy(publishedSwapCount = stats.publishedSwapCount + 1)
             PublicationResult.STALE_BEFORE_SWAP -> stats.copy(staleBeforeSwapCount = stats.staleBeforeSwapCount + 1)

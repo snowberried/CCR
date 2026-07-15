@@ -19,6 +19,7 @@ import com.snowberried.ctcinereviewer.media.DecodedOutputMetadata
 import com.snowberried.ctcinereviewer.media.FrameImageProbe
 import com.snowberried.ctcinereviewer.media.FrameKey
 import com.snowberried.ctcinereviewer.media.FrameRequest
+import com.snowberried.ctcinereviewer.media.GenerationToken
 import com.snowberried.ctcinereviewer.media.PublicationEvent
 import com.snowberried.ctcinereviewer.media.PublicationGate
 import com.snowberried.ctcinereviewer.media.PublicationResult
@@ -34,7 +35,7 @@ class EglFrameRenderer(
     private val onDecoderSurfaceChanged: (Boolean) -> Unit,
     renderMode: FrameRenderMode,
 ) : AutoCloseable {
-    enum class AckStatus { PUBLISHED, STALE, ERROR }
+    enum class AckStatus { PUBLISHED, CACHED, STALE, ERROR }
 
     data class RenderAck(
         val status: AckStatus,
@@ -59,6 +60,32 @@ class EglFrameRenderer(
                 RenderAck(AckStatus.ERROR, 0, "RENDER_TIMEOUT")
             }
     }
+
+    class CacheTargetHandle internal constructor(
+        val token: GenerationToken,
+        val expectedKey: FrameKey,
+    ) {
+        private val latch = CountDownLatch(1)
+        private val result = AtomicReference<RenderAck?>()
+
+        internal fun complete(ack: RenderAck) {
+            if (result.compareAndSet(null, ack)) latch.countDown()
+        }
+
+        fun await(timeoutMs: Long): RenderAck =
+            if (latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+                result.get() ?: RenderAck(AckStatus.ERROR, 0, "CACHE_ACK_MISSING")
+            } else {
+                RenderAck(AckStatus.ERROR, 0, "CACHE_TIMEOUT")
+            }
+    }
+
+    private data class PendingTarget(
+        val token: GenerationToken,
+        val expectedKey: FrameKey,
+        val publicationRequest: FrameRequest?,
+        val complete: (RenderAck) -> Unit,
+    )
 
     private data class CachedTexture(
         val textureId: Int,
@@ -92,7 +119,7 @@ class EglFrameRenderer(
     private var sourceHeight = 1
     private var canonicalGeometry = CanonicalGeometry(1, 1, 1, 1, 0)
     private var fileGeneration = 0L
-    private var pendingTarget: TargetHandle? = null
+    private var pendingTarget: PendingTarget? = null
     private val probePolicy = FrameProbePolicy(renderMode)
     private val surfaceLeases = SurfaceLeaseTracker()
 
@@ -148,7 +175,7 @@ class EglFrameRenderer(
         handler.post {
             fileGeneration = nextFileGeneration
             probePolicy.reset()
-            pendingTarget?.complete(RenderAck(AckStatus.STALE, 0, "FILE_CHANGED"))
+            pendingTarget?.complete?.invoke(RenderAck(AckStatus.STALE, 0, "FILE_CHANGED"))
             pendingTarget = null
             if (display != EGL14.EGL_NO_DISPLAY) cache.clear()
             latch.countDown()
@@ -217,8 +244,38 @@ class EglFrameRenderer(
         handler.post {
             if (pendingTarget == null && display != EGL14.EGL_NO_DISPLAY && request.token.fileGeneration == fileGeneration) {
                 TargetHandle(request).also {
-                    pendingTarget = it
+                    pendingTarget = PendingTarget(
+                        token = request.token,
+                        expectedKey = request.expectedKey,
+                        publicationRequest = request,
+                        complete = it::complete,
+                    )
                     cache.recordRequest(request.requestedFrameIndex)
+                    result.set(it)
+                }
+            }
+            latch.countDown()
+        }
+        return if (latch.await(2, TimeUnit.SECONDS)) result.get() else null
+    }
+
+    fun queueCacheOnly(token: GenerationToken, expectedKey: FrameKey): CacheTargetHandle? {
+        val latch = CountDownLatch(1)
+        val result = AtomicReference<CacheTargetHandle?>()
+        handler.post {
+            if (
+                pendingTarget == null &&
+                display != EGL14.EGL_NO_DISPLAY &&
+                token.fileGeneration == fileGeneration &&
+                publicationGate.isCurrent(token)
+            ) {
+                CacheTargetHandle(token, expectedKey).also {
+                    pendingTarget = PendingTarget(
+                        token = token,
+                        expectedKey = expectedKey,
+                        publicationRequest = null,
+                        complete = it::complete,
+                    )
                     result.set(it)
                 }
             }
@@ -321,19 +378,19 @@ class EglFrameRenderer(
         try {
             source.updateTexImage()
         } catch (_: Throwable) {
-            pendingTarget?.complete(RenderAck(AckStatus.ERROR, 0, "TEXTURE_UPDATE_FAILED"))
+            pendingTarget?.complete?.invoke(RenderAck(AckStatus.ERROR, 0, "TEXTURE_UPDATE_FAILED"))
             pendingTarget = null
             return
         }
         val handle = pendingTarget ?: return
         pendingTarget = null
         val timestampNs = source.timestamp
-        val expectedTimestampNs = handle.request.expectedKey.ptsUs * 1_000L
+        val expectedTimestampNs = handle.expectedKey.ptsUs * 1_000L
         if (timestampNs != expectedTimestampNs) {
             handle.complete(RenderAck(AckStatus.ERROR, timestampNs, "TEXTURE_TIMESTAMP_MISMATCH"))
             return
         }
-        if (!publicationGate.isCurrent(handle.request.token)) {
+        if (handle.token.fileGeneration != fileGeneration || !publicationGate.isCurrent(handle.token)) {
             handle.complete(RenderAck(AckStatus.STALE, timestampNs, "TEXTURE_GENERATION_STALE"))
             return
         }
@@ -346,9 +403,17 @@ class EglFrameRenderer(
             handle.complete(RenderAck(AckStatus.ERROR, timestampNs, "TEXTURE_COPY_FAILED"))
             return
         }
-        cache.put(handle.request.expectedKey, cached, cached.width.toLong() * cached.height.toLong() * 4L)
-        drawTextureToWindow(cached)
-        handle.complete(renderAckFor(publish(handle.request, timestampNs), imageProbe = cached.imageProbe))
+        cache.put(handle.expectedKey, cached, cached.width.toLong() * cached.height.toLong() * 4L)
+        completeCachedTextureTarget(
+            publicationRequest = handle.publicationRequest,
+            onCacheOnly = {
+                handle.complete(RenderAck(AckStatus.CACHED, timestampNs, imageProbe = cached.imageProbe))
+            },
+            onPublish = { publicationRequest ->
+                drawTextureToWindow(cached)
+                handle.complete(renderAckFor(publish(publicationRequest, timestampNs), imageProbe = cached.imageProbe))
+            },
+        )
     }
 
     private fun publish(request: FrameRequest, textureTimestampNs: Long): PublicationEvent =
@@ -555,7 +620,7 @@ class EglFrameRenderer(
     }
 
     private fun releaseGl() {
-        pendingTarget?.complete(RenderAck(AckStatus.ERROR, 0, "SURFACE_RELEASED"))
+        pendingTarget?.complete?.invoke(RenderAck(AckStatus.ERROR, 0, "SURFACE_RELEASED"))
         pendingTarget = null
         if (display != EGL14.EGL_NO_DISPLAY) {
             runCatching { EGL14.eglMakeCurrent(display, eglWindowSurface, eglWindowSurface, context) }
@@ -641,6 +706,14 @@ class EglFrameRenderer(
             void main() { color = texture(uTexture, vTextureCoordinate); }
         """
     }
+}
+
+internal fun completeCachedTextureTarget(
+    publicationRequest: FrameRequest?,
+    onCacheOnly: () -> Unit,
+    onPublish: (FrameRequest) -> Unit,
+) {
+    if (publicationRequest == null) onCacheOnly() else onPublish(publicationRequest)
 }
 
 internal fun cacheTargetBytes(level: Int, byteBudget: Long): Long = when {

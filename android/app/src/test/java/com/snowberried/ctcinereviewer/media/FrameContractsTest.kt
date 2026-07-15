@@ -26,7 +26,38 @@ class FrameContractsTest {
         assertEquals(listOf(0L, 100_000L, 200_000L, 200_000L), video.frames.map { it.key.ptsUs })
         assertEquals(listOf(0, 0, 0, 1), video.frames.map { it.key.duplicateOrdinal })
         assertEquals(listOf(0, 2, 1, 3), video.frames.map { it.sampleOrdinal })
+        assertEquals(video.frames[2], video.frameForOutput(200_000L, 0))
+        assertEquals(video.frames[3], video.frameForOutput(200_000L, 1))
         assertEquals(0, video.previousSyncSample(video.frames.last()).sampleOrdinal)
+    }
+
+    @Test
+    fun `previous sync lookup selects the nearest indexed sample`() {
+        val video = buildFrameIndex(
+            8,
+            listOf(
+                IndexedSample(0, 0, true),
+                IndexedSample(1, 3_000, false),
+                IndexedSample(2, 1_000, true),
+                IndexedSample(3, 2_000, false),
+            ),
+        )
+
+        assertEquals(0, video.previousSyncSample(video.frames.first { it.sampleOrdinal == 1 }).sampleOrdinal)
+        assertEquals(2, video.previousSyncSample(video.frames.first { it.sampleOrdinal == 3 }).sampleOrdinal)
+    }
+
+    @Test
+    fun `previous sync lookup never selects a future sync sample`() {
+        val video = buildFrameIndex(
+            9,
+            listOf(
+                IndexedSample(0, 0, false),
+                IndexedSample(1, 1_000, true),
+            ),
+        )
+
+        assertEquals(0, video.previousSyncSample(video.frames.first()).sampleOrdinal)
     }
 
     @Test
@@ -105,6 +136,38 @@ class FrameContractsTest {
 
         assertEquals(PublicationResult.PUBLISHED, oldEvent.get().result)
         assertTrue(oldEvent.get().eventSequence < acceptance.get().eventSequence)
+    }
+
+    @Test
+    fun `publication history is a bounded chronological ring`() {
+        val gate = PublicationGate(eventHistoryCapacity = 2)
+        val file = gate.beginFile()
+        repeat(3) { index ->
+            val request = gate.acceptRequest(file.fileGeneration, index, FrameKey(index, index * 1_000L, 0))!!.request
+            assertEquals(PublicationResult.PUBLISHED, gate.publish(request, index * 1_000_000L, { true }) { true }.result)
+        }
+
+        assertEquals(listOf(1, 2), gate.recentEvents().map(PublicationEvent::requestedFrameIndex))
+    }
+
+    @Test
+    fun `synthetic stale successful swap is counted as an invariant violation`() {
+        val invalid = PublicationEvent(
+            eventSequence = 1,
+            elapsedRealtimeNanos = 1,
+            fileGeneration = 1,
+            requestGeneration = 1,
+            requestedFrameIndex = 0,
+            expectedKey = FrameKey(0, 0, 0),
+            currentFileGeneration = 2,
+            currentRequestGeneration = 2,
+            textureTimestampNs = 0,
+            swapAttempted = true,
+            eglSwapBuffersResult = true,
+            result = PublicationResult.PUBLISHED,
+        )
+
+        assertEquals(1L, publicationInvariantViolationCount(listOf(invalid)))
     }
 
     @Test

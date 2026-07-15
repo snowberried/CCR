@@ -3,6 +3,7 @@ package com.snowberried.ctcinereviewer
 import android.app.Application
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.media.MediaFormat
 import android.net.Uri
 import android.os.SystemClock
 import androidx.lifecycle.Lifecycle
@@ -74,6 +75,40 @@ class ViewerLifecycleTest {
             assertEquals(switched.activeFileGeneration, state(scenario).activeFileGeneration)
             assertEquals(0, state(scenario).displayedFrame?.displayFrameIndex)
             assertEquals(0L, state(scenario).diagnostics.publicationInvariantViolationCount)
+        }
+    }
+
+    @Test
+    fun h264ToHevcSwitchWhileSurfaceDetachedPublishesFrameZero() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            waitState(scenario) { it.surfaceAvailable }
+            open(scenario, "switch-a.mp4")
+            val first = waitState(scenario) {
+                it.metadata?.mime == MediaFormat.MIMETYPE_VIDEO_AVC &&
+                    it.displayedFrame?.displayFrameIndex == 0
+            }
+            val firstGeneration = requireNotNull(first.activeFileGeneration)
+            val viewer = viewer(scenario)
+
+            scenario.moveToState(Lifecycle.State.CREATED)
+            waitState(scenario) { !it.surfaceAvailable && it.displayedFrame == null }
+            instrumentation.runOnMainSync {
+                viewer.openVideo(uri("hevc-main8.mp4"))
+            }
+            assertEquals(ViewerRestoreState.WAITING_FOR_SURFACE, viewer.uiState.restoreState)
+
+            scenario.moveToState(Lifecycle.State.RESUMED)
+            val second = waitState(scenario, 30_000) {
+                it.metadata?.mime == MediaFormat.MIMETYPE_VIDEO_HEVC &&
+                    it.displayedFrame?.displayFrameIndex == 0 &&
+                    it.restoreState == ViewerRestoreState.COMPLETE
+            }
+
+            assertNotEquals(firstGeneration, second.activeFileGeneration)
+            assertEquals("ready", second.status)
+            assertEquals(0L, second.diagnostics.swapFailureCount)
+            assertEquals(0L, second.diagnostics.surfaceInvalidCount)
+            assertEquals(0L, second.diagnostics.publicationInvariantViolationCount)
         }
     }
 

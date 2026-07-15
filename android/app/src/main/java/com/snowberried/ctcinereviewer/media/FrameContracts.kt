@@ -29,16 +29,23 @@ data class IndexedVideo(
         require(frames.indices.all { frames[it].key.displayFrameIndex == it })
     }
 
+    private val framesByOutputKey = frames.associateBy { frame ->
+        frame.key.ptsUs to frame.key.duplicateOrdinal
+    }
+    private val syncSamples = samples.filter(IndexedSample::sync)
+
     val frameCount: Int get() = frames.size
 
     fun frameForOutput(ptsUs: Long, duplicateOrdinal: Int): IndexedFrame? =
-        frames.firstOrNull { it.key.ptsUs == ptsUs && it.key.duplicateOrdinal == duplicateOrdinal }
+        framesByOutputKey[ptsUs to duplicateOrdinal]
 
-    fun previousSyncSample(target: IndexedFrame): IndexedSample =
-        samples.asSequence()
-            .filter { it.sync && it.sampleOrdinal <= target.sampleOrdinal }
-            .maxByOrNull(IndexedSample::sampleOrdinal)
-            ?: samples.first()
+    fun previousSyncSample(target: IndexedFrame): IndexedSample {
+        if (syncSamples.isEmpty()) return samples.first()
+        val result = syncSamples.binarySearchBy(target.sampleOrdinal) { it.sampleOrdinal }
+        if (result >= 0) return syncSamples[result]
+        val insertionIndex = -result - 1
+        return if (insertionIndex == 0) samples.first() else syncSamples[insertionIndex - 1]
+    }
 }
 
 data class GenerationToken(
@@ -160,6 +167,7 @@ data class DecoderDiagnostics(
     val renderedCallbackCount: Long = 0,
     val cacheHitCount: Long = 0,
     val cacheMissCount: Long = 0,
+    val prefetchedFrameCount: Long = 0,
     val cacheBytes: Long = 0,
     val staleDiscardCount: Long = 0,
     val decoderRecreateCount: Long = 0,
@@ -172,6 +180,7 @@ data class DecoderDiagnostics(
     val surfaceInvalidCount: Long = 0,
     val publicationInvariantViolationCount: Long = 0,
     val fullFrameReadbackCount: Long = 0,
+    val publicationEventHistory: List<PublicationEvent> = emptyList(),
 )
 
 fun publicationInvariantViolationCount(events: Iterable<PublicationEvent>): Long = events.count { event ->

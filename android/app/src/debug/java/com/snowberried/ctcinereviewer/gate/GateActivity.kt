@@ -21,7 +21,8 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
     data class ObservedResult(val result: FrameResult, val diagnostics: DecoderDiagnostics)
 
     private lateinit var session: ExactFrameSession
-    private val surfaceReady = CountDownLatch(1)
+    private val holderSurfaceReady = CountDownLatch(1)
+    private val decoderSurfaceReady = CountDownLatch(1)
     private val metadata = LinkedBlockingQueue<ContainerMetadata>()
     private val indexes = LinkedBlockingQueue<IndexedVideo>()
     private val results = LinkedBlockingQueue<ObservedResult>()
@@ -38,14 +39,19 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
         session = ExactFrameSession(this, this, renderMode)
         val viewport = session.createViewport(this)
         viewport.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) = surfaceReady.countDown()
+            override fun surfaceCreated(holder: SurfaceHolder) = holderSurfaceReady.countDown()
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
             override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
         })
         setContentView(FrameLayout(this).apply { addView(viewport, FrameLayout.LayoutParams(-1, -1)) })
     }
 
-    fun awaitSurface(timeoutSeconds: Long = 5): Boolean = surfaceReady.await(timeoutSeconds, TimeUnit.SECONDS)
+    fun awaitSurface(timeoutSeconds: Long = 5): Boolean {
+        val deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
+        if (!holderSurfaceReady.await(timeoutSeconds, TimeUnit.SECONDS)) return false
+        val remainingNs = deadlineNs - System.nanoTime()
+        return remainingNs > 0 && decoderSurfaceReady.await(remainingNs, TimeUnit.NANOSECONDS)
+    }
 
     fun openFixture(uri: Uri) {
         metadata.clear()
@@ -86,6 +92,10 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
 
     override fun onPublicationEvent(event: PublicationEvent) {
         publicationEvents += event
+    }
+
+    override fun onSurfaceAvailabilityChanged(available: Boolean) {
+        if (available) decoderSurfaceReady.countDown()
     }
 
     override fun onDestroy() {
