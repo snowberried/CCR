@@ -65,6 +65,12 @@ try {
   Invoke-CheckedInstrumentation `
     -ClassName "com.snowberried.ctcinereviewer.gate.PilotRenderingTest" `
     -ExpectedOk "OK (1 test)"
+  Invoke-CheckedInstrumentation `
+    -ClassName "com.snowberried.ctcinereviewer.NavigationRepeatTest" `
+    -ExpectedOk "OK (4 tests)"
+  Invoke-CheckedInstrumentation `
+    -ClassName "com.snowberried.ctcinereviewer.NavigationHoldIntegrationTest" `
+    -ExpectedOk "OK (1 test)"
   1..$Repeat | ForEach-Object {
     Invoke-CheckedInstrumentation `
       -ClassName "com.snowberried.ctcinereviewer.ViewerLifecycleTest" `
@@ -108,6 +114,8 @@ if ($LASTEXITCODE -ne 0) { throw "S24_INTERNAL_APP_LAUNCH_FAILED" }
   versionName = "0.1.1"
   versionCode = 2
   pilotReadbackGateRuns = 1
+  navigationRepeatRuns = 1
+  navigationHoldIntegrationRuns = 1
   lifecycleRuns = $Repeat
   testPackageInstalled = $false
   internalAppLeftInstalled = $true

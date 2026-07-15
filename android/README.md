@@ -27,6 +27,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-apk-pri
 ## 표시 및 수명주기 계약
 
 - `requestedFrameIndex`는 ±1/±5, 처음/마지막, 직접 입력 즉시 갱신되고 연속 입력은 마지막 요청값에서 누적된다.
+- ±1/±5 버튼은 짧게 누르면 정확히 한 번 이동한다. 길게 누르면 Android long-press 임계 뒤 80ms 간격으로 고정 step을 반복하며, release·cancel·경계·Surface 소실 즉시 중단한다. 자동 가속은 없다.
 - `displayedFrame`은 현재 file/request generation의 `FrameResult.Published`와 성공한 실제 EGL swap 뒤에만 바뀐다. stale, error, unsupported 결과는 표시 프레임을 바꾸지 않는다.
 - `ViewerViewModel`이 MediaCodec actor와 EGL render thread를 소유한다. Activity와 Surface가 codec을 직접 호출하지 않는다.
 - 화면 회전 시 ViewModel, URI, 마지막 requested index를 유지한다. 새 Surface에서 해당 프레임이 다시 게시되기 전에는 복구 완료로 표시하지 않는다.
@@ -46,7 +47,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-apk-pri
 # 기존 Exactness Gate 전체
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-gate.ps1
 
-# Pilot readback 0 + lifecycle 3회
+# Pilot readback 0 + navigation hold + lifecycle 3회
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-regression.ps1 -Repeat 3
 ```
 

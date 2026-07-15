@@ -3,10 +3,13 @@ package com.snowberried.ctcinereviewer
 import android.net.Uri
 import android.os.Bundle
 import android.content.res.Configuration
+import android.view.ViewConfiguration
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,9 +26,11 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
@@ -33,6 +38,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.lifecycle.ViewModelProvider
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+
+internal const val NAVIGATION_REPEAT_INTERVAL_MS = 80L
 
 internal object AndroidSdkContract {
     const val MIN_SDK = 34
@@ -157,7 +169,7 @@ private fun ViewerControls(
     val metadata = state.metadata
     val requestedIndex = state.requestedFrameIndex
     val lastIndex = (metadata?.frameCount ?: 1) - 1
-    val canNavigate = metadata != null
+    val canNavigate = metadata != null && state.surfaceAvailable
     val directIndex = directInput.toIntOrNull()
 
     Column(modifier = modifier) {
@@ -212,12 +224,68 @@ private fun ViewerControls(
 }
 
 @Composable
-private fun androidx.compose.foundation.layout.RowScope.NavigationButton(
+internal fun androidx.compose.foundation.layout.RowScope.NavigationButton(
     label: String,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    Button(onClick = onClick, enabled = enabled, modifier = Modifier.weight(1f)) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val currentOnClick by rememberUpdatedState(onClick)
+    var repeated by remember { mutableStateOf(false) }
+
+    LaunchedEffect(interactionSource, enabled) {
+        if (!enabled) {
+            repeated = false
+            return@LaunchedEffect
+        }
+        var activePress: PressInteraction.Press? = null
+        var repeatJob: Job? = null
+        try {
+            interactionSource.interactions.collect { interaction ->
+                when (interaction) {
+                    is PressInteraction.Press -> {
+                        repeatJob?.cancel()
+                        activePress = interaction
+                        repeated = false
+                        repeatJob = launch {
+                            delay(ViewConfiguration.getLongPressTimeout().toLong())
+                            while (isActive) {
+                                repeated = true
+                                currentOnClick()
+                                delay(NAVIGATION_REPEAT_INTERVAL_MS)
+                            }
+                        }
+                    }
+
+                    is PressInteraction.Release -> if (interaction.press === activePress) {
+                        repeatJob?.cancel()
+                        repeatJob = null
+                        activePress = null
+                    }
+
+                    is PressInteraction.Cancel -> if (interaction.press === activePress) {
+                        repeatJob?.cancel()
+                        repeatJob = null
+                        activePress = null
+                        repeated = false
+                    }
+                }
+            }
+        } finally {
+            repeatJob?.cancel()
+        }
+    }
+
+    Button(
+        onClick = {
+            val wasRepeated = repeated
+            repeated = false
+            if (!wasRepeated) currentOnClick()
+        },
+        interactionSource = interactionSource,
+        enabled = enabled,
+        modifier = Modifier.weight(1f),
+    ) {
         Text(label)
     }
 }
