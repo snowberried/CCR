@@ -141,6 +141,7 @@ jobs:
           if ($releaseExitCode -eq 0) {
             throw "GitHub Release already exists: $env:RELEASE_TAG"
           }
+          exit 0
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.detect-version.outputs.version }}

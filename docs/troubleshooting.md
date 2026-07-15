@@ -276,7 +276,7 @@ Electron 43.1.0 npm 패키지에는 자동 `postinstall` 스크립트가 없다.
 
 ## 2026-07-15 GitHub Release 사전 검사에서 `release not found`가 실패로 처리됨
 
-상태: 수정 완료, GitHub Actions 재검증 대기
+상태: 1차 보완 후 원인 추가 확인, GitHub Actions 재검증 대기
 
 ### 증상
 
@@ -285,12 +285,13 @@ Electron 43.1.0 npm 패키지에는 자동 `postinstall` 스크립트가 없다.
 
 ### 원인
 
-- Windows PowerShell 5 환경에서 `gh release view`가 출력한 정상적인 `release not found` stderr가 `NativeCommandError`로 승격됐다.
-- 스크립트가 의도한 `$LASTEXITCODE` 검사에 도달하기 전에 GitHub Actions 단계가 실패했다.
+- Windows PowerShell 5 환경에서 `gh release view`가 정상적으로 `release not found`와 종료 코드 1을 반환했다.
+- 스크립트가 이 종료 코드를 “Release 없음”으로 판정한 뒤에도 PowerShell 프로세스의 마지막 native 종료 코드는 1로 남았다. GitHub Actions shell wrapper가 이를 단계 실패로 반환했다.
 
 ### 해결 절차
 
 - Release 존재 확인을 실행하는 동안에만 PowerShell의 오류 출력을 억제하고 종료 코드를 별도로 보관한다.
+- 종료 코드 1이 “기존 Release 없음”으로 확인되면 검사 단계 자체는 명시적으로 성공 종료한다.
 - 워크플로 실패로 태그와 Release가 모두 없는 경우, 현재 `package.json` 버전과 정확히 일치하는 수동 입력으로 같은 커밋을 재검증·배포할 수 있게 한다.
 - 입력 버전 불일치나 기존 태그·Release가 있으면 기존과 같이 배포 전에 실패한다.
 
