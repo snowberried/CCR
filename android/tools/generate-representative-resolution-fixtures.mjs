@@ -112,6 +112,9 @@ function markerFrame(id) {
 }
 
 function encoderArgs(spec) {
+  const colorMetadata = spec.codec === "h264"
+    ? "h264_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"
+    : "hevc_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1";
   return [
     "-c:v", spec.encoder,
     "-preset", "p7",
@@ -125,6 +128,9 @@ function encoderArgs(spec) {
     "-no-scenecut", "1",
     "-strict_gop", "1",
     "-pix_fmt", "yuv420p",
+    "-color_range", "tv",
+    "-colorspace", "bt709",
+    "-bsf:v", colorMetadata,
   ];
 }
 
@@ -276,7 +282,7 @@ function markerFromCanonicalFrame(frame, width) {
 async function decodeProbes(path, spec) {
   const args = [
     "-hide_banner", "-loglevel", "error", "-noautorotate", "-i", path,
-    "-map", "0:v:0", "-an", "-vf", `crop=${spec.width}:${spec.height}:0:0,format=rgb24`,
+    "-map", "0:v:0", "-an", "-vf", `crop=${spec.width}:${spec.height}:0:0,scale=in_color_matrix=bt709:in_range=tv:out_range=pc,format=rgb24`,
     "-fps_mode", "passthrough", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
   ];
   const child = spawn(ffmpeg, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
@@ -494,6 +500,13 @@ async function main() {
       generatorSha256,
       outputDirectory: "android/.generated/testdata/representative-resolution",
       marker: { ...marker, payload: "16-bit frame ID + CRC-8/0x07 + fixed finder pattern" },
+      colorPolicy: {
+        standard: "BT.709",
+        range: "limited",
+        transfer: "BT.709",
+        primaries: "BT.709",
+        metadataRequired: true,
+      },
       longHoldPolicy: {
         mode: "segmented",
         reason: "360 frames at the product 50 ms repeat interval cannot sustain a single 60-second +1/+5 hold; measured hold windows must be segmented and boundary transitions excluded from interval metrics.",

@@ -1,6 +1,7 @@
 package com.snowberried.ctcinereviewer.gate
 
 import android.content.Context
+import android.media.MediaFormat
 import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
@@ -134,6 +135,9 @@ class S24RepresentativeResolutionAccuracyTest {
         outputHistory.forEach { output ->
             assertEquals(visibleWidth, output.cropRight - output.cropLeft + 1)
             assertEquals(visibleHeight, output.cropBottom - output.cropTop + 1)
+            assertEquals(MediaFormat.COLOR_STANDARD_BT709, output.colorStandard)
+            assertEquals(MediaFormat.COLOR_RANGE_LIMITED, output.colorRange)
+            assertEquals(MediaFormat.COLOR_TRANSFER_SDR_VIDEO, output.colorTransfer)
         }
 
         return JSONObject()
@@ -266,9 +270,10 @@ class S24RepresentativeResolutionAccuracyTest {
         assertEquals(expected.duplicateOrdinal, actual.request.expectedKey.duplicateOrdinal)
         assertEquals(expected.ptsUs * 1_000L, actual.textureTimestampNs)
         assertEquals(expected.embeddedFrameId, probe.embeddedFrameId)
-        assertTrue("signature MAE=$mean", mean <= 6.0)
-        assertTrue("signature p99=$p99", p99 <= 16)
-        assertTrue("signature max=$maximum", maximum <= 40)
+        val signatureContext = "${golden.fixture}[${expected.displayFrameIndex}]"
+        assertTrue("$signatureContext signature MAE=$mean p99=$p99 max=$maximum", mean <= 6.0)
+        assertTrue("$signatureContext signature p99=$p99 MAE=$mean max=$maximum", p99 <= 16)
+        assertTrue("$signatureContext signature max=$maximum MAE=$mean p99=$p99", maximum <= 40)
     }
 
     private fun validateIndex(golden: Golden, actual: IndexedVideo) {
@@ -342,6 +347,9 @@ class S24RepresentativeResolutionAccuracyTest {
             .put("cropBottom", it.cropBottom)
             .put("visibleWidth", it.cropRight - it.cropLeft + 1)
             .put("visibleHeight", it.cropBottom - it.cropTop + 1)
+            .put("colorStandard", it.colorStandard)
+            .put("colorRange", it.colorRange)
+            .put("colorTransfer", it.colorTransfer)
     } ?: JSONObject.NULL
 
     private fun writeReport(outcome: Result<Unit>, fixtures: JSONArray) {
@@ -414,7 +422,7 @@ class S24RepresentativeResolutionAccuracyTest {
         private const val PLUS_FIVE_COUNT = 30
         private const val PTS_ROUNDING_TOLERANCE_US = 1L
         private const val RESULT_TIMEOUT_MS = 30_000L
-        private val ERROR_PATTERN = Regex("[A-Za-z0-9_.:\\[\\]-]{1,160}")
+        private val ERROR_PATTERN = Regex("[A-Za-z0-9_.:\\[\\]=,/ -]{1,160}")
         val REQUIRED_FIXTURES = listOf(
             "720p-h264-bframes",
             "1080p-h264-bframes",
