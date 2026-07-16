@@ -77,7 +77,7 @@ try {
   1..$Repeat | ForEach-Object {
     Invoke-CheckedInstrumentation `
       -ClassName "com.snowberried.ctcinereviewer.ViewerLifecycleTest" `
-      -ExpectedOk "OK (4 tests)"
+      -ExpectedOk "OK (6 tests)"
   }
 
   $packageInfo = (& $adb -s $serial shell dumpsys package $appPackage) -join "`n"
