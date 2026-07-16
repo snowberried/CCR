@@ -1,8 +1,11 @@
 # Patient and local media
-local-samples/
+local-samples/*
+!local-samples/README.md
+!local-samples/manifest.example.json
 local-cache/
 temp/
 *.mp4
+!android/testdata/frame-accuracy/*.mp4
 *.mov
 *.avi
 *.mkv
@@ -25,3 +28,14 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Android local state, build output, and signing secrets
+android/.gradle/
+android/.kotlin/
+android/.generated/
+android/**/build/
+android/local.properties
+signing.properties
+*.jks
+*.keystore
+android/reports/

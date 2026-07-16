@@ -1,0 +1,6 @@
+# Copy to signing.properties (ignored) or use CCR_ANDROID_INTERNAL_* environment variables.
+# This key is only for long-running .internal pilots. Never reuse a Play production key.
+internalStoreFile=C:/secure/ccr-android-internal-release.jks
+internalStorePassword=replace-me
+internalKeyAlias=ccr-internal
+internalKeyPassword=replace-me
