@@ -49,12 +49,16 @@ function snapshot(revision) {
       sha256: createHash("sha256").update(bytes).digest("hex"),
     };
   });
+  return { files, runtimeInputsTreeSha256: hashTree(files) };
+}
+
+function hashTree(files) {
   const tree = createHash("sha256");
   tree.update("CCR_RUNTIME_INPUTS_V1\0");
   for (const file of files) {
     tree.update(`${file.path}\0${file.byteSize}\0${file.sha256}\n`);
   }
-  return { files, runtimeInputsTreeSha256: tree.digest("hex") };
+  return tree.digest("hex");
 }
 
 function assert(condition, message) {
@@ -76,18 +80,17 @@ function assertNoRuntimeWorkingTreeChanges() {
   assert(untracked.length === 0, `untracked runtime input: ${untracked.join(", ")}`);
 }
 
-const runtime = snapshot(runtimeSourceSha);
-const generated = {
-  schemaVersion: 1,
-  manifestKind: "ccr-android-runtime-inputs",
-  runtimeSourceSha,
-  treeAlgorithm: "sha256(CCR_RUNTIME_INPUTS_V1\\0 + sorted(path\\0byteSize\\0fileSha256\\n))",
-  includePaths,
-  runtimeInputsTreeSha256: runtime.runtimeInputsTreeSha256,
-  files: runtime.files,
-};
-
 if (process.argv.includes("--write")) {
+  const runtime = snapshot(runtimeSourceSha);
+  const generated = {
+    schemaVersion: 1,
+    manifestKind: "ccr-android-runtime-inputs",
+    runtimeSourceSha,
+    treeAlgorithm: "sha256(CCR_RUNTIME_INPUTS_V1\\0 + sorted(path\\0byteSize\\0fileSha256\\n))",
+    includePaths,
+    runtimeInputsTreeSha256: runtime.runtimeInputsTreeSha256,
+    files: runtime.files,
+  };
   writeFileSync(manifestPath, `${JSON.stringify(generated, null, 2)}\n`, "utf8");
   console.log(`wrote ${manifestPath}`);
   console.log(generated.runtimeInputsTreeSha256);
@@ -96,15 +99,30 @@ if (process.argv.includes("--write")) {
 
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 assert(manifest.schemaVersion === 1, "schemaVersion");
-assert(manifest.manifestKind === generated.manifestKind, "manifestKind");
+assert(manifest.manifestKind === "ccr-android-runtime-inputs", "manifestKind");
 assert(manifest.runtimeSourceSha === runtimeSourceSha, "runtimeSourceSha");
 assert(JSON.stringify(manifest.includePaths) === JSON.stringify(includePaths), "includePaths");
-assert(manifest.runtimeInputsTreeSha256 === generated.runtimeInputsTreeSha256, "tree SHA");
-assert(JSON.stringify(manifest.files) === JSON.stringify(generated.files), "file inventory");
+assert(Array.isArray(manifest.files) && manifest.files.length > 0, "file inventory");
+const sortedManifestFiles = [...manifest.files].sort((left, right) =>
+  Buffer.compare(Buffer.from(left.path, "utf8"), Buffer.from(right.path, "utf8")),
+);
+assert(JSON.stringify(manifest.files) === JSON.stringify(sortedManifestFiles), "file inventory order");
+assert(
+  manifest.files.every(
+    (file) =>
+      typeof file.path === "string" &&
+      Number.isSafeInteger(file.byteSize) &&
+      file.byteSize >= 0 &&
+      /^[a-f0-9]{64}$/.test(file.sha256),
+  ),
+  "file inventory shape",
+);
+assert(new Set(manifest.files.map((file) => file.path)).size === manifest.files.length, "duplicate path");
+assert(manifest.runtimeInputsTreeSha256 === hashTree(manifest.files), "tree SHA");
 
 const head = snapshot("HEAD");
-assert(JSON.stringify(head.files) === JSON.stringify(runtime.files), "HEAD changes frozen runtime inputs");
+assert(JSON.stringify(head.files) === JSON.stringify(manifest.files), "HEAD changes frozen runtime inputs");
 assertNoRuntimeWorkingTreeChanges();
 
-console.log(`verified ${runtime.files.length} frozen runtime inputs`);
-console.log(`runtimeInputsTreeSha256=${runtime.runtimeInputsTreeSha256}`);
+console.log(`verified ${manifest.files.length} frozen runtime inputs`);
+console.log(`runtimeInputsTreeSha256=${manifest.runtimeInputsTreeSha256}`);
