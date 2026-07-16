@@ -510,8 +510,10 @@ function Clear-CcrPinnedRemoteReport {
   if ($ReportName -notmatch "^[A-Za-z0-9._-]+\.json$") { throw "PINNED_REPORT_NAME_INVALID" }
   $result = Invoke-CcrPinnedAdb $Context @("-s", $Context.Serial, "shell", "run-as", $PackageName, "rm", "-f", "files/$ReportName")
   if ($result.exitCode -ne 0) { throw "PINNED_STALE_REPORT_CLEAR_FAILED:$ReportName" }
-  $absence = Invoke-CcrPinnedAdb $Context @("-s", $Context.Serial, "exec-out", "run-as", $PackageName, "cat", "files/$ReportName")
-  if ($absence.exitCode -eq 0) { throw "PINNED_STALE_REPORT_STILL_PRESENT:$ReportName" }
+  $check = "run-as $PackageName sh -c 'if [ -e files/$ReportName ]; then exit 7; else exit 0; fi'"
+  $absence = Invoke-CcrPinnedAdb $Context @("-s", $Context.Serial, "shell", $check)
+  if ($absence.exitCode -eq 7) { throw "PINNED_STALE_REPORT_STILL_PRESENT:$ReportName" }
+  if ($absence.exitCode -ne 0) { throw "PINNED_STALE_REPORT_ABSENCE_CHECK_FAILED:$ReportName" }
 }
 
 function Assert-CcrPinnedReport {

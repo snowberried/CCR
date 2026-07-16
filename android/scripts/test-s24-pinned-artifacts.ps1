@@ -226,6 +226,47 @@ try {
     }
   }
 
+  Invoke-HostTest "stale-report-clear-confirms-absence" {
+    $reportCalls = [System.Collections.Generic.List[string]]::new()
+    $reportAdb = {
+      param([string[]]$CommandArguments)
+      $line = $CommandArguments -join " "
+      $reportCalls.Add($line) | Out-Null
+      return [PSCustomObject]@{ exitCode = 0; output = "" }
+    }.GetNewClosure()
+    $reportContext = [PSCustomObject]@{ Adb = "fake-adb"; Serial = "R58VALID"; AdbInvoker = $reportAdb }
+    Clear-CcrPinnedRemoteReport $reportContext $appPackage "frame-report.json"
+    if (@($reportCalls | Where-Object { $_ -match " sh -c 'if \[ -e files/frame-report\.json \]" }).Count -ne 1) {
+      throw "report absence postcondition was not checked"
+    }
+  }
+
+  Invoke-HostTest "stale-report-clear-rejects-present-file" {
+    $reportAdb = {
+      param([string[]]$CommandArguments)
+      $line = $CommandArguments -join " "
+      $exitCode = if ($line -match " sh -c ") { 7 } else { 0 }
+      return [PSCustomObject]@{ exitCode = $exitCode; output = "" }
+    }
+    $reportContext = [PSCustomObject]@{ Adb = "fake-adb"; Serial = "R58VALID"; AdbInvoker = $reportAdb }
+    $caught = $null
+    try { Clear-CcrPinnedRemoteReport $reportContext $appPackage "frame-report.json" } catch { $caught = $_.Exception.Message }
+    if ($caught -notmatch "PINNED_STALE_REPORT_STILL_PRESENT") { throw "present stale report was not rejected: $caught" }
+  }
+
+  Invoke-HostTest "stale-report-clear-rejects-unknown-check-error" {
+    $reportAdb = {
+      param([string[]]$CommandArguments)
+      $line = $CommandArguments -join " "
+      $exitCode = if ($line -match " sh -c ") { 2 } else { 0 }
+      return [PSCustomObject]@{ exitCode = $exitCode; output = "transport error" }
+    }
+    $reportContext = [PSCustomObject]@{ Adb = "fake-adb"; Serial = "R58VALID"; AdbInvoker = $reportAdb }
+    $caught = $null
+    try { Clear-CcrPinnedRemoteReport $reportContext $appPackage "frame-report.json" } catch { $caught = $_.Exception.Message }
+    if ($caught -notmatch "PINNED_STALE_REPORT_ABSENCE_CHECK_FAILED") { throw "unknown report check error was not preserved: $caught" }
+  }
+
   Invoke-HostTest "valid-preflight-is-read-only" {
     Reset-TestArtifacts
     $manifest = New-TestManifest
