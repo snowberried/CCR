@@ -313,3 +313,68 @@ GitHub Actions run `29384819544`에서 사전 검사, 102개 테스트, Windows 
 
 - `.github/workflows/release-windows.yml`
 - `docs/23_GITHUB_RELEASE_AUTOMATION.md`
+
+## 2026-07-16 Android HD exact fixture의 색 signature가 S24에서만 어긋나는 경우
+
+상태: 검증 완료
+
+### 증상
+
+- 대표 해상도 S24 exact Gate의 첫 frame에서 frame key, PTS, texture timestamp와 embedded ID는 모두 맞지만 signature MAE가 7.53125로 허용값 6을 넘었다.
+
+### 재현 조건
+
+- 색 primaries/transfer/matrix를 명시하지 않은 720p/1080p H.264 또는 HEVC 합성 fixture를 FFmpeg golden과 Android Surface 출력으로 비교할 때 발생했다.
+
+### 원인
+
+- FFmpeg golden은 미지정 색을 BT.601로 계산했고 S24 HD decoder/Surface 경로는 BT.709로 출력했다. 같은 frame을 BT.709로 비교한 독립 MAE 7.552083이 최초 차이와 일치해 frame identity 문제가 아니라 색 계약 문제임을 확인했다.
+
+### 해결 절차
+
+- 생성 시 container와 H.264/HEVC bitstream 모두에 BT.709 primaries/transfer/matrix와 limited range를 기록한다.
+- golden RGB 변환도 BT.709 limited로 고정한다.
+- Android exact test가 decoded `MediaFormat`의 BT.709/limited/SDR 값을 검사하게 한다.
+
+### 검증 방법
+
+- 7개 fixture의 `ffprobe` 색 필드가 모두 `tv,bt709,bt709,bt709`인지 확인한다.
+- S24에서 선택 frame 2,017개의 key·ID·signature mismatch와 write-open이 모두 0인지 확인한다.
+
+### 관련 변경
+
+- `android/tools/generate-representative-resolution-fixtures.mjs`
+- `android/testdata/representative-resolution/manifest.lock.json`
+- `android/app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/S24RepresentativeResolutionAccuracyTest.kt`
+
+## 2026-07-16 Macrobenchmark trace 수집 중 FUSE ENOTCONN이 한 번 발생한 경우
+
+상태: 우회·재시도 절차 검증 완료 / 근본 원인 미확정
+
+### 증상
+
+- 대표 Macrobenchmark batch 중 임시 저장소 접근이 `ENOTCONN`으로 실패해 한 방향 반전 시나리오의 최초 실행이 중단됐다.
+
+### 재현 조건
+
+- S24에서 여러 긴 Macrobenchmark/Perfetto batch를 연속 실행하던 중 한 번 발생했다. 반복 재현되지는 않았다.
+
+### 원인
+
+- Android 테스트 임시 저장소의 FUSE 연결이 일시적으로 끊긴 현상까지 확인했다. 앱 decoder/cache 결함이라는 증거는 없으며 더 깊은 플랫폼 원인은 미확정이다.
+
+### 해결 절차
+
+- 실패 batch를 즉시 성공으로 간주하지 않는다.
+- Gradle 테스트 프로세스를 정리하고 장치 저장소 mount가 정상 응답하는지 확인한 뒤 실패한 test method만 다시 실행한다.
+- 장치 reboot나 앱 데이터 삭제 없이 복구되지 않으면 실기기 검증을 중단한다.
+
+### 검증 방법
+
+- mount 정상 복귀 뒤 실패한 1080p 방향 반전 method가 3/3 통과했다.
+- 최종 8개 시나리오 각각 Perfetto trace 3개가 존재하며 총 24개를 파싱했다.
+
+### 관련 변경
+
+- 코드 변경 없음
+- 로컬 `android/build/reports/macrobenchmark/` 검증 기록

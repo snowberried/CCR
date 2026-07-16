@@ -73,6 +73,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-batter
 ## 대표 해상도 fixture 계약
 
 - 720p H.264 B-frame과 1080p H.264 B-frame/long-GOP, HEVC Main 8, VFR, H.264↔HEVC 전환용 합성 영상 7개를 각각 360프레임으로 고정했다.
+- 모든 대표 fixture와 golden은 BT.709 limited 색 계약을 사용하고, container·bitstream metadata와 Android MediaFormat 출력이 이 계약과 일치해야 한다.
 - MP4와 전체 golden JSON은 저장소에 넣지 않는다. `android/.generated/testdata/representative-resolution/`에 생성하고 `android/testdata/representative-resolution/manifest.lock.json`의 exact SHA/cache key로만 복원한다.
 - 일반 CI는 manifest 계약만 검사한다. S24 exact job은 exact cache key가 없으면 자동 재인코딩하지 않고 Pending으로 중단한다. GitHub Release는 fixture 배포에 사용하지 않는다.
 - 60초 hold는 360프레임 경계에서 재배치한 segmented 측정이다. 경계 구간을 PublicationEvent 통계에서 제외하며 단일 연속 hold로 표현하지 않는다.
@@ -129,7 +130,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-batter
 - 환자명, 등록번호, 검사번호, 전체 로컬 경로 기록
 - 환자 영상 screenshot 또는 screen recording을 저장소에 추가
 
-실제 비식별 MP4 20-frame 비교가 끝나기 전 Gate 4A 판정은 `자동 게이트 PASS / 수동 파일럿 Pending`이다.
+실제 비식별 MP4 20-frame 비교와 분리 내구 시험이 끝나기 전 Gate 4A 판정은 `자동 정확성 Gate PASS / 장기 내구·수동 파일럿 Pending`이다.
+
+## 2026-07-16 S24 Ultra 실측 기준선
+
+측정 앱 코드 SHA는 `5887a54b11775770f7005a0ec96320283a402010`이다. Samsung `SM-S928N`에서 기존 17-fixture exact Gate와 대표 7-fixture exact/cache Gate, background 회귀 3회, 대표 Macrobenchmark 8시나리오×3회 및 15분 단일 파일 memory 표본을 실행했다.
+
+- 대표 exact: 선택 프레임 2,017개 mismatch 0, write-open 0, stale/swap failure 0
+- hardware codec: `c2.qti.avc.decoder`, `c2.qti.hevc.decoder`
+- cache: 64 MiB hard cap 안에서 peak 66,355,200 bytes, rejection/double-release/stale/swap failure 0
+- background: 최초 open·ON_STOP·입력 없는 resume에서 speculative prefetch 증가 0, 방향 입력 후 재개
+- 길게 누르기 게시 속도: 대표 연속 시나리오 중앙 실행 기준 4.299~6.632 fps. 정확 프레임 오류는 없지만 완전히 부드럽다는 판정은 하지 않는다.
+- 15분 memory: cap 위반이나 자원 폭증은 관찰되지 않았지만 plateau는 `INCONCLUSIVE`
+- 500회 codec switch, 추가 lifecycle 내구, 10분 idle, USB 분리 배터리와 실제 사용자 파일은 `Pending`
+
+상세 수치와 제한은 `docs/26_ANDROID_REPRESENTATIVE_RESOLUTION_VALIDATION.md`에 기록한다. 실기기 report는 ignored `android/build/reports/`에만 유지한다.
 
 ## 개인정보 및 제외 범위
 
