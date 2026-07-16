@@ -41,6 +41,28 @@ const representativeReadme = readFileSync(
   resolve(androidRoot, "testdata/representative-resolution/README.md"),
   "utf8",
 );
+const resumableScriptNames = [
+  "run-s24-navigation-perf.ps1",
+  "run-s24-idle.ps1",
+  "run-s24-codec-switch.ps1",
+  "run-s24-lifecycle.ps1",
+  "run-s24-battery.ps1",
+];
+const resumableScripts = new Map(
+  resumableScriptNames.map((name) => [
+    name,
+    readFileSync(resolve(androidRoot, "scripts", name), "utf8"),
+  ]),
+);
+const s24Common = readFileSync(
+  resolve(androidRoot, "scripts/s24-validation-common.ps1"),
+  "utf8",
+);
+const s24Gate = readFileSync(resolve(androidRoot, "scripts/run-s24-gate.ps1"), "utf8");
+const s24FrameAccuracyTest = readFileSync(
+  resolve(androidRoot, "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/S24FrameAccuracyTest.kt"),
+  "utf8",
+);
 
 function requireContract(condition, message) {
   if (!condition) throw new Error(`Android source contract failed: ${message}`);
@@ -56,8 +78,8 @@ requireContract(session.includes('openFileDescriptor(uri, "r")'), "source URI is
 requireContract(!/openFileDescriptor\([^\n]+,\s*"(?:w|rw|rwt|wa)"/.test(session), "write-capable source open mode");
 requireContract(provider.includes("ParcelFileDescriptor.MODE_READ_ONLY"), "fixture provider is not read-only");
 requireContract(provider.includes('if (mode != "r")'), "fixture provider does not reject write modes");
-requireContract(/versionCode\s*=\s*4\b/.test(build), "versionCode is not 4");
-requireContract(/versionName\s*=\s*"0\.2\.0-alpha\.3"/.test(build), "versionName is not 0.2.0-alpha.3");
+requireContract(/versionCode\s*=\s*5\b/.test(build), "versionCode is not 5");
+requireContract(/versionName\s*=\s*"0\.2\.0-alpha\.4"/.test(build), "versionName is not 0.2.0-alpha.4");
 requireContract(build.includes('applicationIdSuffix = ".internal"'), "internal application ID suffix is missing");
 requireContract(
   build.includes('androidx.compose.material3.adaptive:adaptive:1.2.0'),
@@ -79,8 +101,12 @@ requireContract(gitignore.split(/\r?\n/).includes("*.keystore"), "recursive keys
 requireContract(gitignore.split(/\r?\n/).includes("signing.properties"), "recursive signing properties ignore is missing");
 requireContract(workflow.includes('      - "codex/android-*"'), "Android CI codex/android-* push filter is missing");
 requireContract(
-  workflow.includes("name: ccr-android-0.2.0-alpha.3-internal"),
+  workflow.includes("name: ccr-android-0.2.0-alpha.4-internal"),
   "Android CI artifact identity is stale",
+);
+requireContract(
+  workflow.includes("name: ccr-android-0.2.0-alpha.4-test-tools"),
+  "Android CI test-tool artifact identity is stale",
 );
 requireContract(
   workflow.includes("verify-representative-resolution-fixtures.mjs --manifest-only"),
@@ -94,6 +120,95 @@ requireContract(
   !/^\s*implementation\("androidx\.metrics:metrics-performance:/m.test(build),
   "JankStats leaked into the product implementation configuration",
 );
+
+for (const [name, source] of resumableScripts) {
+  for (const marker of [
+    "MaxMinutes",
+    "$Resume",
+    "Get-CcrCheckpoint",
+    "Save-CcrCheckpoint",
+    "Clear-CcrRunArtifacts",
+    "Complete-CcrCleanup",
+    "Get-CcrBatteryStateSafe",
+    "chargingAtStart",
+    "containsRealMediaMetadata = $false",
+  ]) {
+    requireContract(source.includes(marker), `${name} missing resumable safety marker ${marker}`);
+  }
+}
+for (const marker of [
+  "am force-stop",
+  "uninstall $packageName",
+  "stay_on_while_plugged_in",
+  "screen_brightness_mode",
+  "screen_off_timeout",
+  "accelerometer_rotation",
+  "user_rotation",
+  "S24_CLEAN_WORKTREE_REQUIRED",
+  "Invoke-CcrTimedProcess",
+  "CleanupFailures",
+  "S24_MAX_MINUTES_REACHED_DURING_BUILD",
+]) {
+  requireContract(s24Common.includes(marker), `S24 common cleanup missing ${marker}`);
+}
+requireContract(
+  resumableScripts.get("run-s24-navigation-perf.ps1").includes("MEASURED_PENDING_ANALYSIS") &&
+    resumableScripts.get("run-s24-navigation-perf.ps1").includes("connected_android_test_additional_output") &&
+    resumableScripts.get("run-s24-navigation-perf.ps1").includes("outstanding target depth <=1") &&
+    resumableScripts.get("run-s24-navigation-perf.ps1").includes("+5 raw lag <=5"),
+  "navigation performance wrapper must not auto-pass measurements",
+);
+requireContract(
+  s24Gate.includes("s24-forward-sequential-report.json") &&
+    s24Gate.includes("S24_SEQUENTIAL_REPORT_PULL_FAILED"),
+  "S24 exact gate does not require the forward sequential report",
+);
+for (const marker of [
+  "S24_CLEAN_WORKTREE_REQUIRED",
+  "CCR_ANDROID_COMMIT_SHA",
+  "testApkSha256",
+  "S24_FULL_FIXTURE_COUNT_MISMATCH",
+  "S24_SEQUENTIAL_RUN_COUNT_MISMATCH",
+  "s24-gate-summary.json",
+  "fullFixtures.Count -ne 17",
+  "fullFrameCount -ne 236",
+  "sequentialRuns.Count -ne 6",
+  "sequentialTargetCount -ne 77",
+]) {
+  requireContract(s24Gate.includes(marker), `S24 exact gate evidence identity missing ${marker}`);
+}
+for (const marker of [
+  'put("appVersionName"',
+  'put("appVersionCode"',
+  'put("appCommitSha"',
+  'put("testApkSha256"',
+  'put("syntheticOnly", true)',
+  'put("containsRealMediaMetadata", false)',
+  '"${golden.fixture}: signature length"',
+]) {
+  requireContract(s24FrameAccuracyTest.includes(marker), `S24 exact report contract missing ${marker}`);
+}
+requireContract(
+  resumableScripts.get("run-s24-codec-switch.ps1").includes("CHUNKED_SAFE_CHECKPOINTS"),
+  "codec switch checkpoint continuity caveat is missing",
+);
+requireContract(
+  resumableScripts.get("run-s24-lifecycle.ps1").includes("INCONCLUSIVE_NO_PER_CYCLE_RESOURCE_SAMPLES"),
+  "lifecycle resource plateau caveat is missing",
+);
+const batteryScript = resumableScripts.get("run-s24-battery.ps1");
+requireContract(
+  batteryScript.includes("if ($context.BatteryAtStart.pluggedOrCharging)") &&
+    batteryScript.includes('status = "NOT_EVALUABLE"') &&
+    batteryScript.includes('reason = "USB_OR_CHARGING_AT_START"'),
+  "battery wrapper must stop immediately when USB or charging is active",
+);
+for (const name of ["run-s24-idle.ps1", "run-s24-battery.ps1"]) {
+  requireContract(
+    resumableScripts.get(name).includes('resumeGranularity -NotePropertyValue "whole-instrumentation-restart"'),
+    `${name} must declare whole-instrumentation resume granularity`,
+  );
+}
 
 requireContract(representativeLock.status === "LOCKED", "representative fixture lock is not immutable");
 requireContract(representativeLock.syntheticOnly === true, "representative fixtures are not synthetic-only");
@@ -179,4 +294,4 @@ requireContract(
   "local sample reference frame index/PTS contract",
 );
 
-console.log("verified Android 0.2.0-alpha.3 identity, frozen evidence privacy, CI, local sample, and signing contracts");
+console.log("verified Android 0.2.0-alpha.4 identity, frozen evidence privacy, CI, local sample, and signing contracts");

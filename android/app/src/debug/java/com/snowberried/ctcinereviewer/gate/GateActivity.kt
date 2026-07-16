@@ -80,6 +80,17 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
         lastRequestedIndex = index
         return session.requestDirectionalFrame(index, direction)
     }
+
+    fun requestForwardSequentialFrame(index: Int, stride: Int): RequestAcceptance? {
+        require(stride == 1 || stride == 5)
+        lastRequestedIndex = index
+        return session.tryRequestFrame(
+            frameIndex = index,
+            prefetchPermit = null,
+            forwardTraversalStride = stride,
+        )
+    }
+
     fun awaitActorIdle(timeoutMs: Long = 5_000): Boolean = session.awaitActorIdleForTest(timeoutMs)
     fun diagnosticsSnapshot(): DecoderDiagnostics = latestDiagnostics
     fun configureValidationDisplay(brightness: Float) {

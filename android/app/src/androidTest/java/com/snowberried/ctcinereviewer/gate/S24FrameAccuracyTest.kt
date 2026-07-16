@@ -10,6 +10,7 @@ import android.os.SystemClock
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.snowberried.ctcinereviewer.BuildConfig
 import com.snowberried.ctcinereviewer.media.DecoderDiagnostics
 import com.snowberried.ctcinereviewer.media.ContainerMetadata
 import com.snowberried.ctcinereviewer.media.DecodedOutputMetadata
@@ -99,7 +100,7 @@ class S24FrameAccuracyTest {
 
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val targetContext = instrumentation.targetContext
-    private val report = Report(targetContext)
+    private val report = Report(targetContext, instrumentation.context)
     private val latencyMs = mutableListOf<Double>()
     private var lastDiagnostics = DecoderDiagnostics()
     private var mismatchCount = 0
@@ -125,13 +126,15 @@ class S24FrameAccuracyTest {
             for (name in names) {
                 val golden = loadGolden(name)
                 assertEquals(golden.sourceSha256, assetSha256(golden.fixture))
-                exerciseEveryFrame(gate, golden)
+                val metadata = exerciseEveryFrame(gate, golden)
                 report.fixtures += JSONObject()
                     .put("fixture", golden.fixture)
                     .put("sourceSha256", golden.sourceSha256)
                     .put("codec", golden.codec)
                     .put("profile", golden.profile)
                     .put("frameCount", golden.frames.size)
+                    .put("codecComponent", metadata.codecComponent)
+                    .put("hardwareAccelerated", metadata.hardwareAccelerated)
                     .put(
                         "configuredOutputMetadata",
                         lastDiagnostics.configuredOutputMetadata?.let(::decodedOutputJson) ?: JSONObject.NULL,
@@ -156,6 +159,7 @@ class S24FrameAccuracyTest {
                 latencyMs = latencyMs,
                 diagnostics = lastDiagnostics,
                 writeOpenCount = ReadOnlyFixtureProvider.writeOpenCount.get(),
+                mismatchCount = mismatchCount,
             )
         }
         scenario.close()
@@ -166,7 +170,55 @@ class S24FrameAccuracyTest {
         reportOutcome.getOrThrow()
     }
 
-    private fun exerciseEveryFrame(activity: GateActivity, golden: Golden) {
+    @Test
+    fun forwardSequentialStrideOneAndFiveRemainExactOnS24Ultra() {
+        assumeTrue(
+            "S24 Ultra Gate requires Samsung SM-S928*",
+            Build.MANUFACTURER.equals("samsung", true) && Build.MODEL.startsWith("SM-S928"),
+        )
+        ReadOnlyFixtureProvider.writeOpenCount.set(0)
+        val scenario = ActivityScenario.launch(GateActivity::class.java)
+        val activity = AtomicReference<GateActivity>()
+        val ready = CountDownLatch(1)
+        scenario.onActivity {
+            activity.set(it)
+            ready.countDown()
+        }
+        assertTrue("GateActivity unavailable", ready.await(5, TimeUnit.SECONDS))
+        val gate = activity.get()
+        assertTrue("EGL Surface was not created", gate.awaitSurface())
+        gate.display.mode.let { report.captureDisplay(it.physicalWidth, it.physicalHeight, it.refreshRate) }
+
+        val outcome = runCatching {
+            SEQUENTIAL_FIXTURES.forEach { name ->
+                val golden = loadGolden(name)
+                assertEquals(golden.sourceSha256, assetSha256(golden.fixture))
+                exerciseForwardSequential(gate, golden, stride = 1)
+                exerciseForwardSequential(gate, golden, stride = 5)
+            }
+            assertEquals("source was opened for write", 0, ReadOnlyFixtureProvider.writeOpenCount.get())
+            assertEquals("exactness mismatch", 0, mismatchCount)
+        }
+        val reportOutcome = runCatching {
+            report.finish(
+                status = if (outcome.isSuccess) "PASS" else "FAIL",
+                failure = outcome.exceptionOrNull(),
+                latencyMs = emptyList(),
+                diagnostics = lastDiagnostics,
+                writeOpenCount = ReadOnlyFixtureProvider.writeOpenCount.get(),
+                mismatchCount = mismatchCount,
+                fileName = SEQUENTIAL_REPORT_FILE,
+            )
+        }
+        scenario.close()
+        outcome.exceptionOrNull()?.let { failure ->
+            reportOutcome.exceptionOrNull()?.let(failure::addSuppressed)
+            throw failure
+        }
+        reportOutcome.getOrThrow()
+    }
+
+    private fun exerciseEveryFrame(activity: GateActivity, golden: Golden): ContainerMetadata {
         report.currentFixture = golden.fixture
         report.currentFrameIndex = 0
         val openedAt = SystemClock.elapsedRealtimeNanos()
@@ -182,6 +234,7 @@ class S24FrameAccuracyTest {
         latencyMs += elapsedMs(openedAt)
         lastDiagnostics = first.diagnostics
         for (index in 1 until golden.frames.size) requestAndValidate(activity, golden, index)
+        return metadata
     }
 
     private fun exerciseNavigation(activity: GateActivity, golden: Golden) {
@@ -190,6 +243,71 @@ class S24FrameAccuracyTest {
         val middle = golden.frames.size / 2
         val sequence = listOf(golden.frames.lastIndex, 0, middle, middle - 1, middle + 4, 1, golden.frames.lastIndex - 1)
         sequence.forEach { requestAndValidate(activity, golden, it) }
+    }
+
+    private fun exerciseForwardSequential(activity: GateActivity, golden: Golden, stride: Int) {
+        report.currentFixture = golden.fixture
+        val mismatchBefore = mismatchCount
+        val metadata = openAndAwait(activity, golden)
+        var diagnostics = lastDiagnostics
+        var requestCount = 0
+        for (index in stride..golden.frames.lastIndex step stride) {
+            report.currentFrameIndex = index
+            activity.clearResults()
+            val acceptance = AtomicReference<RequestAcceptance>()
+            onMain(activity) {
+                activity.requestForwardSequentialFrame(index, stride)?.let(acceptance::set)
+            }
+            assertNotNull("${golden.fixture}[$index]: sequential request was not accepted", acceptance.get())
+            diagnostics = awaitPublished(activity, golden, index).diagnostics
+            lastDiagnostics = diagnostics
+            requestCount += 1
+        }
+        assertEquals("${golden.fixture}: stride $stride exactness mismatch", mismatchBefore, mismatchCount)
+        assertTrue("${golden.fixture}: stride $stride never entered sequential decode", diagnostics.sequentialEntryCount > 0)
+        assertTrue("${golden.fixture}: stride $stride emitted no sequential output", diagnostics.sequentialOutputCount > 0)
+        assertEquals("${golden.fixture}: stride $stride stale result", 0L, diagnostics.staleDiscardCount)
+        assertEquals("${golden.fixture}: stride $stride stale swap", 0L, diagnostics.staleBeforeSwapCount)
+        assertEquals("${golden.fixture}: stride $stride swap failure", 0L, diagnostics.swapFailureCount)
+        assertEquals("${golden.fixture}: stride $stride invalid surface", 0L, diagnostics.surfaceInvalidCount)
+        assertEquals(
+            "${golden.fixture}: stride $stride publication invariant",
+            0L,
+            diagnostics.publicationInvariantViolationCount,
+        )
+        assertEquals("${golden.fixture}: stride $stride cache rejection", 0L, diagnostics.cacheRejectionCount)
+        assertEquals("${golden.fixture}: stride $stride cache thrash", 0L, diagnostics.cacheThrashCount)
+        assertEquals("${golden.fixture}: stride $stride texture double release", 0L, diagnostics.textureDoubleReleaseCount)
+        assertTrue(
+            "${golden.fixture}: stride $stride cache exceeded byte budget",
+            diagnostics.cacheBytes <= diagnostics.cacheBudgetBytes,
+        )
+        assertEquals("${golden.fixture}: stride $stride unexpectedly started prefetch", 0L, diagnostics.prefetchStarted)
+        if (stride == 1) {
+            report.fixtures += JSONObject()
+                .put("fixture", golden.fixture)
+                .put("sourceSha256", golden.sourceSha256)
+                .put("codec", golden.codec)
+                .put("profile", golden.profile)
+                .put("frameCount", golden.frames.size)
+                .put("codecComponent", metadata.codecComponent)
+                .put("hardwareAccelerated", metadata.hardwareAccelerated)
+        }
+        report.codecComponents += metadata.codecComponent
+        report.sequentialRuns += JSONObject()
+            .put("fixture", golden.fixture)
+            .put("sourceSha256", golden.sourceSha256)
+            .put("codec", golden.codec)
+            .put("profile", golden.profile)
+            .put("frameCount", golden.frames.size)
+            .put("codecComponent", metadata.codecComponent)
+            .put("hardwareAccelerated", metadata.hardwareAccelerated)
+            .put("stride", stride)
+            .put("requestCount", requestCount)
+            .put("mismatchCount", mismatchCount - mismatchBefore)
+            .put("sequentialEntryCount", diagnostics.sequentialEntryCount)
+            .put("sequentialFallbackCount", diagnostics.sequentialFallbackCount)
+            .put("sequentialOutputCount", diagnostics.sequentialOutputCount)
     }
 
     private fun exerciseBurst(activity: GateActivity, golden: Golden) {
@@ -206,6 +324,7 @@ class S24FrameAccuracyTest {
         while (SystemClock.elapsedRealtime() < deadline && !finalPublished) {
             val observed = activity.awaitResult(2) ?: continue
             lastDiagnostics = observed.diagnostics
+            report.observeDiagnostics(observed.diagnostics)
             when (val result = observed.result) {
                 is FrameResult.Published -> {
                     validatePublished(golden, result)
@@ -249,7 +368,7 @@ class S24FrameAccuracyTest {
         assertTrue("directional prefetch actor did not become idle", activity.awaitActorIdle())
         assertTrue("cache-only prefetch emitted a publication event", activity.drainPublicationEvents().isEmpty())
 
-        val prefetchedIndex = minOf(DIRECTIONAL_PREFETCH_PROBE_INDEX, golden.frames.lastIndex)
+        val prefetchedIndex = minOf(activationIndex + DISCRETE_PREFETCH_PROBE_DEPTH, golden.frames.lastIndex)
         onMain(activity) { activity.requestFrame(prefetchedIndex) }
         val prefetched = awaitPublished(activity, golden, prefetchedIndex)
         val published = prefetched.result as FrameResult.Published
@@ -297,11 +416,13 @@ class S24FrameAccuracyTest {
         assertEquals("A frame published after B file generation", 0, lateA)
     }
 
-    private fun openAndAwait(activity: GateActivity, golden: Golden) {
+    private fun openAndAwait(activity: GateActivity, golden: Golden): ContainerMetadata {
         open(activity, golden.fixture)
         validateIndex(golden, requireNotNull(activity.awaitIndex()) { "${golden.fixture}: index timeout" })
-        validateMetadata(golden, requireNotNull(activity.awaitMetadata()) { "${golden.fixture}: metadata timeout" })
+        val metadata = requireNotNull(activity.awaitMetadata()) { "${golden.fixture}: metadata timeout" }
+        validateMetadata(golden, metadata)
         awaitPublished(activity, golden, 0)
+        return metadata
     }
 
     private fun open(activity: GateActivity, fixture: String) = onMain(activity) { activity.openFixture(uri(fixture)) }
@@ -327,6 +448,7 @@ class S24FrameAccuracyTest {
         while (SystemClock.elapsedRealtime() < deadline) {
             val observed = activity.awaitResult(2) ?: continue
             lastDiagnostics = observed.diagnostics
+            report.observeDiagnostics(observed.diagnostics)
             when (val result = observed.result) {
                 is FrameResult.Published -> {
                     validatePublished(golden, result)
@@ -351,6 +473,11 @@ class S24FrameAccuracyTest {
         mismatchCount += if (actual.textureTimestampNs != expected.ptsUs * 1_000L) 1 else 0
         val imageProbe = requireNotNull(actual.imageProbe) { "${golden.fixture}: exactness probe missing" }
         mismatchCount += if (imageProbe.embeddedFrameId != expected.embeddedFrameId) 1 else 0
+        assertEquals(
+            "${golden.fixture}: signature length",
+            expected.imageSignature.size,
+            imageProbe.imageSignature.size,
+        )
         val errors = imageProbe.imageSignature.zip(expected.imageSignature) { left, right -> kotlin.math.abs(left - right) }.sorted()
         val mean = errors.average()
         val p99 = errors[(ceil(errors.size * 0.99).toInt() - 1).coerceAtLeast(0)]
@@ -456,8 +583,12 @@ class S24FrameAccuracyTest {
 
     private fun JSONArray.toIntList(): List<Int> = List(length()) { getInt(it) }
 
-    private class Report(private val context: Context) {
+    private class Report(
+        private val context: Context,
+        private val testContext: Context,
+    ) {
         val fixtures = mutableListOf<JSONObject>()
+        val sequentialRuns = mutableListOf<JSONObject>()
         val codecComponents = linkedSetOf<String>()
         var currentFixture: String? = null
         var currentFrameIndex: Int? = null
@@ -467,6 +598,14 @@ class S24FrameAccuracyTest {
         private var displayWidth: Int? = null
         private var displayHeight: Int? = null
         private var refreshRate: Float? = null
+        private var staleDiscardCount = 0L
+        private var staleBeforeSwapCount = 0L
+        private var swapFailureCount = 0L
+        private var surfaceInvalidCount = 0L
+        private var publicationInvariantViolationCount = 0L
+        private var cacheRejectionCount = 0L
+        private var cacheThrashCount = 0L
+        private var textureDoubleReleaseCount = 0L
 
         fun captureDisplay(width: Int, height: Int, refreshRate: Float) {
             displayWidth = width
@@ -487,20 +626,41 @@ class S24FrameAccuracyTest {
             textureTimestampNs = timestampNs
         }
 
+        fun observeDiagnostics(value: DecoderDiagnostics) {
+            staleDiscardCount = maxOf(staleDiscardCount, value.staleDiscardCount)
+            staleBeforeSwapCount = maxOf(staleBeforeSwapCount, value.staleBeforeSwapCount)
+            swapFailureCount = maxOf(swapFailureCount, value.swapFailureCount)
+            surfaceInvalidCount = maxOf(surfaceInvalidCount, value.surfaceInvalidCount)
+            publicationInvariantViolationCount = maxOf(
+                publicationInvariantViolationCount,
+                value.publicationInvariantViolationCount,
+            )
+            cacheRejectionCount = maxOf(cacheRejectionCount, value.cacheRejectionCount)
+            cacheThrashCount = maxOf(cacheThrashCount, value.cacheThrashCount)
+            textureDoubleReleaseCount = maxOf(textureDoubleReleaseCount, value.textureDoubleReleaseCount)
+        }
+
         fun finish(
             status: String,
             failure: Throwable?,
             latencyMs: List<Double>,
             diagnostics: DecoderDiagnostics,
             writeOpenCount: Int,
+            mismatchCount: Int,
+            fileName: String = REPORT_FILE,
         ) {
             val sorted = latencyMs.sorted()
             fun percentile(value: Double): Double? = sorted.takeIf { it.isNotEmpty() }
                 ?.get((ceil(sorted.size * value).toInt() - 1).coerceIn(0, sorted.lastIndex))
             val power = context.getSystemService(PowerManager::class.java)
             val battery = context.getSystemService(BatteryManager::class.java)
+            val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
             val json = JSONObject()
                 .put("schemaVersion", 2)
+                .put(
+                    "kind",
+                    if (fileName == SEQUENTIAL_REPORT_FILE) "forward-sequential-exact" else "frame-accuracy-exact",
+                )
                 .put("status", status)
                 .put("gate", "Samsung SM-S928* S24 Ultra")
                 .put("device", JSONObject()
@@ -513,9 +673,14 @@ class S24FrameAccuracyTest {
                     .put("displayWidth", displayWidth)
                     .put("displayHeight", displayHeight)
                     .put("refreshRate", refreshRate))
+                .put("appVersionName", packageInfo.versionName)
+                .put("appVersionCode", packageInfo.longVersionCode)
+                .put("appCommitSha", BuildConfig.COMMIT_SHA)
                 .put("appSha256", sha256(File(context.applicationInfo.sourceDir)))
+                .put("testApkSha256", sha256(File(testContext.applicationInfo.sourceDir)))
                 .put("codecComponents", JSONArray(codecComponents.toList()))
                 .put("fixtures", JSONArray(fixtures))
+                .put("forwardSequentialRuns", JSONArray(sequentialRuns))
                 .put("latencyMs", JSONObject()
                     .put("count", sorted.size)
                     .put("p50", percentile(0.50))
@@ -559,8 +724,20 @@ class S24FrameAccuracyTest {
                     .put("pssKb", Debug.getPss()))
                 .put("thermalStatus", power.currentThermalStatus)
                 .put("batteryPercent", battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY))
+                .put("mismatchCount", mismatchCount)
                 .put("writeOpenCount", writeOpenCount)
+                .put("gateCounters", JSONObject()
+                    .put("staleDiscard", staleDiscardCount)
+                    .put("staleBeforeSwap", staleBeforeSwapCount)
+                    .put("swapFailures", swapFailureCount)
+                    .put("surfaceInvalid", surfaceInvalidCount)
+                    .put("publicationInvariantViolations", publicationInvariantViolationCount)
+                    .put("cacheRejectionCount", cacheRejectionCount)
+                    .put("cacheThrashCount", cacheThrashCount)
+                    .put("textureDoubleReleaseCount", textureDoubleReleaseCount))
                 .put("performanceGateApplied", false)
+                .put("syntheticOnly", true)
+                .put("containsRealMediaMetadata", false)
             if (failure != null) {
                 json.put("failure", JSONObject()
                     .put("type", failure.javaClass.simpleName)
@@ -574,7 +751,7 @@ class S24FrameAccuracyTest {
                     .put("suspectedCause", "undetermined; inspect FrameKey, texture timestamp, embedded ID and signature in that order")
                     .put("nextMinimalChange", "isolate the failing fixture and change only the first disproved decode/render hypothesis"))
             }
-            File(context.filesDir, REPORT_FILE).writeText(json.toString(2))
+            File(context.filesDir, fileName).writeText(json.toString(2))
         }
 
         private fun sha256(file: File): String {
@@ -593,11 +770,13 @@ class S24FrameAccuracyTest {
 
     companion object {
         const val REPORT_FILE = "s24-frame-accuracy-report.json"
-        private const val DIRECTIONAL_PREFETCH_PROBE_INDEX = 5
+        const val SEQUENTIAL_REPORT_FILE = "s24-forward-sequential-report.json"
+        private const val DISCRETE_PREFETCH_PROBE_DEPTH = 2
         val REQUIRED_FIXTURES = listOf(
             "h264-ip", "h264-bframes", "vfr", "long-gop", "nonzero-pts", "one-frame", "two-frame",
             "short-last-gop", "rotation-90", "rotation-180", "rotation-270", "hevc-main8", "burst",
             "switch-a", "switch-b", "par-8-9", "duplicate-pts",
         )
+        private val SEQUENTIAL_FIXTURES = listOf("h264-bframes", "long-gop", "vfr")
     }
 }

@@ -51,8 +51,8 @@ android {
         applicationId = "com.snowberried.ctcinereviewer"
         minSdk = 34
         targetSdk = 37
-        versionCode = 4
-        versionName = "0.2.0-alpha.3"
+        versionCode = 5
+        versionName = "0.2.0-alpha.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "COMMIT_SHA", "\"$escapedCommitSha\"")
     }

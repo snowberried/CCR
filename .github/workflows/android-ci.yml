@@ -67,7 +67,7 @@ jobs:
       - name: Upload internal app APKs and reports
         uses: actions/upload-artifact@v6
         with:
-          name: ccr-android-0.2.0-alpha.3-internal
+          name: ccr-android-0.2.0-alpha.4-internal
           path: |
             android/app/build/outputs/apk/internal/debug/app-internal-debug.apk
             android/app/build/outputs/apk/internal/benchmark/app-internal-benchmark.apk
@@ -81,7 +81,7 @@ jobs:
       - name: Upload test-only instrumentation APKs
         uses: actions/upload-artifact@v6
         with:
-          name: ccr-android-0.2.0-alpha.3-test-tools
+          name: ccr-android-0.2.0-alpha.4-test-tools
           path: |
             android/app/build/outputs/apk/androidTest/internal/debug/app-internal-debug-androidTest.apk
             android/macrobenchmark/build/outputs/apk/internal/benchmark/macrobenchmark-internal-benchmark.apk

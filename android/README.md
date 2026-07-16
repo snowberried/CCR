@@ -1,4 +1,4 @@
-# CCR Android 0.2.0-alpha.3 Internal Viewer
+# CCR Android 0.2.0-alpha.4 Internal Viewer
 
 데스크톱과 독립된 Android 내부 파일럿 앱이다. 의료기기나 공식 진단 프로그램이 아니며, 원본 MP4를 SAF 읽기 전용으로 연다. Gate 3 정확 프레임 기준선은 `android-v0.1.0-gate3-pass`로 동결되어 있다.
 
@@ -9,7 +9,7 @@
 - Android Gradle Plugin 9.3.0
 - minSdk 34, compileSdk/targetSdk 37
 - application ID `com.snowberried.ctcinereviewer.internal`
-- versionName `0.2.0-alpha.3`, versionCode `4`
+- versionName `0.2.0-alpha.4`, versionCode `5`
 - `internalDebug`는 표준 Android debug key 사용
 - GitHub Release와 desktop Latest Release를 만들지 않음
 
@@ -27,11 +27,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-apk-pri
 
 ## 표시 및 수명주기 계약
 
-- `requestedFrameIndex`는 ±1/±5, 처음/마지막, 직접 입력 즉시 갱신되고 연속 입력은 마지막 요청값에서 누적된다.
-- ±1/±5 버튼은 짧게 누르면 정확히 한 번 이동한다. 길게 누르면 Android long-press 임계 뒤 50ms 간격으로 고정 step을 반복하며, release·cancel·경계 이탈·두 번째 pointer·lifecycle stop·composable dispose 즉시 gesture generation을 무효화한다. 종료 처리 뒤에는 requested index가 더 변하지 않는다. 자동 가속은 없다.
-- 연속 입력 중에는 디코드 요청 하나만 실행하고 최신 requested frame 하나만 대기시킨다. 진행 중 디코드를 입력마다 폐기하지 않는다.
-- 제품 RGBA cache 상한은 `min(64 MiB, Java max heap/4)`이다. cache miss 뒤 탐색 방향으로 개념상 최대 12프레임을 cache-only로 준비하되, 게시·목표·renderer/codec 여유 4프레임을 먼저 예약한다. 따라서 720p는 최대 12, 1080p는 최대 4, 1440p 이상은 0일 수 있다.
-- 미리읽기는 ±1/±5 방향 입력 뒤 500ms permit 안에서만 수행한다. 최초 열기, 복원, 처음/마지막, 직접 입력과 타임라인 이동은 permit을 열지 않는다. background·파일 전환·취소·Surface 소실·방향 전환은 진행 중 permit을 즉시 무효화한다.
+- 탐색 요청은 `DISCRETE_TAP`, `TIMELINE_SEEK`, `HOLD_TRAVERSAL`로 구분한다. tap과 timeline은 기존 최신 요청 우선 계약을 유지한다.
+- ±1/±5 버튼은 짧게 누르면 정확히 한 번 이동한다. 길게 누르면 마지막으로 게시된 프레임에서 stride 1 또는 5인 목표 하나만 만든다. 그 목표가 실제 게시된 뒤 gesture가 아직 유효할 때만 다음 목표를 만든다.
+- hold 중 foreground target은 최대 하나다. `requestedFrameIndex`는 in-flight 목표까지만, `displayedFrameIndex`는 성공한 `PublicationEvent` 뒤에만 이동한다. release·cancel·경계 이탈·두 번째 pointer·lifecycle stop·파일/Surface 전환 뒤 새 목표는 만들지 않으며 이미 확정된 마지막 목표의 늦은 게시는 허용한다.
+- 같은 파일·codec·Surface에서 앞쪽 +1/+5 목표가 decoder cursor 다음에 있으면 forward sequential 경로를 사용한다. +5의 중간 프레임은 순차 decode하되 게시하지 않는다. 역방향, random/timeline/direct seek, generation 변경, format/codec 오류와 FrameKey 불일치는 기존 exact seek로 즉시 fallback한다.
+- 제품 RGBA cache 상한은 `min(64 MiB, Java max heap/4)`로 유지한다. hold 중 speculative prefetch는 0이어야 한다. discrete tap 뒤에만 최대 1~2프레임을 허용하며, 최근 `evictedBeforeUse/completed` 비율이 20%를 넘으면 depth를 줄이고 50%를 넘으면 중단한다.
+- 파일 전환·방향 반전·취소·Surface 소실·lifecycle stop은 진행 중 prefetch를 즉시 무효화한다.
 - 미리읽기는 화면 draw·EGL swap·PublicationEvent를 만들지 않는다. cache/texture의 현재·peak·제거·거절·thrash와 exact-once 해제를 internal diagnostics에만 기록한다.
 - `displayedFrame`은 현재 file/request generation의 `FrameResult.Published`와 성공한 실제 EGL swap 뒤에만 바뀐다. stale, error, unsupported 결과는 표시 프레임을 바꾸지 않는다.
 - `ViewerViewModel`이 MediaCodec actor와 EGL render thread를 소유한다. Activity와 Surface가 codec을 직접 호출하지 않는다.
@@ -63,12 +64,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-repres
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-representative-validation.ps1 -RunLongMemory
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-representative-validation.ps1 -RunLifecycle
 
-# 배터리: Prepare 출력 후 USB를 분리하고, 30분 완료 뒤 다시 연결해 Collect
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-battery-validation.ps1 -Mode Prepare -Scenario idle
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-battery-validation.ps1 -Mode Collect -Scenario idle
+# alpha.4 분리 검증: 모두 MaxMinutes와 checkpoint/-Resume 지원
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-navigation-perf.ps1 -MaxMinutes 25
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-navigation-perf.ps1 -ScenarioSet 1080 -ScenarioLimit 2 -MaxMinutes 25
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-navigation-perf.ps1 -MaxMinutes 25 -Resume
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-idle.ps1 -IdleMinutes 10 -MaxMinutes 15
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-codec-switch.ps1 -Iterations 500 -ChunkSize 25 -MaxMinutes 25
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-lifecycle.ps1 -Iterations 50 -MaxMinutes 25
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-battery.ps1 -Scenario idle -Minutes 30 -MaxMinutes 35
 ```
 
-스크립트는 instrumentation 결과와 비식별 report 계약을 직접 검사한다. 테스트 APK는 성공·실패와 관계없이 제거한다. `run-s24-alpha2-validation.ps1`은 alpha.2 source checkout의 동결 기준선 재현용이며 현재 alpha.3 제품 판정에는 사용하지 않는다. 대표 해상도와 배터리 report는 각각 ignored build output인 `android/build/reports/representative-resolution/`, `android/build/reports/representative-battery/`에 생성한다. lifecycle 자원 plateau와 memory plateau는 표본 분석 전까지 `INCONCLUSIVE`이며 PASS로 과장하지 않는다.
+분리 스크립트는 clean commit만 허용하므로 report의 commit SHA와 실제 APK 소스가 일치한다. build·install·instrumentation을 모두 `MaxMinutes` 안에 제한하고 scenario/chunk 단위 checkpoint를 저장한다. 제한 시간에 도달하면 마지막 안전 checkpoint에서 `Pending`으로 끝나며 `-Resume`은 같은 commit/version과 같은 parameter만 이어받는다. idle과 battery의 단일 장시간 instrumentation은 중간 분할이 불가능해, 중단 시 해당 측정을 처음부터 안전하게 재시작하는 granularity를 명시한다. fresh run은 이전 report·log·trace를 지우고, 성공·실패·시간 제한 모두 생성된 report 산출물을 회수한다. JSON report는 경로·URI·파일명을 거부하지만 Perfetto trace는 Android process/thread label을 포함할 수 있으므로 ignored 로컬 산출물로만 보관하고 외부 전송하지 않는다. 테스트 package 제거와 stay-awake·밝기·화면 timeout·회전 설정 원복 실패도 summary의 `cleanupFailures`로 판정한다. battery는 시작 시 USB 연결 또는 충전 상태이면 build/test 없이 즉시 `NOT_EVALUABLE`이다. navigation trace는 자동 PASS가 아니라 `MEASURED_PENDING_ANALYSIS`, chunked codec과 lifecycle 자원 plateau는 `INCONCLUSIVE`로 기록한다. hold lag 계약은 outstanding target depth `<=1`, +1 raw lag `<=1`, +5 raw lag `<=5`다. `run-s24-alpha2-validation.ps1`은 alpha.2 source checkout의 동결 기준선 재현용이며 현재 alpha.4 제품 판정에는 사용하지 않는다.
 
 ## 대표 해상도 fixture 계약
 
@@ -80,7 +86,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-batter
 
 ## Product Macrobenchmark
 
-`internalBenchmark` 대상은 release와 유사한 non-debuggable/profileable 빌드다. 비식별 합성 fixture만 사용하고 full-frame readback과 exactness probe를 끈 PILOT 렌더 모드에서 측정하므로 exactness Gate 지연시간과 섞지 않는다. 성능 합격선은 두지 않는다.
+`internalBenchmark` 대상은 release와 유사한 non-debuggable/profileable 빌드다. 비식별 합성 fixture만 사용하고 full-frame readback과 exactness probe를 끈 PILOT 렌더 모드에서 측정하므로 exactness Gate 지연시간과 섞지 않는다. 기기 공통 절대 SLA는 두지 않지만 alpha.4 navigation 판정에는 같은 S24의 alpha.3 대비 상대 개선 Gate를 사용한다.
 
 ```powershell
 .\gradlew.bat assembleInternalBenchmark :macrobenchmark:assembleInternalBenchmark
@@ -132,7 +138,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-batter
 
 실제 비식별 MP4 20-frame 비교와 분리 내구 시험이 끝나기 전 Gate 4A 판정은 `자동 정확성 Gate PASS / 장기 내구·수동 파일럿 Pending`이다.
 
-## 2026-07-16 S24 Ultra 실측 기준선
+## 2026-07-16 alpha.3 S24 Ultra 실측 기준선
 
 측정 앱 코드 SHA는 `5887a54b11775770f7005a0ec96320283a402010`이다. Samsung `SM-S928N`에서 기존 17-fixture exact Gate와 대표 7-fixture exact/cache Gate, background 회귀 3회, 대표 Macrobenchmark 8시나리오×3회 및 15분 단일 파일 memory 표본을 실행했다.
 
@@ -146,6 +152,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-batter
 
 상세 수치와 제한은 `docs/26_ANDROID_REPRESENTATIVE_RESOLUTION_VALIDATION.md`에 기록한다. 실기기 report는 ignored `android/build/reports/`에만 유지한다.
 
+## 2026-07-16 alpha.4 S24 확인
+
+- pre-final 측정 APK의 기존 17-fixture exact Gate: PASS; 최종 clean commit APK 재실행은 `Pending`
+- 별도 pre-final 측정 APK의 forward-sequential Gate: H.264 B-frame·long-GOP·VFR의 `+1/+5` 전 구간 PASS
+- mismatch, write-open, stale/swap/publication, cache rejection/thrash, double release: 0
+- JVM deterministic simulation의 completion-driven outstanding depth p95/max: 1
+- 1080p 성능 비교: trace 회수 실패와 `+5` 제한시간 중단으로 `Pending`; 부드러움 개선 완료를 주장하지 않는다.
+- 상세 계약과 APK checksum은 `docs/28_ANDROID_ALPHA4_SEQUENTIAL_NAVIGATION.md`에 기록한다.
+
 ## 개인정보 및 제외 범위
 
-Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. 프로젝트 저장, DICOM/PACS, AI, cloud, 주석, 비교 보기, PNG export, 필터, zoom/pan, Play 배포는 Android 0.2.0-alpha.3 범위 밖이다. 대표 해상도 실기기 검증과 사용자 체감 합격 전에는 `android-v0.2.0-alpha.3` tag를 만들지 않는다.
+Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. 프로젝트 저장, DICOM/PACS, AI, cloud, 주석, 비교 보기, PNG export, 필터, zoom/pan, Play 배포는 Android 0.2.0-alpha.4 범위 밖이다. alpha.4 성능 Gate와 사용자 체감 합격 전에는 `android-v0.2.0-alpha.4` tag를 만들지 않는다.
