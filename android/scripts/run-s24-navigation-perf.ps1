@@ -31,12 +31,31 @@ function Get-CcrBenchmarkEvidenceFromOutput {
 }
 
 function Assert-CcrBenchmarkData {
-  param([Parameter(Mandatory = $true)][string]$Path)
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$ExpectedMethod,
+    [Parameter(Mandatory = $true)][object]$ExpectedEvidence,
+    [Parameter(Mandatory = $true)][object[]]$TraceFiles
+  )
   $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-  try { $null = $text | ConvertFrom-Json } catch { throw "PINNED_BENCHMARK_DATA_JSON_INVALID" }
-  foreach ($metric in @(
+  try { $document = $text | ConvertFrom-Json } catch { throw "PINNED_BENCHMARK_DATA_JSON_INVALID" }
+  $benchmarks = @($document.benchmarks)
+  if ($benchmarks.Count -ne 1) { throw "PINNED_BENCHMARK_DATA_BENCHMARK_COUNT_MISMATCH" }
+  $benchmark = $benchmarks[0]
+  if ([string]$benchmark.name -cne $ExpectedMethod -or
+      [string]$benchmark.className -cne "com.snowberried.ctcinereviewer.macrobenchmark.CcrProductMacrobenchmark" -or
+      [int]$benchmark.repeatIterations -ne 3) {
+    throw "PINNED_BENCHMARK_DATA_IDENTITY_MISMATCH"
+  }
+  $requiredMetrics = @(
+    "ccrActiveDurationMs",
+    "ccrPublicationCount",
     "ccrPublicationIntervalP50Us",
+    "ccrPublicationIntervalP95Us",
+    "ccrPublicationIntervalMaxUs",
     "ccrPublishedFpsMilli",
+    "ccrRawLagP50",
+    "ccrRawLagP95",
     "ccrRawLagMax",
     "ccrOutstandingForegroundTargetDepthMax",
     "ccrAcceptedTargetCount",
@@ -49,9 +68,57 @@ function Assert-CcrBenchmarkData {
     "ccrTraceIdentityHash53",
     "ccrRuntimeSourceHash53",
     "ccrHarnessSourceHash53",
-    "ccrRuntimeInputsTreeHash53"
-  )) {
-    if (-not $text.Contains('"' + $metric + '"')) { throw "PINNED_BENCHMARK_DATA_METRIC_MISSING:$metric" }
+    "ccrRuntimeInputsTreeHash53",
+    "ccrValidTraceIdentity"
+  )
+  $runsByMetric = @{}
+  foreach ($metric in $requiredMetrics) {
+    $property = $benchmark.metrics.PSObject.Properties[$metric]
+    if ($null -eq $property) { throw "PINNED_BENCHMARK_DATA_METRIC_MISSING:$metric" }
+    $runs = @($property.Value.runs)
+    if ($runs.Count -ne 3 -or @($runs | Where-Object { $null -eq $_ }).Count -ne 0) {
+      throw "PINNED_BENCHMARK_DATA_METRIC_RUN_COUNT_MISMATCH:$metric"
+    }
+    $runsByMetric[$metric] = $runs
+  }
+  if (($runsByMetric.ccrRunIteration | ForEach-Object { [int]$_ }) -join "," -cne "1,2,3" -or
+      @($runsByMetric.ccrCounterComplete | Where-Object { [int]$_ -ne 1 }).Count -ne 0 -or
+      @($runsByMetric.ccrValidTraceIdentity | Where-Object { [int]$_ -ne 1 }).Count -ne 0) {
+    throw "PINNED_BENCHMARK_DATA_COMPLETENESS_MISMATCH"
+  }
+  $evidenceIterations = @($ExpectedEvidence.iterations)
+  for ($index = 0; $index -lt 3; $index += 1) {
+    $expected = $evidenceIterations[$index]
+    foreach ($mapping in @(
+      @("ccrActiveDurationMs", "activeMs"),
+      @("ccrPublicationCount", "published"),
+      @("ccrPublicationIntervalP50Us", "publicationIntervalP50Us"),
+      @("ccrPublicationIntervalP95Us", "publicationIntervalP95Us"),
+      @("ccrPublicationIntervalMaxUs", "publicationIntervalMaxUs"),
+      @("ccrRawLagP50", "rawLagP50"),
+      @("ccrRawLagP95", "rawLagP95"),
+      @("ccrRawLagMax", "rawLagMax"),
+      @("ccrOutstandingForegroundTargetDepthMax", "outstandingForegroundTargetDepthMax"),
+      @("ccrAcceptedTargetCount", "acceptedTargetCount"),
+      @("ccrReleaseAfterAcceptedTargetCount", "releaseAfterAcceptedTargetCount"),
+      @("ccrHoldPrefetchStarted", "holdPrefetchStarted"),
+      @("ccrHoldPrefetchCompleted", "holdPrefetchCompleted")
+    )) {
+      if ([long]$runsByMetric[$mapping[0]][$index] -ne [long]$expected.($mapping[1])) {
+        throw "PINNED_BENCHMARK_DATA_EVIDENCE_MISMATCH:$($mapping[0])/$($index + 1)"
+      }
+    }
+    $fpsMilli = [long]$runsByMetric.ccrPublishedFpsMilli[$index]
+    $expectedFpsMilli = [long][Math]::Round([double]$expected.publishedFps * 1000.0)
+    if ([Math]::Abs($fpsMilli - $expectedFpsMilli) -gt 1) {
+      throw "PINNED_BENCHMARK_DATA_EVIDENCE_MISMATCH:ccrPublishedFpsMilli/$($index + 1)"
+    }
+  }
+  $profilerOutputs = @($benchmark.profilerOutputs | Where-Object { [string]$_.type -ceq "PerfettoTrace" })
+  $expectedTraceNames = @($TraceFiles | ForEach-Object Name | Sort-Object)
+  $actualTraceNames = @($profilerOutputs | ForEach-Object filename | Sort-Object)
+  if ($profilerOutputs.Count -ne 3 -or ($expectedTraceNames -join "`n") -cne ($actualTraceNames -join "`n")) {
+    throw "PINNED_BENCHMARK_DATA_TRACE_FILESET_MISMATCH"
   }
 }
 
@@ -116,6 +183,7 @@ if ($PreflightOnly) {
     containsRealMediaMetadata = $false
   }
   Write-CcrPerfJson $summaryPath $preflight
+  (Get-Item -LiteralPath $summaryPath).IsReadOnly = $true
   Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath
   return
 }
@@ -123,6 +191,7 @@ if ($PreflightOnly) {
 $scenarios = @(
   [PSCustomObject]@{
     Method = "hold1080PlusOne"
+    EvidenceScenario = "1080p-hold-plus-one"
     Label = "+1"
     RunPrefix = "perf-plus1"
     IntervalP50UsMax = 132200L
@@ -131,6 +200,7 @@ $scenarios = @(
   },
   [PSCustomObject]@{
     Method = "hold1080PlusFive"
+    EvidenceScenario = "1080p-hold-plus-five"
     Label = "+5"
     RunPrefix = "perf-plus5"
     IntervalP50UsMax = 151900L
@@ -194,7 +264,7 @@ try {
 
     $files = @(Get-ChildItem -Recurse -File -LiteralPath $localRunDirectory)
     $traces = @($files | Where-Object {
-      $_.Name.Contains("perfetto-trace", [System.StringComparison]::OrdinalIgnoreCase) -and $_.Length -gt 0
+      $_.Name.IndexOf("perfetto-trace", [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and $_.Length -gt 0
     })
     if ($traces.Count -ne 3) { throw "PINNED_BENCHMARK_VALID_TRACE_COUNT_MISMATCH:$($scenario.Method)" }
     $benchmarkDataFiles = @($files | Where-Object {
@@ -203,16 +273,27 @@ try {
     if ($benchmarkDataFiles.Count -ne 1) { throw "PINNED_BENCHMARK_DATA_COUNT_MISMATCH:$($scenario.Method)" }
     if ((Get-Item -LiteralPath $evidencePath).Length -le 0) { throw "PINNED_BENCHMARK_EVIDENCE_EMPTY:$($scenario.Method)" }
 
-    Assert-CcrBenchmarkData $benchmarkDataFiles[0].FullName
-    Assert-CcrPinnedBenchmarkEvidence $evidence $context.ArtifactSet $runId $scenario.Method $traces.Count | Out-Null
+    Assert-CcrBenchmarkData $benchmarkDataFiles[0].FullName $scenario.Method $evidence $traces
+    if ([string]$evidence.traceArtifactValidation -cne "PENDING_HOST") {
+      throw "PINNED_BENCHMARK_TRACE_VALIDATION_STATE_MISMATCH:$($scenario.Method)"
+    }
+    Assert-CcrPinnedBenchmarkEvidence $evidence $context.ArtifactSet $runId $scenario.EvidenceScenario $traces.Count | Out-Null
     Assert-CcrPerformanceGate $evidence $scenario
+    $evidence.traceArtifactValidation = "PASS"
+    $evidence | Add-Member -Force -NotePropertyName traceValidationMethod `
+      -NotePropertyValue "androidx-profiler-file-set+benchmarkData-3run-counters+nonempty-traces"
+    Write-CcrPerfJson $evidencePath $evidence
+    Get-ChildItem -Recurse -File -LiteralPath $localRunDirectory | ForEach-Object { $_.IsReadOnly = $true }
 
     $results.Add([PSCustomObject]@{
       scenario = $scenario.Method
+      evidenceScenario = $scenario.EvidenceScenario
       label = $scenario.Label
       runId = $runId
       status = "PASS"
       traceCount = $traces.Count
+      traceArtifactValidation = $evidence.traceArtifactValidation
+      traceValidationMethod = $evidence.traceValidationMethod
       tracePaths = @($traces | ForEach-Object FullName)
       benchmarkDataPath = $benchmarkDataFiles[0].FullName
       evidencePath = $evidencePath
@@ -284,9 +365,11 @@ try {
     }
     Assert-CcrPinnedInstalledArtifact $context "debugApp"
     $launch = Invoke-CcrPinnedAdb $context @(
-      "-s", $context.Serial, "shell", "am", "start", "-n", "$script:CcrPinnedAppPackage/.MainActivity"
+      "-s", $context.Serial, "shell", "am", "start", "-W", "-n",
+      "$script:CcrPinnedAppPackage/com.snowberried.ctcinereviewer.MainActivity"
     )
-    if ($launch.exitCode -ne 0 -or $launch.output -match "(?i)error|exception") {
+    if ($launch.exitCode -ne 0 -or $launch.output -notmatch "(?m)^Status:\s+ok\s*$" -or
+        $launch.output -match "(?i)error|exception") {
       throw "PINNED_DEBUG_APP_LAUNCH_FAILED"
     }
     $manualReviewReady = $true
@@ -325,6 +408,7 @@ try {
   }
   try {
     Write-CcrPerfJson $summaryPath $summary
+    (Get-Item -LiteralPath $summaryPath).IsReadOnly = $true
   } catch {
     $cleanupFailures.Add("SUMMARY_WRITE_FAILED:$($_.Exception.Message)") | Out-Null
   }

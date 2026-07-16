@@ -267,6 +267,28 @@ try {
     if ($caught -notmatch "PINNED_STALE_REPORT_ABSENCE_CHECK_FAILED") { throw "unknown report check error was not preserved: $caught" }
   }
 
+  Invoke-HostTest "performance-wrapper-host-contracts" {
+    $source = [System.IO.File]::ReadAllText(
+      (Join-Path $PSScriptRoot "run-s24-navigation-perf.ps1"),
+      [System.Text.Encoding]::UTF8
+    )
+    if ($source -match '\.Contains\([^\r\n]+StringComparison') {
+      throw "Windows PowerShell 5.1 incompatible Contains overload returned"
+    }
+    foreach ($contract in @(
+      'EvidenceScenario = "1080p-hold-plus-one"',
+      'EvidenceScenario = "1080p-hold-plus-five"',
+      '$scenario.EvidenceScenario',
+      'traceArtifactValidation = "PASS"',
+      'androidx-profiler-file-set+benchmarkData-3run-counters+nonempty-traces',
+      'PINNED_BENCHMARK_DATA_TRACE_FILESET_MISMATCH',
+      '$script:CcrPinnedAppPackage/com.snowberried.ctcinereviewer.MainActivity',
+      '"start", "-W", "-n"'
+    )) {
+      if (-not $source.Contains($contract)) { throw "performance wrapper contract missing: $contract" }
+    }
+  }
+
   Invoke-HostTest "valid-preflight-is-read-only" {
     Reset-TestArtifacts
     $manifest = New-TestManifest
