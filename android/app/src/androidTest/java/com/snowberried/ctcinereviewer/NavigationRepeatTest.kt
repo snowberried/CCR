@@ -39,7 +39,7 @@ class NavigationRepeatTest {
     }
 
     @Test
-    fun holdRepeatsAndReleaseDoesNotAddOrContinue() {
+    fun holdStartsOnceAndReleaseDoesNotAddOrContinue() {
         val moves = AtomicInteger()
         setButton { moves.incrementAndGet() }
         val button = compose.onNodeWithText("+1")
@@ -50,10 +50,10 @@ class NavigationRepeatTest {
         button.performTouchInput { up() }
         compose.waitForIdle()
 
-        assertTrue("hold did not repeat: $beforeRelease", beforeRelease >= 3)
+        assertEquals("hold start was not exactly once", 1, beforeRelease)
         assertEquals("release added a move", beforeRelease, moves.get())
-        compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
-        assertEquals("repeat continued after release", beforeRelease, moves.get())
+        compose.mainClock.advanceTimeBy(HOLD_SETTLE_MS)
+        assertEquals("hold callback continued after release", beforeRelease, moves.get())
     }
 
     @Test
@@ -68,10 +68,10 @@ class NavigationRepeatTest {
         button.performTouchInput { cancel() }
         compose.waitForIdle()
         val afterCancel = moves.get()
-        compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
+        compose.mainClock.advanceTimeBy(HOLD_SETTLE_MS)
 
-        assertTrue("hold did not repeat before cancel: $beforeCancel", beforeCancel >= 2)
-        assertEquals("repeat continued after cancel was handled", afterCancel, moves.get())
+        assertEquals("hold start was not exactly once", 1, beforeCancel)
+        assertEquals("hold callback continued after cancel was handled", afterCancel, moves.get())
         button.performTouchInput { click(center) }
         assertEquals("cancel consumed the next tap", afterCancel + 1, moves.get())
     }
@@ -84,12 +84,12 @@ class NavigationRepeatTest {
 
         button.performTouchInput { down(center) }
         compose.mainClock.advanceTimeBy(
-            ViewConfiguration.getLongPressTimeout().toLong() + NAVIGATION_REPEAT_INTERVAL_MS - 1,
+            ViewConfiguration.getLongPressTimeout().toLong() + 32,
         )
         val beforeRelease = moves.get()
         button.performTouchInput { up() }
         compose.waitForIdle()
-        compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
+        compose.mainClock.advanceTimeBy(HOLD_SETTLE_MS)
 
         assertTrue("long press did not produce a tick", beforeRelease >= 1)
         assertEquals("scheduled callback crossed release", beforeRelease, moves.get())
@@ -106,7 +106,7 @@ class NavigationRepeatTest {
         button.performTouchInput { moveTo(Offset(-1f, center.y)) }
         compose.waitForIdle()
         val afterExit = moves.get()
-        compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
+        compose.mainClock.advanceTimeBy(HOLD_SETTLE_MS)
 
         assertEquals("repeat continued after bounds exit was handled", afterExit, moves.get())
         button.performTouchInput { cancel() }
@@ -123,7 +123,7 @@ class NavigationRepeatTest {
         button.performTouchInput { down(1, center + Offset(4f, 4f)) }
         compose.waitForIdle()
         val afterSecondPointer = moves.get()
-        compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
+        compose.mainClock.advanceTimeBy(HOLD_SETTLE_MS)
 
         assertEquals("repeat continued after second pointer was handled", afterSecondPointer, moves.get())
         button.performTouchInput { cancel() }
@@ -152,14 +152,14 @@ class NavigationRepeatTest {
         val beforeStop = moves.get()
 
         compose.runOnIdle { owner.registry.currentState = Lifecycle.State.CREATED }
-        compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
+        compose.mainClock.advanceTimeBy(HOLD_SETTLE_MS)
         assertEquals("lifecycle stop added or continued a move", beforeStop, moves.get())
 
         compose.runOnIdle {
             owner.registry.currentState = Lifecycle.State.RESUMED
             show.value = false
         }
-        compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
+        compose.mainClock.advanceTimeBy(HOLD_SETTLE_MS)
         assertEquals("disposal added or continued a move", beforeStop, moves.get())
     }
 
@@ -171,7 +171,7 @@ class NavigationRepeatTest {
             MaterialTheme {
                 Row(modifier = Modifier.fillMaxWidth()) {
                     navigationButton(moves, enabled.value) {
-                        if (moves.incrementAndGet() == 3) enabled.value = false
+                        if (moves.incrementAndGet() == 1) enabled.value = false
                     }
                 }
             }
@@ -183,13 +183,12 @@ class NavigationRepeatTest {
         button.performTouchInput { up() }
         compose.waitForIdle()
 
-        assertEquals("disabled button continued repeating", 3, moves.get())
+        assertEquals("disabled button repeated hold start", 1, moves.get())
     }
 
     private fun advancePastLongPress(repeatIntervals: Int) {
         compose.mainClock.advanceTimeBy(
-            ViewConfiguration.getLongPressTimeout().toLong() +
-                NAVIGATION_REPEAT_INTERVAL_MS * repeatIntervals + 32,
+            ViewConfiguration.getLongPressTimeout().toLong() + repeatIntervals.coerceAtLeast(1) * 32L,
         )
     }
 
@@ -215,7 +214,8 @@ class NavigationRepeatTest {
             delta = 1,
             enabled = enabled,
             onGestureStart = gate::begin,
-            onStep = { _, generation -> if (gate.accepts(generation)) onClick() },
+            onTap = { _, generation -> if (gate.accepts(generation)) onClick() },
+            onHoldStart = { _, generation -> if (gate.accepts(generation)) onClick() },
             onGestureEnd = gate::end,
         )
     }
@@ -223,5 +223,9 @@ class NavigationRepeatTest {
     private class TestLifecycleOwner : LifecycleOwner {
         val registry = LifecycleRegistry(this)
         override val lifecycle: Lifecycle get() = registry
+    }
+
+    private companion object {
+        const val HOLD_SETTLE_MS = 150L
     }
 }

@@ -105,6 +105,12 @@ class ViewerViewModel(
     private data class PendingFrameRequest(
         val frameIndex: Int,
         val prefetchPermit: PrefetchPermit?,
+        val mode: NavigationMode,
+    )
+
+    private data class InFlightFrameRequest(
+        val mode: NavigationMode,
+        val holdTarget: HoldTraversalTarget? = null,
     )
 
     private val session = ExactFrameSession(application, this)
@@ -116,8 +122,10 @@ class ViewerViewModel(
     private var decodeInFlight = false
     private var inFlightRequestGeneration: Long? = null
     private var inFlightAcceptedAtNs: Long? = null
+    private var inFlightFrameRequest: InFlightFrameRequest? = null
     private var pendingRequestedFrame: PendingFrameRequest? = null
     private val navigationGestureGate = NavigationGestureGate()
+    private val holdController = CompletionDrivenHoldController()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var gateActionGeneration = 0L
 
@@ -142,6 +150,7 @@ class ViewerViewModel(
 
     fun openVideo(uri: Uri) {
         navigationGestureGate.invalidate()
+        holdController.invalidate()
         session.suspendPrefetch()
         val previousUri = currentUri
         val previousPersisted = currentUriPersisted
@@ -206,6 +215,7 @@ class ViewerViewModel(
             prefetchPermit = direction?.let {
                 session.newDirectionalPrefetchPermit(it, SystemClock.elapsedRealtime())
             },
+            mode = NavigationMode.DISCRETE_TAP,
         )
     }
 
@@ -215,8 +225,26 @@ class ViewerViewModel(
         if (navigationGestureGate.accepts(gestureGeneration)) moveBy(delta)
     }
 
+    fun startHoldTraversal(delta: Int, gestureGeneration: Long) {
+        if (!navigationGestureGate.accepts(gestureGeneration) || delta !in HOLD_STRIDES) return
+        val metadata = uiState.metadata ?: return
+        val fileGeneration = uiState.activeFileGeneration ?: return
+        if (!foreground || !uiState.surfaceAvailable) return
+        session.suspendPrefetch()
+        holdController.begin(gestureGeneration, fileGeneration, delta)
+        pendingRequestedFrame = null
+        val currentTarget = uiState.currentDecodeTarget ?: uiState.displayedFrameIndex ?: uiState.requestedFrameIndex
+        savedState[KEY_REQUESTED_FRAME] = currentTarget
+        uiState = uiState.copy(
+            requestedFrameIndex = currentTarget.coerceIn(0, metadata.frameCount - 1),
+            latestPendingRequest = null,
+        )
+        driveHoldTraversal()
+    }
+
     fun endNavigationGesture(gestureGeneration: Long) {
         navigationGestureGate.end(gestureGeneration)
+        holdController.end(gestureGeneration)
     }
 
     fun setDirectInput(value: String) {
@@ -226,25 +254,36 @@ class ViewerViewModel(
     fun requestTimelineFraction(fraction: Float, final: Boolean) {
         if (uiState.framePtsUs.isEmpty()) return
         val target = nearestFrameIndexForTimelineFraction(uiState.framePtsUs, fraction)
-        if (final || target != uiState.requestedFrameIndex) requestFrame(target)
+        if (final || target != uiState.requestedFrameIndex) {
+            requestFrameInternal(target, prefetchPermit = null, mode = NavigationMode.TIMELINE_SEEK)
+        }
     }
 
     fun requestFrame(frameIndex: Int) {
         requestFrameInternal(
             frameIndex = frameIndex,
             prefetchPermit = null,
+            mode = NavigationMode.DISCRETE_TAP,
         )
     }
 
     private fun requestFrameInternal(
         frameIndex: Int,
         prefetchPermit: PrefetchPermit?,
+        mode: NavigationMode,
+        holdTarget: HoldTraversalTarget? = null,
     ) {
+        if (mode != NavigationMode.HOLD_TRAVERSAL) holdController.abortActive()
         if (prefetchPermit == null) session.suspendPrefetch()
         val frameCount = uiState.metadata?.frameCount ?: return
         val target = frameIndex.coerceIn(0, frameCount - 1)
         val gateGeneration = nextGateActionGeneration()
         setAutoRecover(true)
+        if (mode == NavigationMode.HOLD_TRAVERSAL) {
+            if (!foreground || !uiState.surfaceAvailable || decodeInFlight) return
+            submitFrameRequest(target, prefetchPermit, mode, holdTarget, gateGeneration)
+            return
+        }
         savedState[KEY_REQUESTED_FRAME] = target
         uiState = uiState.copy(
             requestedFrameIndex = target,
@@ -259,15 +298,16 @@ class ViewerViewModel(
         if (!foreground || !uiState.surfaceAvailable) return
         if (decodeInFlight) {
             if (pendingRequestedFrame != null) session.recordViewerRequestCoalesced()
-            pendingRequestedFrame = PendingFrameRequest(target, prefetchPermit)
+            pendingRequestedFrame = PendingFrameRequest(target, prefetchPermit, mode)
             uiState = uiState.copy(latestPendingRequest = target)
         } else {
-            submitFrameRequest(target, prefetchPermit, gateGeneration)
+            submitFrameRequest(target, prefetchPermit, mode, gateGeneration = gateGeneration)
         }
     }
 
     fun cancel() {
         navigationGestureGate.invalidate()
+        holdController.invalidate()
         session.suspendPrefetch()
         val gateGeneration = nextGateActionGeneration()
         setAutoRecover(false)
@@ -290,6 +330,7 @@ class ViewerViewModel(
     fun onBackground(owner: Any = this) {
         if (foregroundOwner !== owner) return
         navigationGestureGate.invalidate()
+        holdController.invalidate()
         session.suspendPrefetch()
         val gateGeneration = nextGateActionGeneration()
         foregroundOwner = null
@@ -332,6 +373,7 @@ class ViewerViewModel(
         decodeInFlight = readyForDecode
         inFlightRequestGeneration = null
         inFlightAcceptedAtNs = null
+        inFlightFrameRequest = null
         uiState = uiState.copy(
             status = if (readyForDecode) "decoding" else "surface waiting",
             detail = null,
@@ -355,6 +397,7 @@ class ViewerViewModel(
         if (result.request.token.fileGeneration != uiState.activeFileGeneration) return
         val expectedGeneration = inFlightRequestGeneration
         if (expectedGeneration != null && result.request.token.requestGeneration != expectedGeneration) return
+        val completedFrameRequest = inFlightFrameRequest
         val latencyMs = if (result is FrameResult.Published) {
             inFlightAcceptedAtNs?.let { (SystemClock.elapsedRealtimeNanos() - it).coerceAtLeast(0) / 1_000_000.0 }
         } else {
@@ -386,8 +429,21 @@ class ViewerViewModel(
         decodeInFlight = false
         inFlightRequestGeneration = null
         inFlightAcceptedAtNs = null
+        inFlightFrameRequest = null
+        completedFrameRequest?.holdTarget?.let {
+            holdController.complete(
+                fileGeneration = result.request.token.fileGeneration,
+                requestGeneration = result.request.token.requestGeneration,
+                published = result is FrameResult.Published,
+            )
+        }
+        if (result !is FrameResult.Published) holdController.abortActive()
         if (result is FrameResult.Published || result is FrameResult.DiscardedStale) {
-            submitPendingFrameRequest()
+            if (pendingRequestedFrame != null) {
+                submitPendingFrameRequest()
+            } else if (result is FrameResult.Published) {
+                driveHoldTraversal()
+            }
         } else {
             pendingRequestedFrame = null
             uiState = uiState.copy(latestPendingRequest = null)
@@ -404,6 +460,7 @@ class ViewerViewModel(
         uiState = uiState.copy(surfaceAvailable = available, surfaceGeneration = nextSurfaceGeneration)
         if (!available) {
             navigationGestureGate.invalidate()
+            holdController.invalidate()
             resetRequestPump()
             if (currentUri != null && autoRecoverEnabled) {
                 uiState = uiState.copy(
@@ -421,6 +478,7 @@ class ViewerViewModel(
 
     override fun onCleared() {
         navigationGestureGate.invalidate()
+        holdController.invalidate()
         nextGateActionGeneration()
         foregroundOwner = null
         session.close()
@@ -448,6 +506,7 @@ class ViewerViewModel(
             requestFrameInternal(
                 frameIndex = uiState.requestedFrameIndex,
                 prefetchPermit = null,
+                mode = NavigationMode.DISCRETE_TAP,
             )
         } else {
             openCurrentUri()
@@ -501,26 +560,46 @@ class ViewerViewModel(
     private fun submitFrameRequest(
         frameIndex: Int,
         prefetchPermit: PrefetchPermit?,
+        mode: NavigationMode,
+        holdTarget: HoldTraversalTarget? = null,
         gateGeneration: Long = gateActionGeneration,
     ) {
-        val acceptance = session.tryRequestFrame(frameIndex, prefetchPermit)
+        val forwardTraversalStride = holdTarget?.stride?.takeIf { it > 0 }
+        val acceptance = session.tryRequestFrame(
+            frameIndex = frameIndex,
+            prefetchPermit = prefetchPermit,
+            forwardTraversalStride = forwardTraversalStride,
+        )
         if (acceptance == null) {
             retryGateAction(gateGeneration) {
+                val requestStillCurrent = if (mode == NavigationMode.HOLD_TRAVERSAL) {
+                    holdTarget != null && holdController.canSubmit(holdTarget)
+                } else {
+                    uiState.requestedFrameIndex == frameIndex
+                }
                 if (
                     !decodeInFlight &&
                     foreground &&
                     uiState.surfaceAvailable &&
-                    uiState.requestedFrameIndex == frameIndex
+                    requestStillCurrent
                 ) {
-                    submitFrameRequest(frameIndex, prefetchPermit, gateGeneration)
+                    submitFrameRequest(frameIndex, prefetchPermit, mode, holdTarget, gateGeneration)
                 }
             }
             return
         }
+        if (holdTarget != null) {
+            check(holdController.markAccepted(holdTarget, acceptance.request.token.requestGeneration))
+            savedState[KEY_REQUESTED_FRAME] = frameIndex
+        }
         decodeInFlight = true
         inFlightRequestGeneration = acceptance.request.token.requestGeneration
         inFlightAcceptedAtNs = acceptance.elapsedRealtimeNanos
+        inFlightFrameRequest = InFlightFrameRequest(mode, holdTarget)
         uiState = uiState.copy(
+            requestedFrameIndex = if (holdTarget != null) frameIndex else uiState.requestedFrameIndex,
+            status = if (holdTarget != null) "decoding" else uiState.status,
+            restoreState = if (holdTarget != null) ViewerRestoreState.DECODING else uiState.restoreState,
             activeRequestGeneration = acceptance.request.token.requestGeneration,
             currentDecodeTarget = frameIndex,
             latestPendingRequest = null,
@@ -543,6 +622,24 @@ class ViewerViewModel(
         submitFrameRequest(
             frameIndex = pending.frameIndex,
             prefetchPermit = pending.prefetchPermit,
+            mode = pending.mode,
+        )
+    }
+
+    private fun driveHoldTraversal() {
+        if (!foreground || !uiState.surfaceAvailable) return
+        val metadata = uiState.metadata ?: return
+        val target = holdController.reserveNext(
+            displayedFrameIndex = uiState.displayedFrameIndex,
+            frameCount = metadata.frameCount,
+            foregroundRequestInFlight = decodeInFlight,
+        ) ?: return
+        session.suspendPrefetch()
+        requestFrameInternal(
+            frameIndex = target.frameIndex,
+            prefetchPermit = null,
+            mode = NavigationMode.HOLD_TRAVERSAL,
+            holdTarget = target,
         )
     }
 
@@ -564,9 +661,11 @@ class ViewerViewModel(
     }
 
     private fun resetRequestPump() {
+        holdController.invalidate()
         decodeInFlight = false
         inFlightRequestGeneration = null
         inFlightAcceptedAtNs = null
+        inFlightFrameRequest = null
         pendingRequestedFrame = null
         uiState = uiState.copy(currentDecodeTarget = null, latestPendingRequest = null)
     }
@@ -589,6 +688,7 @@ class ViewerViewModel(
         private const val VIEWER_STATE_SCHEMA_VERSION = 1
         private const val DIAGNOSTIC_LATENCY_HISTORY_LIMIT = 32
         private const val GATE_RETRY_DELAY_MS = 1L
+        private val HOLD_STRIDES = setOf(-5, -1, 1, 5)
         private const val SESSION_ONLY_PERMISSION_NOTICE =
             "읽기 권한은 이번 실행에만 유지됩니다. 앱 재실행 뒤에는 영상을 다시 여세요."
     }

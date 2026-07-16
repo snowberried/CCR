@@ -52,13 +52,10 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.window.core.layout.WindowSizeClass
 import com.snowberried.ctcinereviewer.media.timelineFractionForFrame
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-
-internal const val NAVIGATION_REPEAT_INTERVAL_MS = 50L
+import kotlinx.coroutines.Job
 
 internal object AndroidSdkContract {
     const val MIN_SDK = 34
@@ -79,6 +76,7 @@ class MainActivity : ComponentActivity() {
                     onRequest = viewer::requestFrame,
                     onNavigationGestureStart = viewer::beginNavigationGesture,
                     onNavigationStep = viewer::moveByGesture,
+                    onNavigationHoldStart = viewer::startHoldTraversal,
                     onNavigationGestureEnd = viewer::endNavigationGesture,
                     onDirectInputChange = viewer::setDirectInput,
                     onTimelineRequest = viewer::requestTimelineFraction,
@@ -130,6 +128,7 @@ internal fun CcrSpikeApp(
     onRequest: (Int) -> Unit,
     onNavigationGestureStart: () -> Long,
     onNavigationStep: (Int, Long) -> Unit,
+    onNavigationHoldStart: (Int, Long) -> Unit,
     onNavigationGestureEnd: (Long) -> Unit,
     onDirectInputChange: (String) -> Unit,
     onTimelineRequest: (Float, Boolean) -> Unit,
@@ -166,6 +165,7 @@ internal fun CcrSpikeApp(
                     onRequest = onRequest,
                     onNavigationGestureStart = onNavigationGestureStart,
                     onNavigationStep = onNavigationStep,
+                    onNavigationHoldStart = onNavigationHoldStart,
                     onNavigationGestureEnd = onNavigationGestureEnd,
                     onTimelineRequest = onTimelineRequest,
                     onCancel = onCancel,
@@ -199,6 +199,7 @@ internal fun CcrSpikeApp(
                     onRequest = onRequest,
                     onNavigationGestureStart = onNavigationGestureStart,
                     onNavigationStep = onNavigationStep,
+                    onNavigationHoldStart = onNavigationHoldStart,
                     onNavigationGestureEnd = onNavigationGestureEnd,
                     onTimelineRequest = onTimelineRequest,
                     onCancel = onCancel,
@@ -218,6 +219,7 @@ private fun ViewerControls(
     onRequest: (Int) -> Unit,
     onNavigationGestureStart: () -> Long,
     onNavigationStep: (Int, Long) -> Unit,
+    onNavigationHoldStart: (Int, Long) -> Unit,
     onNavigationGestureEnd: (Long) -> Unit,
     onTimelineRequest: (Float, Boolean) -> Unit,
     onCancel: () -> Unit,
@@ -252,10 +254,10 @@ private fun ViewerControls(
                 .padding(top = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            NavigationButton("−5", -5, canNavigate && requestedIndex > 0, onNavigationGestureStart, onNavigationStep, onNavigationGestureEnd)
-            NavigationButton("−1", -1, canNavigate && requestedIndex > 0, onNavigationGestureStart, onNavigationStep, onNavigationGestureEnd)
-            NavigationButton("+1", 1, canNavigate && requestedIndex < lastIndex, onNavigationGestureStart, onNavigationStep, onNavigationGestureEnd)
-            NavigationButton("+5", 5, canNavigate && requestedIndex < lastIndex, onNavigationGestureStart, onNavigationStep, onNavigationGestureEnd)
+            NavigationButton("−5", -5, canNavigate && requestedIndex > 0, onNavigationGestureStart, onNavigationStep, onNavigationHoldStart, onNavigationGestureEnd)
+            NavigationButton("−1", -1, canNavigate && requestedIndex > 0, onNavigationGestureStart, onNavigationStep, onNavigationHoldStart, onNavigationGestureEnd)
+            NavigationButton("+1", 1, canNavigate && requestedIndex < lastIndex, onNavigationGestureStart, onNavigationStep, onNavigationHoldStart, onNavigationGestureEnd)
+            NavigationButton("+5", 5, canNavigate && requestedIndex < lastIndex, onNavigationGestureStart, onNavigationStep, onNavigationHoldStart, onNavigationGestureEnd)
         }
         Row(
             modifier = Modifier
@@ -335,11 +337,13 @@ internal fun androidx.compose.foundation.layout.RowScope.NavigationButton(
     delta: Int,
     enabled: Boolean,
     onGestureStart: () -> Long,
-    onStep: (Int, Long) -> Unit,
+    onTap: (Int, Long) -> Unit,
+    onHoldStart: (Int, Long) -> Unit,
     onGestureEnd: (Long) -> Unit,
 ) {
     val currentOnGestureStart by rememberUpdatedState(onGestureStart)
-    val currentOnStep by rememberUpdatedState(onStep)
+    val currentOnTap by rememberUpdatedState(onTap)
+    val currentOnHoldStart by rememberUpdatedState(onHoldStart)
     val currentOnGestureEnd by rememberUpdatedState(onGestureEnd)
     val lifecycleOwner = LocalLifecycleOwner.current
     val activeGesture = remember { ActiveNavigationGesture() }
@@ -369,18 +373,16 @@ internal fun androidx.compose.foundation.layout.RowScope.NavigationButton(
                             pass = PointerEventPass.Initial,
                         )
                         val generation = currentOnGestureStart()
-                        var repeated = false
+                        var holdStarted = false
                         activeGesture.begin(generation, currentOnGestureEnd)
-                        val repeatJob = launch {
+                        val longPressJob = launch {
                             delay(ViewConfiguration.getLongPressTimeout().toLong())
-                            while (isActive && activeGesture.isActive(generation)) {
-                                if (!activeGesture.isActive(generation)) break
-                                repeated = true
-                                currentOnStep(delta, generation)
-                                delay(NAVIGATION_REPEAT_INTERVAL_MS)
+                            if (activeGesture.isActive(generation)) {
+                                holdStarted = true
+                                currentOnHoldStart(delta, generation)
                             }
                         }
-                        activeGesture.attach(generation, repeatJob)
+                        activeGesture.attach(generation, longPressJob)
                         try {
                             while (activeGesture.isActive(generation)) {
                                 val event = awaitPointerEvent(PointerEventPass.Initial)
@@ -390,8 +392,8 @@ internal fun androidx.compose.foundation.layout.RowScope.NavigationButton(
                                 if (secondPointer || outside) break
                                 event.changes.forEach { it.consume() }
                                 if (!primary.pressed) {
-                                    if (!repeated && activeGesture.isActive(generation)) {
-                                        currentOnStep(delta, generation)
+                                    if (!holdStarted && activeGesture.isActive(generation)) {
+                                        currentOnTap(delta, generation)
                                     }
                                     break
                                 }
@@ -414,7 +416,7 @@ private class ActiveNavigationGesture {
     private data class Active(
         val generation: Long,
         val onEnd: (Long) -> Unit,
-        var repeatJob: Job? = null,
+        var longPressJob: Job? = null,
     )
 
     private var active: Active? = null
@@ -424,9 +426,9 @@ private class ActiveNavigationGesture {
         active = Active(generation, onEnd)
     }
 
-    fun attach(generation: Long, repeatJob: Job) {
+    fun attach(generation: Long, longPressJob: Job) {
         val current = active
-        if (current?.generation == generation) current.repeatJob = repeatJob else repeatJob.cancel()
+        if (current?.generation == generation) current.longPressJob = longPressJob else longPressJob.cancel()
     }
 
     fun isActive(generation: Long): Boolean = active?.generation == generation
@@ -439,7 +441,7 @@ private class ActiveNavigationGesture {
         val ending = active ?: return
         active = null
         ending.onEnd(ending.generation)
-        ending.repeatJob?.cancel()
+        ending.longPressJob?.cancel()
     }
 }
 

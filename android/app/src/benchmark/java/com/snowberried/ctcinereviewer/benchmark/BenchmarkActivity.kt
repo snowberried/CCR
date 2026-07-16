@@ -50,9 +50,17 @@ class BenchmarkActivity : ComponentActivity() {
         val decoded: Long,
         val coalesced: Long,
         val prefetchHit: Long,
+        val prefetchStarted: Long,
+        val prefetchCompleted: Long,
         val prefetchCancelled: Long,
         val prefetchWasted: Long,
+        val prefetchEvictedBeforeUse: Long,
         val cacheEviction: Long,
+        val seek: Long,
+        val flush: Long,
+        val sequentialEntry: Long,
+        val sequentialFallback: Long,
+        val sequentialOutput: Long,
         val swapFailure: Long,
     )
 
@@ -102,9 +110,17 @@ class BenchmarkActivity : ComponentActivity() {
     private var counterPrevious: CounterVector? = null
     private var foregroundDecodedCount = 0L
     private var prefetchHitCount = 0L
+    private var prefetchStartedCount = 0L
+    private var prefetchCompletedCount = 0L
     private var prefetchCancelledCount = 0L
     private var prefetchWastedCount = 0L
+    private var prefetchEvictedBeforeUseCount = 0L
     private var cacheEvictionCount = 0L
+    private var seekCount = 0L
+    private var flushCount = 0L
+    private var sequentialEntryCount = 0L
+    private var sequentialFallbackCount = 0L
+    private var sequentialOutputCount = 0L
     private var swapFailureCount = 0L
     private var holdDelta = 0
     private var holdActiveTargetNs = 0L
@@ -145,6 +161,7 @@ class BenchmarkActivity : ComponentActivity() {
                         onRequest = viewer::requestFrame,
                         onNavigationGestureStart = viewer::beginNavigationGesture,
                         onNavigationStep = viewer::moveByGesture,
+                        onNavigationHoldStart = viewer::startHoldTraversal,
                         onNavigationGestureEnd = viewer::endNavigationGesture,
                         onDirectInputChange = viewer::setDirectInput,
                         onTimelineRequest = viewer::requestTimelineFraction,
@@ -213,6 +230,7 @@ class BenchmarkActivity : ComponentActivity() {
     private fun observeState(state: ViewerUiState) {
         observeMeasurement(state)
         traceDiagnostics(state)
+        stopLongPressAtAcceptedTarget(state)
         if (state.diagnostics.fullFrameReadbackCount != 0L) {
             fail("PRODUCT_READBACK_FORBIDDEN")
             return
@@ -408,6 +426,7 @@ class BenchmarkActivity : ComponentActivity() {
         counterPrevious = counterVector(viewer.uiState.diagnostics)
         requestTraceCookie = nextTraceCookie().also { beginAsync(TRACE_REPRESENTATIVE_SMOOTHNESS, it) }
         holdGestureGeneration = viewer.beginNavigationGesture()
+        viewer.startHoldTraversal(holdDelta, requireNotNull(holdGestureGeneration))
     }
 
     private fun scheduleHoldTick() {
@@ -425,6 +444,9 @@ class BenchmarkActivity : ComponentActivity() {
         if (scenario == SCENARIO_REVERSE_1080 && SystemClock.elapsedRealtime() >= representativeDeadlineMs) {
             holdDelta = -holdDelta
             representativeDeadlineMs += REVERSE_DIRECTION_INTERVAL_MS
+            holdGestureGeneration?.let(viewer::endNavigationGesture)
+            holdGestureGeneration = viewer.beginNavigationGesture()
+            viewer.startHoldTraversal(holdDelta, requireNotNull(holdGestureGeneration))
         }
         val state = viewer.uiState
         val lastIndex = (state.metadata?.frameCount ?: 1) - 1
@@ -441,10 +463,11 @@ class BenchmarkActivity : ComponentActivity() {
             viewer.requestFrame(resetIndex)
             return
         }
-        issuedRequestCount += 1
-        latestRequestedFrameIndex = next
-        Trace.setCounter("ccr.requested_frame", next.toLong())
-        viewer.moveByGesture(holdDelta, requireNotNull(holdGestureGeneration))
+        if (latestRequestedFrameIndex != state.requestedFrameIndex) {
+            issuedRequestCount += 1
+            latestRequestedFrameIndex = state.requestedFrameIndex
+            Trace.setCounter("ccr.requested_frame", state.requestedFrameIndex.toLong())
+        }
         recordLag(viewer.uiState)
         scheduleHoldTick()
     }
@@ -562,9 +585,17 @@ class BenchmarkActivity : ComponentActivity() {
         foregroundDecodedCount += delta(previous.decoded, current.decoded)
         coalescedRequestCount += delta(previous.coalesced, current.coalesced)
         prefetchHitCount += delta(previous.prefetchHit, current.prefetchHit)
+        prefetchStartedCount += delta(previous.prefetchStarted, current.prefetchStarted)
+        prefetchCompletedCount += delta(previous.prefetchCompleted, current.prefetchCompleted)
         prefetchCancelledCount += delta(previous.prefetchCancelled, current.prefetchCancelled)
         prefetchWastedCount += delta(previous.prefetchWasted, current.prefetchWasted)
+        prefetchEvictedBeforeUseCount += delta(previous.prefetchEvictedBeforeUse, current.prefetchEvictedBeforeUse)
         cacheEvictionCount += delta(previous.cacheEviction, current.cacheEviction)
+        seekCount += delta(previous.seek, current.seek)
+        flushCount += delta(previous.flush, current.flush)
+        sequentialEntryCount += delta(previous.sequentialEntry, current.sequentialEntry)
+        sequentialFallbackCount += delta(previous.sequentialFallback, current.sequentialFallback)
+        sequentialOutputCount += delta(previous.sequentialOutput, current.sequentialOutput)
         swapFailureCount += delta(previous.swapFailure, current.swapFailure)
         counterPrevious = current
     }
@@ -573,9 +604,17 @@ class BenchmarkActivity : ComponentActivity() {
         decoded = value.foregroundDecodedFrameCount,
         coalesced = value.requestCoalescedCount,
         prefetchHit = value.prefetchCacheHit,
+        prefetchStarted = value.prefetchStarted,
+        prefetchCompleted = value.prefetchCompleted,
         prefetchCancelled = value.prefetchCancelled,
         prefetchWasted = value.prefetchWasted,
+        prefetchEvictedBeforeUse = value.prefetchEvictedBeforeUse,
         cacheEviction = value.cacheEvictionCount,
+        seek = value.seekCount,
+        flush = value.flushCount,
+        sequentialEntry = value.sequentialEntryCount,
+        sequentialFallback = value.sequentialFallbackCount,
+        sequentialOutput = value.sequentialOutputCount,
         swapFailure = value.swapFailureCount,
     )
 
@@ -602,9 +641,17 @@ class BenchmarkActivity : ComponentActivity() {
         Trace.setCounter("ccr.issued_request", issuedRequestCount)
         Trace.setCounter("ccr.coalesced_request", coalescedRequestCount)
         Trace.setCounter("ccr.prefetch_hit", prefetchHitCount)
+        Trace.setCounter("ccr.prefetch_started", prefetchStartedCount)
+        Trace.setCounter("ccr.prefetch_completed", prefetchCompletedCount)
         Trace.setCounter("ccr.prefetch_cancel", prefetchCancelledCount)
         Trace.setCounter("ccr.prefetch_waste", prefetchWastedCount)
+        Trace.setCounter("ccr.prefetch_evicted_before_use", prefetchEvictedBeforeUseCount)
         Trace.setCounter("ccr.cache_eviction", cacheEvictionCount)
+        Trace.setCounter("ccr.seek", seekCount)
+        Trace.setCounter("ccr.flush", flushCount)
+        Trace.setCounter("ccr.sequential_entry", sequentialEntryCount)
+        Trace.setCounter("ccr.sequential_fallback", sequentialFallbackCount)
+        Trace.setCounter("ccr.sequential_output", sequentialOutputCount)
         Trace.setCounter("ccr.measurement_swap_failure", swapFailureCount)
         Trace.setCounter("ccr.jank_count", jankCount)
         Trace.setCounter("ccr.jank_ratio_ppm", jankRatioPpm)
@@ -634,9 +681,17 @@ class BenchmarkActivity : ComponentActivity() {
             append("|issued=").append(issuedRequestCount)
             append("|coalesced=").append(coalescedRequestCount)
             append("|prefetchHit=").append(prefetchHitCount)
+            append("|prefetchStarted=").append(prefetchStartedCount)
+            append("|prefetchCompleted=").append(prefetchCompletedCount)
             append("|prefetchCancel=").append(prefetchCancelledCount)
             append("|prefetchWaste=").append(prefetchWastedCount)
+            append("|prefetchEvictedBeforeUse=").append(prefetchEvictedBeforeUseCount)
             append("|cacheEviction=").append(cacheEvictionCount)
+            append("|seek=").append(seekCount)
+            append("|flush=").append(flushCount)
+            append("|sequentialEntry=").append(sequentialEntryCount)
+            append("|sequentialFallback=").append(sequentialFallbackCount)
+            append("|sequentialOutput=").append(sequentialOutputCount)
             append("|swapFailure=").append(swapFailureCount)
             append("|jank=").append(jankCount).append('/').append(jankFrameCount)
             append("|jankRatio=").append(String.format(Locale.ROOT, "%.6f", ratio))
@@ -708,18 +763,19 @@ class BenchmarkActivity : ComponentActivity() {
         expectedTargetIndex = LONG_PRESS_LAST_FRAME
         expectedCacheHit = null
         requestTraceCookie = nextTraceCookie().also { beginAsync(TRACE_REQUEST_TO_PUBLISH, it) }
-        val gestureGeneration = viewer.beginNavigationGesture()
-        repeat(LONG_PRESS_LAST_FRAME) { offset ->
-            mainHandler.postDelayed({
-                val frameIndex = offset + 1
-                latestRequestedFrameIndex = frameIndex
-                Trace.setCounter("ccr.requested_frame", frameIndex.toLong())
-                viewer.moveByGesture(1, gestureGeneration)
-                if (frameIndex == LONG_PRESS_LAST_FRAME) {
-                    viewer.endNavigationGesture(gestureGeneration)
-                }
-            }, offset * REPEAT_INTERVAL_MS)
-        }
+        holdGestureGeneration = viewer.beginNavigationGesture()
+        viewer.startHoldTraversal(1, requireNotNull(holdGestureGeneration))
+    }
+
+    private fun stopLongPressAtAcceptedTarget(state: ViewerUiState) {
+        if (
+            scenario != SCENARIO_LONG_PRESS ||
+            phase != Phase.TARGET_FRAME ||
+            state.requestedFrameIndex != LONG_PRESS_LAST_FRAME ||
+            state.currentDecodeTarget != LONG_PRESS_LAST_FRAME
+        ) return
+        holdGestureGeneration?.let(viewer::endNavigationGesture)
+        holdGestureGeneration = null
     }
 
     private fun startSwitch() {
@@ -788,9 +844,17 @@ class BenchmarkActivity : ComponentActivity() {
         Trace.setCounter("ccr.cache_miss", diagnostics.cacheMissCount)
         Trace.setCounter("ccr.prefetch_completed", diagnostics.prefetchedFrameCount)
         Trace.setCounter("ccr.prefetch_cache_hit", diagnostics.prefetchCacheHit)
+        Trace.setCounter("ccr.prefetch_started_total", diagnostics.prefetchStarted)
+        Trace.setCounter("ccr.prefetch_completed_total", diagnostics.prefetchCompleted)
         Trace.setCounter("ccr.prefetch_cancelled", diagnostics.prefetchCancelled)
         Trace.setCounter("ccr.prefetch_wasted", diagnostics.prefetchWasted)
+        Trace.setCounter("ccr.prefetch_evicted_before_use_total", diagnostics.prefetchEvictedBeforeUse)
         Trace.setCounter("ccr.cache_bytes", diagnostics.cacheBytes)
+        Trace.setCounter("ccr.seek_total", diagnostics.seekCount)
+        Trace.setCounter("ccr.flush_total", diagnostics.flushCount)
+        Trace.setCounter("ccr.sequential_entry_total", diagnostics.sequentialEntryCount)
+        Trace.setCounter("ccr.sequential_fallback_total", diagnostics.sequentialFallbackCount)
+        Trace.setCounter("ccr.sequential_output_total", diagnostics.sequentialOutputCount)
         Trace.setCounter("ccr.codec_recreate", diagnostics.decoderRecreateCount)
         Trace.setCounter("ccr.swap_failure", diagnostics.swapFailureCount)
         Trace.setCounter("ccr.stale_discard", diagnostics.staleDiscardCount)
@@ -917,7 +981,7 @@ class BenchmarkActivity : ComponentActivity() {
         private const val REPRESENTATIVE_1080_VFR = "1080p-vfr.mp4"
         private const val REPRESENTATIVE_1080_SWITCH_H264 = "1080p-switch-a.mp4"
         private const val REPRESENTATIVE_1080_SWITCH_HEVC = "1080p-switch-b.mp4"
-        private const val LONG_PRESS_LAST_FRAME = 12
+        private const val LONG_PRESS_LAST_FRAME = 30
         private const val DISTANT_FRAME = 36
         private const val REPEAT_INTERVAL_MS = 50L
         private const val REPRESENTATIVE_HOLD_ACTIVE_NS = 60_000_000_000L

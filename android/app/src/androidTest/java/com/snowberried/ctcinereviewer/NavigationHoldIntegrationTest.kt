@@ -20,23 +20,26 @@ class NavigationHoldIntegrationTest {
     val compose = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun holdPlusOneAdvancesRequestedIndexAndSettlesOnRelease() {
+    fun holdPlusOneRequestsAtMostOneTargetAheadAndSettlesOnRelease() {
         val viewer = ViewModelProvider(compose.activity)[ViewerViewModel::class.java]
         openBurst(viewer)
 
         val button = compose.onNodeWithText("+1")
         button.performTouchInput { down(center) }
         compose.mainClock.advanceTimeBy(
-            ViewConfiguration.getLongPressTimeout().toLong() +
-                NAVIGATION_REPEAT_INTERVAL_MS * 3 + 32,
+            ViewConfiguration.getLongPressTimeout().toLong() + 32,
         )
         val requestedBeforeRelease = viewer.uiState.requestedFrameIndex
         button.performTouchInput { up() }
         compose.waitForIdle()
         val requestedAfterRelease = viewer.uiState.requestedFrameIndex
 
-        assertTrue("actual viewer did not advance: $requestedBeforeRelease", requestedBeforeRelease >= 3)
-        compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
+        assertTrue("actual viewer did not advance: $requestedBeforeRelease", requestedBeforeRelease >= 1)
+        assertTrue(
+            "hold queued more than one target",
+            requestedBeforeRelease - (viewer.uiState.displayedFrameIndex ?: 0) <= 1,
+        )
+        compose.mainClock.advanceTimeBy(HOLD_SETTLE_MS)
         assertEquals("actual viewer continued after release was handled", requestedAfterRelease, viewer.uiState.requestedFrameIndex)
         compose.waitUntil(timeoutMillis = 20_000) {
             viewer.uiState.displayedFrame?.displayFrameIndex == requestedAfterRelease
@@ -57,7 +60,7 @@ class NavigationHoldIntegrationTest {
             compose.onAllNodesWithTag("viewer-two-pane").fetchSemanticsNodes().isNotEmpty()
         }
         val afterOrientationStop = viewer.uiState.requestedFrameIndex
-        compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
+        compose.mainClock.advanceTimeBy(HOLD_SETTLE_MS)
 
         assertEquals(
             "orientation disposal allowed a stale repeat",
@@ -76,7 +79,7 @@ class NavigationHoldIntegrationTest {
         advancePastLongPress(2)
         compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
         val afterStop = viewer.uiState.requestedFrameIndex
-        compose.mainClock.advanceTimeBy(NAVIGATION_REPEAT_INTERVAL_MS * 3)
+        compose.mainClock.advanceTimeBy(HOLD_SETTLE_MS)
 
         assertEquals("background allowed a stale repeat", afterStop, viewer.uiState.requestedFrameIndex)
         compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
@@ -96,8 +99,11 @@ class NavigationHoldIntegrationTest {
 
     private fun advancePastLongPress(repeatIntervals: Int) {
         compose.mainClock.advanceTimeBy(
-            ViewConfiguration.getLongPressTimeout().toLong() +
-                NAVIGATION_REPEAT_INTERVAL_MS * repeatIntervals + 32,
+            ViewConfiguration.getLongPressTimeout().toLong() + repeatIntervals.coerceAtLeast(1) * 32L,
         )
+    }
+
+    private companion object {
+        const val HOLD_SETTLE_MS = 150L
     }
 }
