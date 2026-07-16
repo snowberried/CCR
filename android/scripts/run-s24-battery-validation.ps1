@@ -53,7 +53,7 @@ if ($Mode -eq "Prepare") {
   [PSCustomObject]@{
     status = "READY_TO_UNPLUG"
     processId = $process.Id
-    instruction = "배터리 80~90%에서 USB를 분리하십시오. 앱이 최대 5분 기다린 뒤 30분 측정을 시작합니다. 완료 후 USB를 다시 연결하고 -Mode Collect를 실행하십시오."
+    instruction = "At 80-90% battery, unplug USB. The app waits up to 5 minutes, then measures for 30 minutes. Reconnect USB and run -Mode Collect."
     scenario = $Scenario
     drainPassClaimed = $false
   } | ConvertTo-Json
