@@ -16,7 +16,10 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.snowberried.ctcinereviewer.gate.ReadOnlyFixtureProvider
+import com.snowberried.ctcinereviewer.media.FrameKey
 import com.snowberried.ctcinereviewer.media.FrameRequest
+import com.snowberried.ctcinereviewer.media.RENDERER_CACHE_HARD_CAP_BYTES
+import com.snowberried.ctcinereviewer.media.rendererCacheByteBudget
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotSame
@@ -34,6 +37,90 @@ import java.util.concurrent.atomic.AtomicReference
 class ViewerLifecycleTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
+
+    @Test
+    fun backgroundSuspendsInFlightPrefetchAndResumeWaitsForDirectionalInput() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            waitState(scenario) { it.surfaceAvailable }
+            open(scenario, "burst.mp4")
+            waitState(scenario) { it.displayedFrameIndex == 0 }
+            val viewer = viewer(scenario)
+            assertTrue("initial actor did not become idle", viewer.awaitActorIdleForTest())
+            val initialDiagnostics = requireNotNull(viewer.diagnosticsSnapshotForTest())
+            assertEquals(0L, initialDiagnostics.prefetchStarted)
+            assertEquals(0L, initialDiagnostics.prefetchCompleted)
+            assertEquals(
+                rendererCacheByteBudget(Runtime.getRuntime().maxMemory()),
+                initialDiagnostics.cacheBudgetBytes,
+            )
+            assertTrue(initialDiagnostics.cacheBudgetBytes <= RENDERER_CACHE_HARD_CAP_BYTES)
+
+            val barrier = OneShotPrefetchBarrier()
+            viewer.setBeforePrefetchCacheHookForTest(barrier::block)
+            onViewer(scenario) { it.moveBy(1) }
+            waitState(scenario) { it.displayedFrameIndex == 1 }
+            assertTrue("prefetch did not reach cache boundary", barrier.awaitEntered())
+            val completedBeforeStop = state(scenario).diagnostics.prefetchCompleted
+
+            scenario.moveToState(Lifecycle.State.CREATED)
+            waitState(scenario) { !it.surfaceAvailable && it.displayedFrame == null }
+            barrier.release()
+            assertTrue("prefetch actor did not drain after stop", viewer.awaitActorIdleForTest(20_000))
+            viewer.setBeforePrefetchCacheHookForTest(null)
+            val stoppedDiagnostics = requireNotNull(viewer.diagnosticsSnapshotForTest())
+            assertEquals("prefetch completed after lifecycle stop", completedBeforeStop, stoppedDiagnostics.prefetchCompleted)
+
+            scenario.moveToState(Lifecycle.State.RESUMED)
+            val restored = waitState(scenario, 30_000) {
+                it.surfaceAvailable && it.displayedFrameIndex == 1 && it.restoreState == ViewerRestoreState.COMPLETE
+            }
+            assertTrue("restore actor did not become idle", viewer.awaitActorIdleForTest())
+            assertEquals("resume started speculative prefetch", stoppedDiagnostics.prefetchStarted, restored.diagnostics.prefetchStarted)
+            assertEquals("resume completed speculative prefetch", stoppedDiagnostics.prefetchCompleted, restored.diagnostics.prefetchCompleted)
+            assertEquals(0L, restored.diagnostics.swapFailureCount)
+            assertEquals(0L, restored.diagnostics.publicationInvariantViolationCount)
+
+            val startedBeforeDirection = restored.diagnostics.prefetchStarted
+            onViewer(scenario) { it.moveBy(1) }
+            waitState(scenario) { it.displayedFrameIndex == 2 }
+            assertTrue("directional prefetch actor did not become idle", viewer.awaitActorIdleForTest())
+            onViewer(scenario) { it.requestFrame(5) }
+            val cached = waitState(scenario) { it.displayedFrameIndex == 5 }
+            assertEquals("cache hit", cached.detail)
+            assertTrue(cached.diagnostics.prefetchStarted > startedBeforeDirection)
+            assertTrue(cached.diagnostics.prefetchCompleted > completedBeforeStop)
+        }
+    }
+
+    @Test
+    fun coalescedDirectionalReversalCountsOnlyPendingOverwritesAndPublishesLatestTarget() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            waitState(scenario) { it.surfaceAvailable }
+            open(scenario, "burst.mp4")
+            waitState(scenario) { it.displayedFrameIndex == 0 }
+
+            val viewer = viewer(scenario)
+            val barrier = OneShotDecodeBarrier()
+            viewer.setBeforeDecodeHookForTest(barrier::block)
+            try {
+                onViewer(scenario) { it.moveBy(5) }
+                assertTrue("directional decode did not enter actor", barrier.awaitEntered())
+                onViewer(scenario) {
+                    it.moveBy(5)
+                    it.moveBy(5)
+                    it.moveBy(-5)
+                    assertEquals(10, it.uiState.requestedFrameIndex)
+                }
+            } finally {
+                barrier.release()
+            }
+
+            val final = waitState(scenario, 30_000) { it.displayedFrameIndex == 10 }
+            viewer.setBeforeDecodeHookForTest(null)
+            assertEquals(2L, final.diagnostics.requestCoalescedCount)
+            assertEquals(3L, final.diagnostics.foregroundDecodedFrameCount)
+        }
+    }
 
     @Test
     fun rapidNavigationAccumulatesAndFileSwitchDuringDecodeRejectsOldResults() {
@@ -365,6 +452,26 @@ class ViewerLifecycleTest {
             entered.countDown()
             check(released.await(15, TimeUnit.SECONDS)) {
                 "decode barrier timed out for ${request.token}"
+            }
+        }
+
+        fun awaitEntered(): Boolean = entered.await(10, TimeUnit.SECONDS)
+
+        fun release() {
+            released.countDown()
+        }
+    }
+
+    private class OneShotPrefetchBarrier {
+        private val armed = AtomicBoolean(true)
+        private val entered = CountDownLatch(1)
+        private val released = CountDownLatch(1)
+
+        fun block(request: FrameRequest, frame: FrameKey) {
+            if (!armed.compareAndSet(true, false)) return
+            entered.countDown()
+            check(released.await(15, TimeUnit.SECONDS)) {
+                "prefetch barrier timed out for ${request.token} / $frame"
             }
         }
 

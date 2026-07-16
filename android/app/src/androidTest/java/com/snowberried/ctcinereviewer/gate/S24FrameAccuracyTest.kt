@@ -237,8 +237,16 @@ class S24FrameAccuracyTest {
     ) {
         report.currentFixture = golden.fixture
         openAndAwait(activity, golden)
+        assertTrue("initial frame actor did not become idle", activity.awaitActorIdle())
+        assertEquals("initial open started speculative prefetch", 0L, lastDiagnostics.prefetchStarted)
+        assertEquals("initial open completed speculative prefetch", 0L, lastDiagnostics.prefetchCompleted)
         activity.clearResults()
-        Thread.sleep(1_000)
+        val activationIndex = minOf(1, golden.frames.lastIndex)
+        onMain(activity) { activity.requestDirectionalFrame(activationIndex) }
+        val activation = awaitPublished(activity, golden, activationIndex)
+        assertEquals("first directional request unexpectedly hit initial prefetch", false, (activation.result as FrameResult.Published).cacheHit)
+        activity.drainPublicationEvents()
+        assertTrue("directional prefetch actor did not become idle", activity.awaitActorIdle())
         assertTrue("cache-only prefetch emitted a publication event", activity.drainPublicationEvents().isEmpty())
 
         val prefetchedIndex = minOf(DIRECTIONAL_PREFETCH_PROBE_INDEX, golden.frames.lastIndex)
@@ -251,7 +259,11 @@ class S24FrameAccuracyTest {
         report.currentFixture = first.fixture
         openAndAwait(activity, first)
         activity.clearResults()
-        Thread.sleep(1_000)
+        val firstActivationIndex = minOf(1, first.frames.lastIndex)
+        onMain(activity) { activity.requestDirectionalFrame(firstActivationIndex) }
+        awaitPublished(activity, first, firstActivationIndex)
+        activity.drainPublicationEvents()
+        assertTrue("file A directional prefetch actor did not become idle", activity.awaitActorIdle())
         assertTrue("file A prefetch emitted a publication event", activity.drainPublicationEvents().isEmpty())
 
         report.currentFixture = second.fixture
@@ -514,6 +526,16 @@ class S24FrameAccuracyTest {
                     .put("cacheMisses", diagnostics.cacheMissCount)
                     .put("prefetchedFrames", diagnostics.prefetchedFrameCount)
                     .put("cacheBytes", diagnostics.cacheBytes)
+                    .put("cacheEntryCount", diagnostics.cacheEntryCount)
+                    .put("peakCacheEntryCount", diagnostics.peakCacheEntryCount)
+                    .put("cacheEvictionCount", diagnostics.cacheEvictionCount)
+                    .put("cacheRejectionCount", diagnostics.cacheRejectionCount)
+                    .put("cacheThrashCount", diagnostics.cacheThrashCount)
+                    .put("textureCreatedCount", diagnostics.textureCreatedCount)
+                    .put("textureReleasedCount", diagnostics.textureReleasedCount)
+                    .put("liveTextureCount", diagnostics.liveTextureCount)
+                    .put("peakLiveTextureCount", diagnostics.peakLiveTextureCount)
+                    .put("textureDoubleReleaseCount", diagnostics.textureDoubleReleaseCount)
                     .put("decodedOutputs", diagnostics.decodeOrdinal)
                     .put("staleDiscard", diagnostics.staleDiscardCount)
                     .put("publishedSwaps", diagnostics.publishedSwapCount)

@@ -16,6 +16,7 @@ import android.view.Surface
 import com.snowberried.ctcinereviewer.cache.DirectionalByteCache
 import com.snowberried.ctcinereviewer.media.ContainerMetadata
 import com.snowberried.ctcinereviewer.media.DecodedOutputMetadata
+import com.snowberried.ctcinereviewer.media.DirectionalPrefetchDirection
 import com.snowberried.ctcinereviewer.media.FrameImageProbe
 import com.snowberried.ctcinereviewer.media.FrameKey
 import com.snowberried.ctcinereviewer.media.FrameRequest
@@ -25,13 +26,43 @@ import com.snowberried.ctcinereviewer.media.PublicationGate
 import com.snowberried.ctcinereviewer.media.PublicationResult
 import com.snowberried.ctcinereviewer.media.PrefetchBudgetDecision
 import com.snowberried.ctcinereviewer.media.prefetchBudgetDecision
+import com.snowberried.ctcinereviewer.media.rendererCacheByteBudget
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.math.min
+
+internal class TextureLifetimeTracker {
+    private val liveAllocations = mutableSetOf<Long>()
+
+    var createdCount: Long = 0
+        private set
+    var releasedCount: Long = 0
+        private set
+    var peakLiveCount: Int = 0
+        private set
+    var doubleReleaseCount: Long = 0
+        private set
+
+    val liveCount: Int get() = liveAllocations.size
+
+    fun onCreated(allocationId: Long) {
+        check(liveAllocations.add(allocationId)) { "duplicate texture allocation: $allocationId" }
+        createdCount += 1
+        peakLiveCount = maxOf(peakLiveCount, liveAllocations.size)
+    }
+
+    fun onReleased(allocationId: Long): Boolean {
+        if (!liveAllocations.remove(allocationId)) {
+            doubleReleaseCount += 1
+            return false
+        }
+        releasedCount += 1
+        return true
+    }
+}
 
 class EglFrameRenderer(
     private val publicationGate: PublicationGate,
@@ -55,6 +86,20 @@ class EglFrameRenderer(
         val evictedBeforeUseCount: Long,
         val wastedCount: Long,
         val currentDepth: Int,
+        val cacheEntryCount: Int,
+        val peakCacheEntryCount: Int,
+        val cacheEvictionCount: Long,
+        val cacheRejectionCount: Long,
+        val cacheThrashCount: Long,
+        val cacheBytes: Long,
+        val cacheRequestHitCount: Long,
+        val cacheRequestMissCount: Long,
+        val textureCreatedCount: Long,
+        val textureReleasedCount: Long,
+        val liveTextureCount: Int,
+        val peakLiveTextureCount: Int,
+        val textureDoubleReleaseCount: Long,
+        val fullFrameReadbackCount: Long,
     )
 
     class TargetHandle internal constructor(val request: FrameRequest) {
@@ -101,10 +146,12 @@ class EglFrameRenderer(
         val token: GenerationToken,
         val expectedKey: FrameKey,
         val publicationRequest: FrameRequest?,
+        val cacheRetentionAllowed: (() -> Boolean)?,
         val complete: (RenderAck) -> Unit,
     )
 
     private data class CachedTexture(
+        val allocationId: Long,
         val textureId: Int,
         val width: Int,
         val height: Int,
@@ -144,15 +191,18 @@ class EglFrameRenderer(
     private var prefetchCacheHitCount = 0L
     private var prefetchEvictedBeforeUseCount = 0L
     private var prefetchWastedCount = 0L
+    private var prefetchRejectedCount = 0L
+    private var nextTextureAllocationId = 0L
+    private val textureLifetimeTracker = TextureLifetimeTracker()
     private val probePolicy = FrameProbePolicy(renderMode)
     private val surfaceLeases = SurfaceLeaseTracker()
 
-    private val byteBudget = min(128L * 1024L * 1024L, Runtime.getRuntime().maxMemory() / 4L)
+    private val byteBudget = rendererCacheByteBudget(Runtime.getRuntime().maxMemory())
     private val cache = DirectionalByteCache<FrameKey, CachedTexture>(
         byteBudget = byteBudget,
         frameIndex = { it.displayFrameIndex },
         onEvict = { key, texture ->
-            GLES30.glDeleteTextures(1, intArrayOf(texture.textureId), 0)
+            releaseCachedTexture(texture)
             if (prefetchedKeys.remove(key)) {
                 prefetchEvictedBeforeUseCount += 1
                 prefetchWastedCount += 1
@@ -222,6 +272,7 @@ class EglFrameRenderer(
             prefetchCacheHitCount = 0
             prefetchEvictedBeforeUseCount = 0
             prefetchWastedCount = 0
+            prefetchRejectedCount = 0
             true
         }
     }
@@ -296,6 +347,7 @@ class EglFrameRenderer(
                         token = request.token,
                         expectedKey = request.expectedKey,
                         publicationRequest = request,
+                        cacheRetentionAllowed = null,
                         complete = it::complete,
                     )
                     cache.recordRequest(request.requestedFrameIndex)
@@ -306,7 +358,11 @@ class EglFrameRenderer(
         }
     }
 
-    fun queueCacheOnly(token: GenerationToken, expectedKey: FrameKey): CacheTargetHandle? {
+    fun queueCacheOnly(
+        token: GenerationToken,
+        expectedKey: FrameKey,
+        cacheRetentionAllowed: () -> Boolean,
+    ): CacheTargetHandle? {
         if (unavailable()) return null
         return callOnRenderer<CacheTargetHandle?>(2_000, null) {
             if (unavailable()) return@callOnRenderer null
@@ -322,6 +378,7 @@ class EglFrameRenderer(
                         token = token,
                         expectedKey = expectedKey,
                         publicationRequest = null,
+                        cacheRetentionAllowed = cacheRetentionAllowed,
                         complete = it::complete,
                     )
                 }
@@ -335,6 +392,28 @@ class EglFrameRenderer(
     fun cacheHits(): Long = cache.hitCount
     fun cacheMisses(): Long = cache.missCount
     fun fullFrameReadbacks(): Long = probePolicy.readbackCount()
+
+    internal fun recordForegroundRequest(
+        frameIndex: Int,
+        direction: DirectionalPrefetchDirection?,
+    ) {
+        if (unavailable()) return
+        callOnRenderer(1_000, Unit) {
+            cache.recordRequest(
+                index = frameIndex,
+                explicitDirection = when (direction) {
+                    DirectionalPrefetchDirection.FORWARD -> 1
+                    DirectionalPrefetchDirection.REVERSE -> -1
+                    null -> null
+                },
+            )
+        }
+    }
+
+    fun discardPrefetched(key: FrameKey): Boolean = callOnRenderer(1_000, false) {
+        if (key !in prefetchedKeys) return@callOnRenderer false
+        cache.remove(key)
+    }
 
     fun awaitTarget(handle: TargetHandle, timeoutMs: Long): RenderAck {
         val waited = handle.await(timeoutMs)
@@ -391,6 +470,20 @@ class EglFrameRenderer(
                     evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
                     wastedCount = prefetchWastedCount,
                     currentDepth = prefetchedKeys.size,
+                    cacheEntryCount = cache.size,
+                    peakCacheEntryCount = cache.peakSize,
+                    cacheEvictionCount = cache.evictionCount,
+                    cacheRejectionCount = cache.rejectionCount,
+                    cacheThrashCount = prefetchEvictedBeforeUseCount + prefetchRejectedCount,
+                    cacheBytes = cache.byteSize,
+                    cacheRequestHitCount = cache.hitCount,
+                    cacheRequestMissCount = cache.missCount,
+                    textureCreatedCount = textureLifetimeTracker.createdCount,
+                    textureReleasedCount = textureLifetimeTracker.releasedCount,
+                    liveTextureCount = textureLifetimeTracker.liveCount,
+                    peakLiveTextureCount = textureLifetimeTracker.peakLiveCount,
+                    textureDoubleReleaseCount = textureLifetimeTracker.doubleReleaseCount,
+                    fullFrameReadbackCount = probePolicy.readbackCount(),
                 ),
             )
             latch.countDown()
@@ -508,13 +601,16 @@ class EglFrameRenderer(
             return
         }
         if (unavailable()) {
-            GLES30.glDeleteTextures(1, intArrayOf(cached.textureId), 0)
+            releaseCachedTexture(cached)
             handle.complete(RenderAck(AckStatus.STALE, timestampNs, "RENDERER_CANCELLED"))
             return
         }
         val prefetchBudget = prefetchBudgetDecision(cached.width, cached.height, byteBudget)
         val frameBytes = prefetchBudget.canonicalFrameBytes
-        val retained = frameBytes > 0 && publicationGate.runIfCurrent(handle.token) {
+        val retentionAllowed = handle.publicationRequest != null || handle.cacheRetentionAllowed?.invoke() == true
+        var cacheAdmissionAttempted = false
+        val retained = retentionAllowed && frameBytes > 0 && publicationGate.runIfCurrent(handle.token) {
+            cacheAdmissionAttempted = true
             cache.put(
                 key = handle.expectedKey,
                 value = cached,
@@ -534,8 +630,15 @@ class EglFrameRenderer(
                     prefetchedKeys += handle.expectedKey
                     handle.complete(RenderAck(AckStatus.CACHED, timestampNs, imageProbe = cached.imageProbe))
                 } else {
-                    GLES30.glDeleteTextures(1, intArrayOf(cached.textureId), 0)
-                    handle.complete(RenderAck(AckStatus.ERROR, timestampNs, "PREFETCH_NOT_RETAINED"))
+                    if (cacheAdmissionAttempted) prefetchRejectedCount += 1
+                    releaseCachedTexture(cached)
+                    handle.complete(
+                        RenderAck(
+                            AckStatus.ERROR,
+                            timestampNs,
+                            if (retentionAllowed) "PREFETCH_NOT_RETAINED" else "PREFETCH_NOT_ACTIVE",
+                        ),
+                    )
                 }
             },
             onPublish = { publicationRequest ->
@@ -543,7 +646,7 @@ class EglFrameRenderer(
                 val event = publish(publicationRequest, timestampNs)
                 if (event.result == PublicationResult.PUBLISHED) lastPublishedKey = handle.expectedKey
                 handle.complete(renderAckFor(event, imageProbe = cached.imageProbe))
-                if (!retained) GLES30.glDeleteTextures(1, intArrayOf(cached.textureId), 0)
+                if (!retained) releaseCachedTexture(cached)
             },
         )
     }
@@ -605,42 +708,75 @@ class EglFrameRenderer(
         val textures = IntArray(1)
         GLES30.glGenTextures(1, textures, 0)
         val textureId = textures[0]
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, textureId)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
-        GLES30.glTexImage2D(
-            GLES30.GL_TEXTURE_2D,
-            0,
-            GLES30.GL_RGBA8,
-            outputWidth,
-            outputHeight,
-            0,
-            GLES30.GL_RGBA,
-            GLES30.GL_UNSIGNED_BYTE,
-            null,
-        )
-
+        check(textureId != 0)
+        val cached = trackCachedTexture(textureId, outputWidth, outputHeight, timestampNs)
         val framebuffers = IntArray(1)
-        GLES30.glGenFramebuffers(1, framebuffers, 0)
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebuffers[0])
-        GLES30.glFramebufferTexture2D(
-            GLES30.GL_FRAMEBUFFER,
-            GLES30.GL_COLOR_ATTACHMENT0,
-            GLES30.GL_TEXTURE_2D,
-            textureId,
-            0,
+        try {
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, textureId)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+            GLES30.glTexImage2D(
+                GLES30.GL_TEXTURE_2D,
+                0,
+                GLES30.GL_RGBA8,
+                outputWidth,
+                outputHeight,
+                0,
+                GLES30.GL_RGBA,
+                GLES30.GL_UNSIGNED_BYTE,
+                null,
+            )
+
+            GLES30.glGenFramebuffers(1, framebuffers, 0)
+            check(framebuffers[0] != 0)
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebuffers[0])
+            GLES30.glFramebufferTexture2D(
+                GLES30.GL_FRAMEBUFFER,
+                GLES30.GL_COLOR_ATTACHMENT0,
+                GLES30.GL_TEXTURE_2D,
+                textureId,
+                0,
+            )
+            check(GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER) == GLES30.GL_FRAMEBUFFER_COMPLETE)
+            GLES30.glViewport(0, 0, outputWidth, outputHeight)
+            GLES30.glClearColor(0f, 0f, 0f, 1f)
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+            draw(oesProgram, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId, textureMatrix, 1f, 1f, rotationDegrees)
+            val imageProbe = probePolicy.capture { readbackProbe(outputWidth, outputHeight) }
+            return cached.copy(imageProbe = imageProbe)
+        } catch (error: Throwable) {
+            releaseCachedTexture(cached)
+            throw error
+        } finally {
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            if (framebuffers[0] != 0) GLES30.glDeleteFramebuffers(1, framebuffers, 0)
+        }
+    }
+
+    private fun trackCachedTexture(
+        textureId: Int,
+        width: Int,
+        height: Int,
+        timestampNs: Long,
+    ): CachedTexture {
+        nextTextureAllocationId += 1
+        val texture = CachedTexture(
+            allocationId = nextTextureAllocationId,
+            textureId = textureId,
+            width = width,
+            height = height,
+            timestampNs = timestampNs,
+            imageProbe = null,
         )
-        check(GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER) == GLES30.GL_FRAMEBUFFER_COMPLETE)
-        GLES30.glViewport(0, 0, outputWidth, outputHeight)
-        GLES30.glClearColor(0f, 0f, 0f, 1f)
-        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-        draw(oesProgram, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId, textureMatrix, 1f, 1f, rotationDegrees)
-        val imageProbe = probePolicy.capture { readbackProbe(outputWidth, outputHeight) }
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-        GLES30.glDeleteFramebuffers(1, framebuffers, 0)
-        return CachedTexture(textureId, outputWidth, outputHeight, timestampNs, imageProbe)
+        textureLifetimeTracker.onCreated(texture.allocationId)
+        return texture
+    }
+
+    private fun releaseCachedTexture(texture: CachedTexture) {
+        if (!textureLifetimeTracker.onReleased(texture.allocationId)) return
+        GLES30.glDeleteTextures(1, intArrayOf(texture.textureId), 0)
     }
 
     private fun readbackProbe(outputWidth: Int, outputHeight: Int): FrameImageProbe {
@@ -868,6 +1004,20 @@ class EglFrameRenderer(
         evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
         wastedCount = prefetchWastedCount,
         currentDepth = prefetchedKeys.size,
+        cacheEntryCount = cache.size,
+        peakCacheEntryCount = cache.peakSize,
+        cacheEvictionCount = cache.evictionCount,
+        cacheRejectionCount = cache.rejectionCount,
+        cacheThrashCount = prefetchEvictedBeforeUseCount + prefetchRejectedCount,
+        cacheBytes = cache.byteSize,
+        cacheRequestHitCount = cache.hitCount,
+        cacheRequestMissCount = cache.missCount,
+        textureCreatedCount = textureLifetimeTracker.createdCount,
+        textureReleasedCount = textureLifetimeTracker.releasedCount,
+        liveTextureCount = textureLifetimeTracker.liveCount,
+        peakLiveTextureCount = textureLifetimeTracker.peakLiveCount,
+        textureDoubleReleaseCount = textureLifetimeTracker.doubleReleaseCount,
+        fullFrameReadbackCount = probePolicy.readbackCount(),
     )
 
     companion object {

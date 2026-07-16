@@ -35,6 +35,8 @@ class SanitizedDiagnosticsTest {
             diagnostics = DecoderDiagnostics(
                 cacheHitCount = 2,
                 cacheMissCount = 1,
+                foregroundDecodedFrameCount = 3,
+                requestCoalescedCount = 4,
                 prefetchRequested = 6,
                 prefetchWasted = 1,
                 cacheBudgetBytes = 128L * 1024 * 1024,
@@ -60,6 +62,8 @@ class SanitizedDiagnosticsTest {
             "video.canonical=1920x1080",
             "frame.decodeTarget=4",
             "frame.latestPending=5",
+            "frame.foregroundDecoded=3",
+            "request.coalesced=4",
             "prefetch.wasted=1",
             "latency.requestToPublish.p95Ms=3.000",
             "generation.surface=2",

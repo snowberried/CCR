@@ -1,8 +1,12 @@
 package com.snowberried.ctcinereviewer.media
 
+import java.util.concurrent.atomic.AtomicLong
+
 internal const val DIRECTIONAL_PREFETCH_FRAME_LIMIT = 12
 internal const val PREFETCH_SAFETY_FRAME_COUNT = 2
 internal const val PREFETCH_RESERVED_FRAME_COUNT = 2 + PREFETCH_SAFETY_FRAME_COUNT
+internal const val DIRECTIONAL_PREFETCH_IDLE_TIMEOUT_MS = 500L
+internal const val RENDERER_CACHE_HARD_CAP_BYTES = 64L * 1024L * 1024L
 
 internal enum class DirectionalPrefetchDirection { FORWARD, REVERSE }
 
@@ -23,8 +27,61 @@ internal data class PrefetchCancellation(
     val wasted: Int,
 )
 
+internal data class PrefetchPermit(
+    val epoch: Long,
+    val absoluteDeadlineElapsedRealtimeMs: Long,
+    val direction: DirectionalPrefetchDirection,
+)
+
+internal class DirectionalPrefetchGate(
+    private val elapsedRealtimeMs: () -> Long,
+) {
+    private val lock = Any()
+    private val epoch = AtomicLong(0)
+    @Volatile private var activeDirection: DirectionalPrefetchDirection? = null
+
+    fun newPermit(
+        absoluteDeadlineElapsedRealtimeMs: Long,
+        direction: DirectionalPrefetchDirection,
+    ): PrefetchPermit = synchronized(lock) {
+        if (activeDirection != null && activeDirection != direction) epoch.incrementAndGet()
+        activeDirection = direction
+        PrefetchPermit(
+            epoch = epoch.get(),
+            absoluteDeadlineElapsedRealtimeMs = absoluteDeadlineElapsedRealtimeMs,
+            direction = direction,
+        )
+    }
+
+    fun suspend(): Long = synchronized(lock) {
+        activeDirection = null
+        epoch.incrementAndGet()
+    }
+
+    fun isActive(permit: PrefetchPermit): Boolean =
+        permit.epoch == epoch.get() &&
+            permit.direction == activeDirection &&
+            elapsedRealtimeMs() < permit.absoluteDeadlineElapsedRealtimeMs
+}
+
+internal fun rendererCacheByteBudget(maxHeapBytes: Long): Long =
+    minOf(RENDERER_CACHE_HARD_CAP_BYTES, maxHeapBytes.coerceAtLeast(0) / 4L)
+
+internal fun directionalPrefetchDeadline(
+    directionalInputElapsedRealtimeMs: Long,
+    timeoutMs: Long = DIRECTIONAL_PREFETCH_IDLE_TIMEOUT_MS,
+): Long {
+    require(timeoutMs >= 0)
+    return try {
+        Math.addExact(directionalInputElapsedRealtimeMs, timeoutMs)
+    } catch (_: ArithmeticException) {
+        Long.MAX_VALUE
+    }
+}
+
 internal class PrefetchRunState(
     val token: GenerationToken,
+    val permit: PrefetchPermit,
     val direction: DirectionalPrefetchDirection,
     val targetFrameIndex: Int,
     candidates: List<Int>,
@@ -105,18 +162,16 @@ internal fun prefetchBudgetDecision(
 }
 
 internal fun directionalPrefetchPlan(
-    previousDisplayedFrameIndex: Int?,
+    direction: DirectionalPrefetchDirection,
     targetFrameIndex: Int,
     frameCount: Int,
     frameLimit: Int = DIRECTIONAL_PREFETCH_FRAME_LIMIT,
 ): DirectionalPrefetchPlan {
     require(frameCount > 0)
     require(targetFrameIndex in 0 until frameCount)
-    require(previousDisplayedFrameIndex == null || previousDisplayedFrameIndex in 0 until frameCount)
     require(frameLimit >= 0)
 
-    val reverse = previousDisplayedFrameIndex != null && targetFrameIndex < previousDisplayedFrameIndex
-    return if (reverse) {
+    return if (direction == DirectionalPrefetchDirection.REVERSE) {
         DirectionalPrefetchPlan(
             direction = DirectionalPrefetchDirection.REVERSE,
             frameIndexes = (targetFrameIndex - frameLimit).coerceAtLeast(0) until targetFrameIndex,

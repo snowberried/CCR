@@ -22,13 +22,23 @@ class DirectionalByteCache<K, V>(
 
     val size: Int get() = entries.size
 
+    var peakSize: Int = 0
+        private set
+
+    var evictionCount: Long = 0
+        private set
+
+    var rejectionCount: Long = 0
+        private set
+
     init {
         require(byteBudget > 0)
     }
 
-    fun recordRequest(index: Int) {
+    fun recordRequest(index: Int, explicitDirection: Int? = null) {
+        require(explicitDirection == null || explicitDirection in -1..1)
         val previous = previousRequestIndex
-        direction = when {
+        direction = explicitDirection ?: when {
             previous == null || index == previous -> direction
             index > previous -> 1
             else -> -1
@@ -44,6 +54,12 @@ class DirectionalByteCache<K, V>(
 
     fun containsKey(key: K): Boolean = entries.containsKey(key)
 
+    fun remove(key: K): Boolean {
+        val removed = entries.remove(key) ?: return false
+        removeEntry(key, removed)
+        return true
+    }
+
     fun put(
         key: K,
         value: V,
@@ -53,20 +69,22 @@ class DirectionalByteCache<K, V>(
     ): Boolean {
         require(bytes > 0)
         require(maximumByteSize in 0..byteBudget)
-        entries.remove(key)?.also {
-            byteSize -= it.bytes
-            onEvict(key, it.value)
-        }
+        entries.remove(key)?.also { removeEntry(key, it) }
         if (bytes > maximumByteSize || !makeRoomFor(bytes, protectedKeys, maximumByteSize)) {
+            rejectionCount += 1
             return false
         }
         entries[key] = Entry(value, bytes)
         byteSize += bytes
+        peakSize = maxOf(peakSize, entries.size)
         return true
     }
 
     fun clear() {
-        entries.forEach { (key, entry) -> onEvict(key, entry.value) }
+        entries.forEach { (key, entry) ->
+            evictionCount += 1
+            onEvict(key, entry.value)
+        }
         entries.clear()
         byteSize = 0
         previousRequestIndex = null
@@ -82,8 +100,7 @@ class DirectionalByteCache<K, V>(
                 else -> entries.keys.first()
             }
             val removed = entries.remove(victim) ?: continue
-            byteSize -= removed.bytes
-            onEvict(victim, removed.value)
+            removeEntry(victim, removed)
         }
     }
 
@@ -103,9 +120,14 @@ class DirectionalByteCache<K, V>(
                 else -> candidates.first()
             }
             val removed = entries.remove(victim) ?: continue
-            byteSize -= removed.bytes
-            onEvict(victim, removed.value)
+            removeEntry(victim, removed)
         }
         return byteSize <= targetBytes
+    }
+
+    private fun removeEntry(key: K, entry: Entry<V>) {
+        byteSize -= entry.bytes
+        evictionCount += 1
+        onEvict(key, entry.value)
     }
 }

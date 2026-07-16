@@ -48,6 +48,8 @@ internal fun buildSanitizedDiagnostics(
         appendLine("frame.displayed=${state.displayedFrameIndex ?: "-"}")
         appendLine("frame.decodeTarget=${state.currentDecodeTarget ?: "-"}")
         appendLine("frame.latestPending=${state.latestPendingRequest ?: "-"}")
+        appendLine("frame.foregroundDecoded=${diagnostics.foregroundDecodedFrameCount}")
+        appendLine("request.coalesced=${diagnostics.requestCoalescedCount}")
         appendLine("cache.hit=${diagnostics.cacheHitCount}")
         appendLine("cache.miss=${diagnostics.cacheMissCount}")
         appendLine("cache.bytes=${diagnostics.cacheBytes}")

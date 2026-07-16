@@ -14,10 +14,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import com.snowberried.ctcinereviewer.media.ContainerMetadata
 import com.snowberried.ctcinereviewer.media.DecoderDiagnostics
+import com.snowberried.ctcinereviewer.media.DirectionalPrefetchDirection
 import com.snowberried.ctcinereviewer.media.ExactFrameSession
 import com.snowberried.ctcinereviewer.media.FrameKey
 import com.snowberried.ctcinereviewer.media.FrameResult
 import com.snowberried.ctcinereviewer.media.IndexedVideo
+import com.snowberried.ctcinereviewer.media.PrefetchPermit
 import com.snowberried.ctcinereviewer.media.boundedFrameIndex
 import com.snowberried.ctcinereviewer.media.nearestFrameIndexForTimelineFraction
 import com.snowberried.ctcinereviewer.render.VideoViewport
@@ -100,6 +102,11 @@ class ViewerViewModel(
     application: Application,
     private val savedState: SavedStateHandle,
 ) : AndroidViewModel(application), ExactFrameSession.Listener {
+    private data class PendingFrameRequest(
+        val frameIndex: Int,
+        val prefetchPermit: PrefetchPermit?,
+    )
+
     private val session = ExactFrameSession(application, this)
     private var currentUri: Uri? = savedState.get<String>(KEY_URI)?.let(Uri::parse)
     private var currentUriPersisted = currentUri != null
@@ -109,7 +116,7 @@ class ViewerViewModel(
     private var decodeInFlight = false
     private var inFlightRequestGeneration: Long? = null
     private var inFlightAcceptedAtNs: Long? = null
-    private var pendingRequestedFrame: Int? = null
+    private var pendingRequestedFrame: PendingFrameRequest? = null
     private val navigationGestureGate = NavigationGestureGate()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var gateActionGeneration = 0L
@@ -135,6 +142,7 @@ class ViewerViewModel(
 
     fun openVideo(uri: Uri) {
         navigationGestureGate.invalidate()
+        session.suspendPrefetch()
         val previousUri = currentUri
         val previousPersisted = currentUriPersisted
         val persisted = runCatching {
@@ -188,7 +196,17 @@ class ViewerViewModel(
 
     fun moveBy(delta: Int) {
         val next = uiState.moveRequestedBy(delta)
-        requestFrame(next.requestedFrameIndex)
+        val direction = when {
+            delta > 0 -> DirectionalPrefetchDirection.FORWARD
+            delta < 0 -> DirectionalPrefetchDirection.REVERSE
+            else -> null
+        }
+        requestFrameInternal(
+            frameIndex = next.requestedFrameIndex,
+            prefetchPermit = direction?.let {
+                session.newDirectionalPrefetchPermit(it, SystemClock.elapsedRealtime())
+            },
+        )
     }
 
     fun beginNavigationGesture(): Long = navigationGestureGate.begin()
@@ -212,6 +230,17 @@ class ViewerViewModel(
     }
 
     fun requestFrame(frameIndex: Int) {
+        requestFrameInternal(
+            frameIndex = frameIndex,
+            prefetchPermit = null,
+        )
+    }
+
+    private fun requestFrameInternal(
+        frameIndex: Int,
+        prefetchPermit: PrefetchPermit?,
+    ) {
+        if (prefetchPermit == null) session.suspendPrefetch()
         val frameCount = uiState.metadata?.frameCount ?: return
         val target = frameIndex.coerceIn(0, frameCount - 1)
         val gateGeneration = nextGateActionGeneration()
@@ -229,15 +258,17 @@ class ViewerViewModel(
         )
         if (!foreground || !uiState.surfaceAvailable) return
         if (decodeInFlight) {
-            pendingRequestedFrame = target
+            if (pendingRequestedFrame != null) session.recordViewerRequestCoalesced()
+            pendingRequestedFrame = PendingFrameRequest(target, prefetchPermit)
             uiState = uiState.copy(latestPendingRequest = target)
         } else {
-            submitFrameRequest(target, gateGeneration)
+            submitFrameRequest(target, prefetchPermit, gateGeneration)
         }
     }
 
     fun cancel() {
         navigationGestureGate.invalidate()
+        session.suspendPrefetch()
         val gateGeneration = nextGateActionGeneration()
         setAutoRecover(false)
         resetRequestPump()
@@ -259,6 +290,7 @@ class ViewerViewModel(
     fun onBackground(owner: Any = this) {
         if (foregroundOwner !== owner) return
         navigationGestureGate.invalidate()
+        session.suspendPrefetch()
         val gateGeneration = nextGateActionGeneration()
         foregroundOwner = null
         resetRequestPump()
@@ -344,7 +376,7 @@ class ViewerViewModel(
         }
         uiState = uiState.applyFrameResult(result, diagnostics).copy(
             currentDecodeTarget = null,
-            latestPendingRequest = pendingRequestedFrame,
+            latestPendingRequest = pendingRequestedFrame?.frameIndex,
             recentRequestToPublishLatencyMs = latencyMs?.let {
                 (uiState.recentRequestToPublishLatencyMs + it).takeLast(DIAGNOSTIC_LATENCY_HISTORY_LIMIT)
             } ?: uiState.recentRequestToPublishLatencyMs,
@@ -398,13 +430,25 @@ class ViewerViewModel(
         session.setBeforeDecodeHookForTest(hook)
     }
 
+    internal fun setBeforePrefetchCacheHookForTest(
+        hook: ((com.snowberried.ctcinereviewer.media.FrameRequest, FrameKey) -> Unit)?,
+    ) {
+        session.setBeforePrefetchCacheHookForTest(hook)
+    }
+
     internal fun awaitActorIdleForTest(timeoutMs: Long = 5_000): Boolean =
         session.awaitActorIdleForTest(timeoutMs)
+
+    internal fun diagnosticsSnapshotForTest(timeoutMs: Long = 5_000): DecoderDiagnostics? =
+        session.diagnosticsSnapshotForTest(timeoutMs)
 
     private fun recoverIfReady() {
         if (!foreground || !uiState.surfaceAvailable || !autoRecoverEnabled) return
         if (uiState.metadata != null && uiState.activeFileGeneration != null) {
-            requestFrame(uiState.requestedFrameIndex)
+            requestFrameInternal(
+                frameIndex = uiState.requestedFrameIndex,
+                prefetchPermit = null,
+            )
         } else {
             openCurrentUri()
         }
@@ -454,8 +498,12 @@ class ViewerViewModel(
         )
     }
 
-    private fun submitFrameRequest(frameIndex: Int, gateGeneration: Long = gateActionGeneration) {
-        val acceptance = session.tryRequestFrame(frameIndex)
+    private fun submitFrameRequest(
+        frameIndex: Int,
+        prefetchPermit: PrefetchPermit?,
+        gateGeneration: Long = gateActionGeneration,
+    ) {
+        val acceptance = session.tryRequestFrame(frameIndex, prefetchPermit)
         if (acceptance == null) {
             retryGateAction(gateGeneration) {
                 if (
@@ -464,7 +512,7 @@ class ViewerViewModel(
                     uiState.surfaceAvailable &&
                     uiState.requestedFrameIndex == frameIndex
                 ) {
-                    submitFrameRequest(frameIndex, gateGeneration)
+                    submitFrameRequest(frameIndex, prefetchPermit, gateGeneration)
                 }
             }
             return
@@ -484,7 +532,7 @@ class ViewerViewModel(
         pendingRequestedFrame = null
         uiState = uiState.copy(latestPendingRequest = null)
         if (pending == null || !foreground || !uiState.surfaceAvailable) return
-        if (uiState.displayedFrameIndex == pending) {
+        if (uiState.displayedFrameIndex == pending.frameIndex) {
             uiState = uiState.copy(
                 status = "ready",
                 detail = "already displayed",
@@ -492,7 +540,10 @@ class ViewerViewModel(
             )
             return
         }
-        submitFrameRequest(pending)
+        submitFrameRequest(
+            frameIndex = pending.frameIndex,
+            prefetchPermit = pending.prefetchPermit,
+        )
     }
 
     private fun cancelSessionWhenAvailable(gateGeneration: Long) {

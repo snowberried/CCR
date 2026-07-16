@@ -21,6 +21,9 @@ class DirectionalByteCacheTest {
         assertEquals(12, cache.byteSize)
         assertNull(cache.get(1))
         assertEquals(listOf("one"), evicted)
+        assertEquals(3, cache.peakSize)
+        assertEquals(1L, cache.evictionCount)
+        assertEquals(0L, cache.rejectionCount)
     }
 
     @Test
@@ -29,6 +32,7 @@ class DirectionalByteCacheTest {
         cache.put(0, "large", 16)
         assertEquals(0, cache.byteSize)
         assertEquals(0, cache.size)
+        assertEquals(1L, cache.rejectionCount)
     }
 
     @Test
@@ -60,6 +64,7 @@ class DirectionalByteCacheTest {
         assertEquals("published", cache.get(1))
         assertEquals(4L, cache.byteSize)
         assertEquals(emptyList<String>(), evicted)
+        assertEquals(1L, cache.rejectionCount)
     }
 
     @Test
@@ -83,5 +88,42 @@ class DirectionalByteCacheTest {
         assertEquals(8L, cache.byteSize)
         assertEquals("published", cache.get(1))
         assertEquals("prefetch", cache.get(3))
+    }
+
+    @Test
+    fun `explicit reverse intent evicts the far forward frame after coalescing`() {
+        val cache = DirectionalByteCache<Int, String>(12, { it })
+        cache.recordRequest(0)
+        cache.put(27, "behind-two", 4)
+        cache.put(28, "behind-one", 4)
+        cache.put(30, "ahead", 4)
+
+        // The reverse target is numerically above the last published request. Inference alone
+        // would call this forward and evict frame 27 while admitting the reverse prefetch.
+        cache.recordRequest(index = 29, explicitDirection = -1)
+        cache.put(26, "reverse-prefetch", 4)
+
+        assertEquals("reverse-prefetch", cache.get(26))
+        assertEquals("behind-two", cache.get(27))
+        assertEquals("behind-one", cache.get(28))
+        assertNull(cache.get(30))
+    }
+
+    @Test
+    fun `clear replacement and explicit removal count each resident release exactly once`() {
+        val evicted = mutableListOf<String>()
+        val cache = DirectionalByteCache<Int, String>(12, { it }) { _, value -> evicted += value }
+        cache.put(1, "one", 4)
+        cache.put(1, "replacement", 4)
+        cache.put(2, "two", 4)
+        assertEquals(true, cache.remove(1))
+        assertEquals(false, cache.remove(1))
+        cache.clear()
+
+        assertEquals(listOf("one", "replacement", "two"), evicted)
+        assertEquals(3L, cache.evictionCount)
+        assertEquals(2, cache.peakSize)
+        assertEquals(0, cache.size)
+        assertEquals(0L, cache.byteSize)
     }
 }

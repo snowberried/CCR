@@ -4,9 +4,11 @@ import android.app.Activity
 import android.net.Uri
 import android.os.Bundle
 import android.view.SurfaceHolder
+import android.view.WindowManager
 import android.widget.FrameLayout
 import com.snowberried.ctcinereviewer.media.DecoderDiagnostics
 import com.snowberried.ctcinereviewer.media.ContainerMetadata
+import com.snowberried.ctcinereviewer.media.DirectionalPrefetchDirection
 import com.snowberried.ctcinereviewer.media.ExactFrameSession
 import com.snowberried.ctcinereviewer.media.FrameResult
 import com.snowberried.ctcinereviewer.media.IndexedVideo
@@ -28,6 +30,8 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
     private val results = LinkedBlockingQueue<ObservedResult>()
     private val statuses = LinkedBlockingQueue<Pair<String, String?>>()
     private val publicationEvents = LinkedBlockingQueue<PublicationEvent>()
+    @Volatile private var latestDiagnostics = DecoderDiagnostics()
+    private var lastRequestedIndex = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,10 +62,30 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
         indexes.clear()
         results.clear()
         statuses.clear()
+        lastRequestedIndex = 0
         session.open(uri)
     }
 
-    fun requestFrame(index: Int): RequestAcceptance? = session.requestFrame(index)
+    fun requestFrame(index: Int): RequestAcceptance? {
+        lastRequestedIndex = index
+        return session.requestFrame(index)
+    }
+
+    fun requestDirectionalFrame(index: Int): RequestAcceptance? {
+        val direction = if (index < lastRequestedIndex) {
+            DirectionalPrefetchDirection.REVERSE
+        } else {
+            DirectionalPrefetchDirection.FORWARD
+        }
+        lastRequestedIndex = index
+        return session.requestDirectionalFrame(index, direction)
+    }
+    fun awaitActorIdle(timeoutMs: Long = 5_000): Boolean = session.awaitActorIdleForTest(timeoutMs)
+    fun diagnosticsSnapshot(): DecoderDiagnostics = latestDiagnostics
+    fun configureValidationDisplay(brightness: Float) {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.attributes = window.attributes.apply { screenBrightness = brightness.coerceIn(0.01f, 1f) }
+    }
     fun cancel() = session.cancel()
     fun clearResults() {
         results.clear()
@@ -87,6 +111,7 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
     }
 
     override fun onFrameResult(result: FrameResult, diagnostics: DecoderDiagnostics) {
+        latestDiagnostics = diagnostics
         results += ObservedResult(result, diagnostics)
     }
 

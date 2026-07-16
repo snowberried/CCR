@@ -229,10 +229,11 @@ class FrameContractsTest {
     @Test
     fun `latest request slot coalesces pending work`() {
         val slot = LatestRequestSlot<Int>()
-        slot.offer(1)
-        slot.offer(5)
-        slot.offer(10)
+        assertEquals(false, slot.offer(1))
+        assertEquals(true, slot.offer(5))
+        assertEquals(true, slot.offer(10))
         assertEquals(10, slot.take())
         assertNull(slot.take())
+        assertEquals(false, slot.offer(20))
     }
 }

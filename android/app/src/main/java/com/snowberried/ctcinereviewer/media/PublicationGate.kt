@@ -224,8 +224,10 @@ class LatestRequestSlot<T> {
     private val lock = Any()
     private var pending: T? = null
 
-    fun offer(value: T) = synchronized(lock) {
+    fun offer(value: T): Boolean = synchronized(lock) {
+        val replaced = pending != null
         pending = value
+        replaced
     }
 
     fun take(): T? = synchronized(lock) {
