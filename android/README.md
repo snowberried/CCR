@@ -1,4 +1,4 @@
-# CCR Android 0.2.0-alpha.2 Internal Viewer
+# CCR Android 0.2.0-alpha.3 Internal Viewer
 
 데스크톱과 독립된 Android 내부 파일럿 앱이다. 의료기기나 공식 진단 프로그램이 아니며, 원본 MP4를 SAF 읽기 전용으로 연다. Gate 3 정확 프레임 기준선은 `android-v0.1.0-gate3-pass`로 동결되어 있다.
 
@@ -9,7 +9,7 @@
 - Android Gradle Plugin 9.3.0
 - minSdk 34, compileSdk/targetSdk 37
 - application ID `com.snowberried.ctcinereviewer.internal`
-- versionName `0.2.0-alpha.2`, versionCode `3`
+- versionName `0.2.0-alpha.3`, versionCode `4`
 - `internalDebug`는 표준 Android debug key 사용
 - GitHub Release와 desktop Latest Release를 만들지 않음
 
@@ -19,6 +19,7 @@ Android SDK Platform 37.0, Build Tools 36.0.0, platform-tools가 필요하다.
 $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 .\gradlew.bat --version
 node .\tools\verify-frame-accuracy.mjs
+node .\tools\verify-representative-resolution-fixtures.mjs --manifest-only
 node .\tools\verify-source-contract.mjs
 .\gradlew.bat lintInternalDebug testInternalDebugUnitTest assembleInternalDebug assembleInternalDebugAndroidTest assembleInternalBenchmark :macrobenchmark:assembleInternalBenchmark
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-apk-privacy.ps1
@@ -29,7 +30,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-apk-pri
 - `requestedFrameIndex`는 ±1/±5, 처음/마지막, 직접 입력 즉시 갱신되고 연속 입력은 마지막 요청값에서 누적된다.
 - ±1/±5 버튼은 짧게 누르면 정확히 한 번 이동한다. 길게 누르면 Android long-press 임계 뒤 50ms 간격으로 고정 step을 반복하며, release·cancel·경계 이탈·두 번째 pointer·lifecycle stop·composable dispose 즉시 gesture generation을 무효화한다. 종료 처리 뒤에는 requested index가 더 변하지 않는다. 자동 가속은 없다.
 - 연속 입력 중에는 디코드 요청 하나만 실행하고 최신 requested frame 하나만 대기시킨다. 진행 중 디코드를 입력마다 폐기하지 않는다.
-- cache miss 뒤 탐색 방향으로 개념상 최대 12프레임을 cache-only로 준비한다. 실제 개수는 RGBA frame byte 수와 cache 예산에서 게시·목표·renderer/codec 여유를 예약한 뒤 계산한다. 미리읽기는 화면 draw·EGL swap·PublicationEvent를 만들지 않으며 새 요청·방향 전환·파일 세대 변경 시 중단한다.
+- 제품 RGBA cache 상한은 `min(64 MiB, Java max heap/4)`이다. cache miss 뒤 탐색 방향으로 개념상 최대 12프레임을 cache-only로 준비하되, 게시·목표·renderer/codec 여유 4프레임을 먼저 예약한다. 따라서 720p는 최대 12, 1080p는 최대 4, 1440p 이상은 0일 수 있다.
+- 미리읽기는 ±1/±5 방향 입력 뒤 500ms permit 안에서만 수행한다. 최초 열기, 복원, 처음/마지막, 직접 입력과 타임라인 이동은 permit을 열지 않는다. background·파일 전환·취소·Surface 소실·방향 전환은 진행 중 permit을 즉시 무효화한다.
+- 미리읽기는 화면 draw·EGL swap·PublicationEvent를 만들지 않는다. cache/texture의 현재·peak·제거·거절·thrash와 exact-once 해제를 internal diagnostics에만 기록한다.
 - `displayedFrame`은 현재 file/request generation의 `FrameResult.Published`와 성공한 실제 EGL swap 뒤에만 바뀐다. stale, error, unsupported 결과는 표시 프레임을 바꾸지 않는다.
 - `ViewerViewModel`이 MediaCodec actor와 EGL render thread를 소유한다. Activity와 Surface가 codec을 직접 호출하지 않는다.
 - 화면 회전 시 ViewModel, URI, 마지막 requested index를 유지한다. 새 Surface에서 해당 프레임이 다시 게시되기 전에는 복구 완료로 표시하지 않는다.
@@ -55,25 +58,35 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-gate.p
 # Pilot readback 0 + navigation hold + adaptive layout + lifecycle/file switch
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-regression.ps1 -Repeat 3
 
-# alpha.2 strict gesture + lifecycle 20회 + screen power cycle + 6-way file switch 각 20회
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-alpha2-validation.ps1
+# 대표 해상도 exact subset, 64 MiB cache pressure와 선택적 분리 내구성
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-representative-validation.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-representative-validation.ps1 -RunLongMemory
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-representative-validation.ps1 -RunLifecycle
 
-# 위 검증과 product/PILOT 30분 내구성
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-alpha2-validation.ps1 -RunEndurance
+# 배터리: Prepare 출력 후 USB를 분리하고, 30분 완료 뒤 다시 연결해 Collect
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-battery-validation.ps1 -Mode Prepare -Scenario idle
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-battery-validation.ps1 -Mode Collect -Scenario idle
 ```
 
-스크립트는 instrumentation 출력의 `OK (...)`를 직접 검사한다. 테스트 APK는 성공·실패와 관계없이 제거한다. 회귀 성공 뒤에는 0.2.0-alpha.2 internal 앱만 설치·실행 상태로 남긴다. alpha.2 파일 전환·내구성 JSON은 비식별 정보만 `android/build/reports/s24-alpha2/`에 로컬 생성하며 Git에 포함하지 않는다.
+스크립트는 instrumentation 결과와 비식별 report 계약을 직접 검사한다. 테스트 APK는 성공·실패와 관계없이 제거한다. `run-s24-alpha2-validation.ps1`은 alpha.2 source checkout의 동결 기준선 재현용이며 현재 alpha.3 제품 판정에는 사용하지 않는다. 대표 해상도와 배터리 report는 각각 ignored build output인 `android/build/reports/representative-resolution/`, `android/build/reports/representative-battery/`에 생성한다. lifecycle 자원 plateau와 memory plateau는 표본 분석 전까지 `INCONCLUSIVE`이며 PASS로 과장하지 않는다.
+
+## 대표 해상도 fixture 계약
+
+- 720p H.264 B-frame과 1080p H.264 B-frame/long-GOP, HEVC Main 8, VFR, H.264↔HEVC 전환용 합성 영상 7개를 각각 360프레임으로 고정했다.
+- MP4와 전체 golden JSON은 저장소에 넣지 않는다. `android/.generated/testdata/representative-resolution/`에 생성하고 `android/testdata/representative-resolution/manifest.lock.json`의 exact SHA/cache key로만 복원한다.
+- 일반 CI는 manifest 계약만 검사한다. S24 exact job은 exact cache key가 없으면 자동 재인코딩하지 않고 Pending으로 중단한다. GitHub Release는 fixture 배포에 사용하지 않는다.
+- 60초 hold는 360프레임 경계에서 재배치한 segmented 측정이다. 경계 구간을 PublicationEvent 통계에서 제외하며 단일 연속 hold로 표현하지 않는다.
 
 ## Product Macrobenchmark
 
-`internalBenchmark` 대상은 release와 유사한 non-debuggable/profileable 빌드다. 기존 합성 fixture만 사용하고 full-frame readback과 exactness probe를 끈 PILOT 렌더 모드에서 측정하므로 exactness Gate 지연시간과 섞지 않는다. 성능 합격선은 두지 않는다.
+`internalBenchmark` 대상은 release와 유사한 non-debuggable/profileable 빌드다. 비식별 합성 fixture만 사용하고 full-frame readback과 exactness probe를 끈 PILOT 렌더 모드에서 측정하므로 exactness Gate 지연시간과 섞지 않는다. 성능 합격선은 두지 않는다.
 
 ```powershell
 .\gradlew.bat assembleInternalBenchmark :macrobenchmark:assembleInternalBenchmark
 .\gradlew.bat :macrobenchmark:connectedInternalBenchmarkAndroidTest
 ```
 
-15개 시나리오의 JSON과 Perfetto trace는 `macrobenchmark/build/outputs/` 아래 로컬 build output으로 생성된다.
+기존 작은 fixture 15개 시나리오와 대표 해상도 8개 시나리오의 JSON·Perfetto trace는 `macrobenchmark/build/outputs/` 아래 로컬 build output으로 생성된다. 작은 fixture 결과를 720p/1080p SLA로 사용하지 않는다.
 
 ## 내부 파일럿 서명 경계
 
@@ -120,4 +133,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-alpha2
 
 ## 개인정보 및 제외 범위
 
-Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. 프로젝트 저장, DICOM/PACS, AI, cloud, 주석, 비교 보기, PNG export, 필터, zoom/pan, Play 배포는 Android 0.2.0-alpha.2 범위 밖이다. 사용자 체감 합격 전에는 `android-v0.2.0-alpha.2` tag를 만들지 않는다.
+Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. 프로젝트 저장, DICOM/PACS, AI, cloud, 주석, 비교 보기, PNG export, 필터, zoom/pan, Play 배포는 Android 0.2.0-alpha.3 범위 밖이다. 대표 해상도 실기기 검증과 사용자 체감 합격 전에는 `android-v0.2.0-alpha.3` tag를 만들지 않는다.

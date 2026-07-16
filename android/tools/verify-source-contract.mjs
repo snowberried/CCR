@@ -32,6 +32,15 @@ const localSampleReadme = readFileSync(resolve(repoRoot, "local-samples/README.m
 const localSampleExample = JSON.parse(
   readFileSync(resolve(repoRoot, "local-samples/manifest.example.json"), "utf8"),
 );
+const representativeLockText = readFileSync(
+  resolve(androidRoot, "testdata/representative-resolution/manifest.lock.json"),
+  "utf8",
+);
+const representativeLock = JSON.parse(representativeLockText);
+const representativeReadme = readFileSync(
+  resolve(androidRoot, "testdata/representative-resolution/README.md"),
+  "utf8",
+);
 
 function requireContract(condition, message) {
   if (!condition) throw new Error(`Android source contract failed: ${message}`);
@@ -47,8 +56,8 @@ requireContract(session.includes('openFileDescriptor(uri, "r")'), "source URI is
 requireContract(!/openFileDescriptor\([^\n]+,\s*"(?:w|rw|rwt|wa)"/.test(session), "write-capable source open mode");
 requireContract(provider.includes("ParcelFileDescriptor.MODE_READ_ONLY"), "fixture provider is not read-only");
 requireContract(provider.includes('if (mode != "r")'), "fixture provider does not reject write modes");
-requireContract(/versionCode\s*=\s*3\b/.test(build), "versionCode is not 3");
-requireContract(/versionName\s*=\s*"0\.2\.0-alpha\.2"/.test(build), "versionName is not 0.2.0-alpha.2");
+requireContract(/versionCode\s*=\s*4\b/.test(build), "versionCode is not 4");
+requireContract(/versionName\s*=\s*"0\.2\.0-alpha\.3"/.test(build), "versionName is not 0.2.0-alpha.3");
 requireContract(build.includes('applicationIdSuffix = ".internal"'), "internal application ID suffix is missing");
 requireContract(
   build.includes('androidx.compose.material3.adaptive:adaptive:1.2.0'),
@@ -70,9 +79,51 @@ requireContract(gitignore.split(/\r?\n/).includes("*.keystore"), "recursive keys
 requireContract(gitignore.split(/\r?\n/).includes("signing.properties"), "recursive signing properties ignore is missing");
 requireContract(workflow.includes('      - "codex/android-*"'), "Android CI codex/android-* push filter is missing");
 requireContract(
-  workflow.includes("name: ccr-android-0.2.0-alpha.2-internal"),
+  workflow.includes("name: ccr-android-0.2.0-alpha.3-internal"),
   "Android CI artifact identity is stale",
 );
+requireContract(
+  workflow.includes("verify-representative-resolution-fixtures.mjs --manifest-only"),
+  "representative-resolution manifest verifier is missing from CI",
+);
+requireContract(
+  build.includes('add("benchmarkImplementation", "androidx.metrics:metrics-performance:1.0.0")'),
+  "JankStats is not isolated to the benchmark variant",
+);
+requireContract(
+  !/^\s*implementation\("androidx\.metrics:metrics-performance:/m.test(build),
+  "JankStats leaked into the product implementation configuration",
+);
+
+requireContract(representativeLock.status === "LOCKED", "representative fixture lock is not immutable");
+requireContract(representativeLock.syntheticOnly === true, "representative fixtures are not synthetic-only");
+requireContract(
+  representativeLock.generatedAssetsTracked === false,
+  "representative generated assets must not be tracked",
+);
+requireContract(representativeLock.fixtures?.length === 7, "representative fixture count is not 7");
+requireContract(
+  representativeLock.fixtures.every(
+    (fixture) => fixture.frameCount >= 300 && /^[a-f0-9]{64}$/.test(fixture.sourceSha256),
+  ),
+  "representative fixture frame count or SHA contract",
+);
+requireContract(
+  /^ccr-representative-resolution-v1-[a-f0-9]{64}$/.test(representativeLock.cache?.key ?? ""),
+  "representative fixture exact cache key",
+);
+requireContract(
+  gitignore.split(/\r?\n/).includes("android/.generated/"),
+  "representative generated cache ignore is missing",
+);
+const representativeEvidenceText = `${representativeLockText}\n${representativeReadme}`;
+for (const [pattern, label] of [
+  [/[A-Za-z]:\\/, "Windows absolute path"],
+  [/\/(?:Users|home)\//, "user-home absolute path"],
+  [/(?:patient|accession|contentUri|fileName|deviceSerial)/i, "source identifier field"],
+]) {
+  requireContract(!pattern.test(representativeEvidenceText), `representative fixture contract contains ${label}`);
+}
 
 requireContract(baselineReport.status === "PASS", "frozen Gate 3 report is not PASS");
 requireContract(
@@ -128,4 +179,4 @@ requireContract(
   "local sample reference frame index/PTS contract",
 );
 
-console.log("verified Android 0.2.0-alpha.2 identity, frozen evidence privacy, CI, local sample, and signing contracts");
+console.log("verified Android 0.2.0-alpha.3 identity, frozen evidence privacy, CI, local sample, and signing contracts");

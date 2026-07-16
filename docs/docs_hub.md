@@ -41,6 +41,7 @@
 | GitHub Windows Release Automation | `23_GITHUB_RELEASE_AUTOMATION.md` | main 버전 증가 감지, 자동 태그와 Windows Latest Release 절차 |
 | Android S24 Ultra Exact-Frame Spike | `24_ANDROID_S24_EXACT_FRAME_SPIKE.md` | v0.5.9 동결 기준선, Android 환경과 Gate 0~3 정확성 범위 |
 | Android Canonical Image Coordinates | `25_ANDROID_CANONICAL_COORDINATES.md` | inclusive crop, PAR, clockwise rotation, canonical image와 EGL 물리 픽셀 계약 |
+| Android Representative Resolution Validation | `26_ANDROID_REPRESENTATIVE_RESOLUTION_VALIDATION.md` | 720p/1080p exact subset, 64 MiB cache, smoothness·내구·배터리 검증 계약 |
 | Android S24 Gate 3 Evidence | `evidence/android/s24/README.md` | 비식별 Gate 3 PASS 요약, 기준 tag와 artifact/fixture checksum |
 | Android S24 Gate 3 Device Baseline | `../android/validation/device-baselines/sm-s928n-android16-2026-07-15/README.md` | 고정된 비식별 sanitized report와 재검증 가능한 checksum |
 | Android Local Sample Pilot | `../local-samples/README.md` | 실제 파일을 추적하지 않는 비식별 로컬 파일럿 manifest와 수동 체크리스트 |
