@@ -89,9 +89,7 @@ function Assert-CcrPerformanceGate {
 
 function Test-CcrPackageAbsent {
   param([Parameter(Mandatory = $true)][object]$Context, [Parameter(Mandatory = $true)][string]$PackageName)
-  $query = Invoke-CcrPinnedAdb $Context @("-s", $Context.Serial, "shell", "pm", "list", "packages", "--user", "0", $PackageName)
-  if ($query.exitCode -ne 0) { return $false }
-  return -not (@($query.output -split "`r?`n") | Where-Object { $_.Trim() -ceq "package:$PackageName" })
+  return -not (Test-CcrPinnedPackageInstalled $Context $PackageName)
 }
 
 $context = Invoke-CcrPinnedPreflight -ArtifactManifest $ArtifactManifest -OutputDirectory $OutputDirectory

@@ -155,6 +155,77 @@ function Expect-ManifestRejection {
 try {
   Reset-TestArtifacts
 
+  Invoke-HostTest "native-stderr-with-zero-exit-is-not-failure" {
+    $result = Invoke-CcrPinnedAdbRaw $env:ComSpec $null @("/d", "/c", "echo pull-progress 1>&2 & exit /b 0")
+    if ($result.exitCode -ne 0 -or $result.output -notmatch "pull-progress") {
+      throw "native stderr result was not preserved"
+    }
+  }
+
+  Invoke-HostTest "native-stderr-with-nonzero-exit-is-returned" {
+    $result = Invoke-CcrPinnedAdbRaw $env:ComSpec $null @("/d", "/c", "echo pull-failed 1>&2 & exit /b 7")
+    if ($result.exitCode -ne 7 -or $result.output -notmatch "pull-failed") {
+      throw "native failure exit code or stderr was lost"
+    }
+  }
+
+  Invoke-HostTest "cleanup-skips-absent-test-packages" {
+    $cleanupCalls = [System.Collections.Generic.List[string]]::new()
+    $cleanupAdb = {
+      param([string[]]$CommandArguments)
+      $line = $CommandArguments -join " "
+      $cleanupCalls.Add($line) | Out-Null
+      if ($line -match " shell pm list packages ") { return [PSCustomObject]@{ exitCode = 0; output = "" } }
+      if ($line -match " uninstall ") { throw "absent package must not be uninstalled" }
+      return [PSCustomObject]@{ exitCode = 0; output = "" }
+    }.GetNewClosure()
+    $cleanupContext = [PSCustomObject]@{ Adb = "fake-adb"; Serial = "R58VALID"; AdbInvoker = $cleanupAdb }
+    $cleanupResult = @(Invoke-CcrPinnedCleanup $cleanupContext)
+    if ($cleanupResult.Count -ne 0) { throw "unexpected cleanup failure: $($cleanupResult -join ' | ')" }
+    if (@($cleanupCalls | Where-Object { $_ -match " uninstall " }).Count -ne 0) { throw "uninstall was invoked for an absent package" }
+  }
+
+  Invoke-HostTest "cleanup-removes-present-test-package" {
+    $packageState = [PSCustomObject]@{ Installed = $true }
+    $cleanupCalls = [System.Collections.Generic.List[string]]::new()
+    $cleanupAdb = {
+      param([string[]]$CommandArguments)
+      $line = $CommandArguments -join " "
+      $cleanupCalls.Add($line) | Out-Null
+      if ($line -match " shell pm list packages .+com\.snowberried\.ctcinereviewer\.internal\.test$") {
+        $output = if ($packageState.Installed) { "package:com.snowberried.ctcinereviewer.internal.test" } else { "" }
+        return [PSCustomObject]@{ exitCode = 0; output = $output }
+      }
+      if ($line -match " shell pm list packages ") { return [PSCustomObject]@{ exitCode = 0; output = "" } }
+      if ($line -match " uninstall com\.snowberried\.ctcinereviewer\.internal\.test$") {
+        $packageState.Installed = $false
+        return [PSCustomObject]@{ exitCode = 0; output = "Success" }
+      }
+      return [PSCustomObject]@{ exitCode = 0; output = "" }
+    }.GetNewClosure()
+    $cleanupContext = [PSCustomObject]@{ Adb = "fake-adb"; Serial = "R58VALID"; AdbInvoker = $cleanupAdb }
+    $cleanupResult = @(Invoke-CcrPinnedCleanup $cleanupContext)
+    if ($cleanupResult.Count -ne 0 -or $packageState.Installed) { throw "present package was not cleanly removed" }
+    if (@($cleanupCalls | Where-Object { $_ -match " uninstall com\.snowberried\.ctcinereviewer\.internal\.test$" }).Count -ne 1) {
+      throw "present package uninstall count was not one"
+    }
+  }
+
+  Invoke-HostTest "cleanup-reports-package-query-failure" {
+    $cleanupAdb = {
+      param([string[]]$CommandArguments)
+      $line = $CommandArguments -join " "
+      if ($line -match "internal\.test$") { return [PSCustomObject]@{ exitCode = 2; output = "transport error" } }
+      if ($line -match " shell pm list packages ") { return [PSCustomObject]@{ exitCode = 0; output = "" } }
+      return [PSCustomObject]@{ exitCode = 0; output = "" }
+    }
+    $cleanupContext = [PSCustomObject]@{ Adb = "fake-adb"; Serial = "R58VALID"; AdbInvoker = $cleanupAdb }
+    $cleanupResult = @(Invoke-CcrPinnedCleanup $cleanupContext)
+    if (($cleanupResult -join " | ") -notmatch "PACKAGE_QUERY_FAILED:com\.snowberried\.ctcinereviewer\.internal\.test") {
+      throw "package query failure was not preserved"
+    }
+  }
+
   Invoke-HostTest "valid-preflight-is-read-only" {
     Reset-TestArtifacts
     $manifest = New-TestManifest

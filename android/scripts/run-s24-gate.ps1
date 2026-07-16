@@ -127,9 +127,7 @@ function Assert-S24HardwareFixtures {
 
 function Assert-S24PackageAbsent {
   param([object]$Context, [string]$PackageName)
-  $query = Invoke-CcrPinnedAdb $Context @("-s", $Context.Serial, "shell", "pm", "path", $PackageName)
-  if ($query.exitCode -ne 0) { throw "S24_TEST_PACKAGE_CLEANUP_QUERY_FAILED:$PackageName" }
-  if ($query.output -match "(?m)^package:") { throw "S24_TEST_PACKAGE_CLEANUP_FAILED:$PackageName" }
+  if (Test-CcrPinnedPackageInstalled $Context $PackageName) { throw "S24_TEST_PACKAGE_CLEANUP_FAILED:$PackageName" }
 }
 
 function Assert-S24SettingsRestored {

@@ -300,13 +300,30 @@ function Invoke-CcrPinnedAdbRaw {
     }
     return [PSCustomObject]@{ exitCode = [int]$result.exitCode; output = [string]$result.output }
   }
-  $lines = @(& $Adb @Arguments 2>&1)
-  return [PSCustomObject]@{ exitCode = [int]$LASTEXITCODE; output = ($lines -join "`n").Trim() }
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    # adb writes successful pull progress to stderr. Do not let the caller's
+    # Stop preference turn that native stderr stream into a terminating error.
+    $ErrorActionPreference = "Continue"
+    $lines = @(& $Adb @Arguments 2>&1)
+    $exitCode = [int]$LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  return [PSCustomObject]@{ exitCode = $exitCode; output = ($lines -join "`n").Trim() }
 }
 
 function Invoke-CcrPinnedAdb {
   param([Parameter(Mandatory = $true)][object]$Context, [Parameter(Mandatory = $true)][string[]]$Arguments)
   return Invoke-CcrPinnedAdbRaw $Context.Adb $Context.AdbInvoker $Arguments
+}
+
+function Test-CcrPinnedPackageInstalled {
+  param([Parameter(Mandatory = $true)][object]$Context, [Parameter(Mandatory = $true)][string]$PackageName)
+  $query = Invoke-CcrPinnedAdb $Context @("-s", $Context.Serial, "shell", "pm", "list", "packages", "--user", "0", $PackageName)
+  if ($query.exitCode -ne 0) { throw "PINNED_PACKAGE_QUERY_FAILED:$PackageName" }
+  $exactLine = "package:$PackageName"
+  return @($query.output -split "`r?`n" | Where-Object { $_.Trim() -ceq $exactLine }).Count -gt 0
 }
 
 function Get-CcrPinnedS24Device {
@@ -688,18 +705,36 @@ function Remove-CcrPinnedRemoteTraceDirectory {
   if ($verify.exitCode -eq 0) { throw "PINNED_REMOTE_TRACE_STILL_PRESENT" }
 }
 
+function Remove-CcrPinnedPackageIfInstalled {
+  param([Parameter(Mandatory = $true)][object]$Context, [Parameter(Mandatory = $true)][string]$PackageName)
+  $failures = [System.Collections.Generic.List[string]]::new()
+  try {
+    if (-not (Test-CcrPinnedPackageInstalled $Context $PackageName)) { return @() }
+  } catch {
+    return @("PACKAGE_QUERY_FAILED:${PackageName}:$($_.Exception.Message)")
+  }
+  $result = Invoke-CcrPinnedAdb $Context @("-s", $Context.Serial, "uninstall", $PackageName)
+  if ($result.exitCode -ne 0) {
+    return @("UNINSTALL_FAILED:$PackageName")
+  }
+  try {
+    if (Test-CcrPinnedPackageInstalled $Context $PackageName) { $failures.Add("PACKAGE_STILL_INSTALLED:$PackageName") | Out-Null }
+  } catch {
+    $failures.Add("PACKAGE_QUERY_FAILED:${PackageName}:$($_.Exception.Message)") | Out-Null
+  }
+  return @($failures)
+}
+
 function Invoke-CcrPinnedCleanup {
   param([Parameter(Mandatory = $true)][object]$Context, [switch]$RemoveApp)
   $failures = [System.Collections.Generic.List[string]]::new()
   foreach ($packageName in @($script:CcrPinnedDebugTestPackage, $script:CcrPinnedMacrobenchmarkPackage)) {
-    $result = Invoke-CcrPinnedAdb $Context @("-s", $Context.Serial, "uninstall", $packageName)
-    if ($result.exitCode -ne 0 -and $result.output -notmatch "(?i)unknown package|not installed") { $failures.Add("UNINSTALL_FAILED:$packageName") | Out-Null }
+    foreach ($failure in @(Remove-CcrPinnedPackageIfInstalled $Context $packageName)) { $failures.Add([string]$failure) | Out-Null }
   }
   $stop = Invoke-CcrPinnedAdb $Context @("-s", $Context.Serial, "shell", "am", "force-stop", $script:CcrPinnedAppPackage)
   if ($stop.exitCode -ne 0) { $failures.Add("FORCE_STOP_FAILED:$script:CcrPinnedAppPackage") | Out-Null }
   if ($RemoveApp) {
-    $remove = Invoke-CcrPinnedAdb $Context @("-s", $Context.Serial, "uninstall", $script:CcrPinnedAppPackage)
-    if ($remove.exitCode -ne 0 -and $remove.output -notmatch "(?i)unknown package|not installed") { $failures.Add("UNINSTALL_FAILED:$script:CcrPinnedAppPackage") | Out-Null }
+    foreach ($failure in @(Remove-CcrPinnedPackageIfInstalled $Context $script:CcrPinnedAppPackage)) { $failures.Add([string]$failure) | Out-Null }
   }
   foreach ($failure in @(Restore-CcrPinnedDeviceSettings $Context)) { $failures.Add([string]$failure) | Out-Null }
   return @($failures)
