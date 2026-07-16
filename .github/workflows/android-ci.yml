@@ -9,12 +9,14 @@ on:
       - android/**
       - local-samples/**
       - .gitignore
+      - .gitattributes
       - .github/workflows/android-ci.yml
   pull_request:
     paths:
       - android/**
       - local-samples/**
       - .gitignore
+      - .gitattributes
       - .github/workflows/android-ci.yml
   workflow_dispatch:
 
@@ -52,8 +54,11 @@ jobs:
       - name: Verify fixed frame-accuracy fixtures
         run: |
           node .\android\tools\verify-frame-accuracy.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .\android\tools\verify-representative-resolution-fixtures.mjs --manifest-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .\android\tools\verify-source-contract.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test and build internal APK
         working-directory: android
