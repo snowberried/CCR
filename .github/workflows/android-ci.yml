@@ -27,6 +27,8 @@ jobs:
   test-and-build:
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      CCR_ANDROID_COMMIT_SHA: 189e6e1edb8419f0c2be449e6ab9fd9b54bf5b1e
 
     steps:
       - name: Check out repository
@@ -57,7 +59,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .\android\tools\verify-representative-resolution-fixtures.mjs --manifest-only
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node .\android\tools\verify-runtime-inputs.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .\android\tools\verify-source-contract.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify pinned S24 host harness
+        shell: powershell
+        run: |
+          $parseErrors = @()
+          Get-ChildItem -LiteralPath .\android\scripts -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            $parseErrors += $errors
+          }
+          if ($parseErrors.Count -ne 0) { throw ($parseErrors | Out-String) }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-s24-pinned-artifacts.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test and build internal APK

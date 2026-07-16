@@ -19,6 +19,10 @@ const provider = readFileSync(
 const signingExample = readFileSync(resolve(androidRoot, "signing.properties.example"), "utf8");
 const gitignore = readFileSync(resolve(repoRoot, ".gitignore"), "utf8");
 const workflow = readFileSync(resolve(repoRoot, ".github/workflows/android-ci.yml"), "utf8");
+const gitAttributes = readFileSync(resolve(repoRoot, ".gitattributes"), "utf8");
+const runtimeInputs = JSON.parse(
+  readFileSync(resolve(androidRoot, "validation/runtime-inputs-v2.json"), "utf8"),
+);
 const baselineDir = resolve(
   androidRoot,
   "validation/device-baselines/sm-s928n-android16-2026-07-15",
@@ -42,7 +46,6 @@ const representativeReadme = readFileSync(
   "utf8",
 );
 const resumableScriptNames = [
-  "run-s24-navigation-perf.ps1",
   "run-s24-idle.ps1",
   "run-s24-codec-switch.ps1",
   "run-s24-lifecycle.ps1",
@@ -59,8 +62,42 @@ const s24Common = readFileSync(
   "utf8",
 );
 const s24Gate = readFileSync(resolve(androidRoot, "scripts/run-s24-gate.ps1"), "utf8");
+const s24Representative = readFileSync(
+  resolve(androidRoot, "scripts/run-s24-representative-validation.ps1"),
+  "utf8",
+);
+const s24NavigationPerf = readFileSync(
+  resolve(androidRoot, "scripts/run-s24-navigation-perf.ps1"),
+  "utf8",
+);
+const s24Pinned = readFileSync(resolve(androidRoot, "scripts/s24-pinned-artifacts.ps1"), "utf8");
+const s24PinnedTests = readFileSync(
+  resolve(androidRoot, "scripts/test-s24-pinned-artifacts.ps1"),
+  "utf8",
+);
 const s24FrameAccuracyTest = readFileSync(
   resolve(androidRoot, "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/S24FrameAccuracyTest.kt"),
+  "utf8",
+);
+const validationHarnessV2 = readFileSync(
+  resolve(
+    androidRoot,
+    "app/src/androidTest/java/com/snowberried/ctcinereviewer/validation/ValidationHarnessV2.kt",
+  ),
+  "utf8",
+);
+const benchmarkActivity = readFileSync(
+  resolve(
+    androidRoot,
+    "app/src/benchmark/java/com/snowberried/ctcinereviewer/benchmark/BenchmarkActivity.kt",
+  ),
+  "utf8",
+);
+const macrobenchmark = readFileSync(
+  resolve(
+    androidRoot,
+    "macrobenchmark/src/main/java/com/snowberried/ctcinereviewer/macrobenchmark/CcrProductMacrobenchmark.kt",
+  ),
   "utf8",
 );
 
@@ -112,6 +149,32 @@ requireContract(
   workflow.includes("verify-representative-resolution-fixtures.mjs --manifest-only"),
   "representative-resolution manifest verifier is missing from CI",
 );
+requireContract(workflow.includes("verify-runtime-inputs.mjs"), "runtime-input verifier is missing from CI");
+requireContract(
+  workflow.includes("test-s24-pinned-artifacts.ps1"),
+  "pinned S24 negative tests are missing from CI",
+);
+requireContract(
+  workflow.includes("CCR_ANDROID_COMMIT_SHA: 189e6e1edb8419f0c2be449e6ab9fd9b54bf5b1e"),
+  "Android CI does not separate the runtime source SHA from the harness SHA",
+);
+for (const line of [
+  "/android/tools/generate-representative-resolution-fixtures.mjs text eol=lf",
+  "/android/validation/device-baselines/sm-s928n-android16-2026-07-15/s24-frame-accuracy-report.sanitized.json text eol=lf",
+]) {
+  requireContract(gitAttributes.split(/\r?\n/).includes(line), `missing narrow LF lock: ${line}`);
+}
+requireContract(runtimeInputs.schemaVersion === 1, "runtime-input manifest schema");
+requireContract(
+  runtimeInputs.runtimeSourceSha === "189e6e1edb8419f0c2be449e6ab9fd9b54bf5b1e",
+  "runtime-input manifest source SHA",
+);
+requireContract(
+  runtimeInputs.runtimeInputsTreeSha256 ===
+    "a0a6bff2637b310e63028c4433b80611a9f4d5fe73a03d0394113bd56e9e6941",
+  "runtime-input manifest tree SHA",
+);
+requireContract(runtimeInputs.files?.length === 32, "runtime-input manifest file count");
 requireContract(
   build.includes('add("benchmarkImplementation", "androidx.metrics:metrics-performance:1.0.0")'),
   "JankStats is not isolated to the benchmark variant",
@@ -136,6 +199,7 @@ for (const [name, source] of resumableScripts) {
     requireContract(source.includes(marker), `${name} missing resumable safety marker ${marker}`);
   }
 }
+const s24ExactV2Evidence = `${s24FrameAccuracyTest}\n${validationHarnessV2}`;
 for (const marker of [
   "am force-stop",
   "uninstall $packageName",
@@ -151,32 +215,36 @@ for (const marker of [
 ]) {
   requireContract(s24Common.includes(marker), `S24 common cleanup missing ${marker}`);
 }
-requireContract(
-  resumableScripts.get("run-s24-navigation-perf.ps1").includes("MEASURED_PENDING_ANALYSIS") &&
-    resumableScripts.get("run-s24-navigation-perf.ps1").includes("connected_android_test_additional_output") &&
-    resumableScripts.get("run-s24-navigation-perf.ps1").includes("outstanding target depth <=1") &&
-    resumableScripts.get("run-s24-navigation-perf.ps1").includes("+5 raw lag <=5"),
-  "navigation performance wrapper must not auto-pass measurements",
-);
-requireContract(
-  s24Gate.includes("s24-forward-sequential-report.json") &&
-    s24Gate.includes("S24_SEQUENTIAL_REPORT_PULL_FAILED"),
-  "S24 exact gate does not require the forward sequential report",
-);
-for (const marker of [
-  "S24_CLEAN_WORKTREE_REQUIRED",
-  "CCR_ANDROID_COMMIT_SHA",
-  "testApkSha256",
-  "S24_FULL_FIXTURE_COUNT_MISMATCH",
-  "S24_SEQUENTIAL_RUN_COUNT_MISMATCH",
-  "s24-gate-summary.json",
-  "fullFixtures.Count -ne 17",
-  "fullFrameCount -ne 236",
-  "sequentialRuns.Count -ne 6",
-  "sequentialTargetCount -ne 77",
+for (const [name, source] of [
+  ["run-s24-gate.ps1", s24Gate],
+  ["run-s24-representative-validation.ps1", s24Representative],
+  ["run-s24-navigation-perf.ps1", s24NavigationPerf],
 ]) {
-  requireContract(s24Gate.includes(marker), `S24 exact gate evidence identity missing ${marker}`);
+  for (const marker of ["ArtifactManifest", "OutputDirectory", "PreflightOnly", "Invoke-CcrPinnedPreflight"]) {
+    requireContract(source.includes(marker), `${name} missing pinned execution marker ${marker}`);
+  }
+  for (const forbidden of [/gradlew/i, /assemble/i, /connectedAndroidTest/i, /build[\\/]outputs/i]) {
+    requireContract(!forbidden.test(source), `${name} contains build-time execution path ${forbidden}`);
+  }
 }
+for (const marker of [
+  "5a7febeb74b2abe9ed8cc5651d145044f16c55203e2beb875ce901f35fdcaf80",
+  "a0a6bff2637b310e63028c4433b80611a9f4d5fe73a03d0394113bd56e9e6941",
+  "PINNED_MANIFEST_HARNESS_SOURCE_MISMATCH",
+  "PINNED_ARTIFACT_SHA_MISMATCH",
+  "PINNED_INSTALLED_APK_IDENTITY_MISMATCH",
+  "PINNED_REPORT_RUN_ID_MISMATCH",
+  "PINNED_BENCHMARK_COUNTER_MISSING",
+  "Save-CcrPinnedDeviceSettings",
+  "Restore-CcrPinnedDeviceSettings",
+]) {
+  requireContract(s24Pinned.includes(marker), `pinned S24 common contract missing ${marker}`);
+}
+requireContract(
+  s24PinnedTests.includes("S24 pinned artifact host tests passed") &&
+    s24PinnedTests.includes("device mutation was attempted"),
+  "pinned S24 negative-test contract is incomplete",
+);
 for (const marker of [
   'put("appVersionName"',
   'put("appVersionCode"',
@@ -186,7 +254,37 @@ for (const marker of [
   'put("containsRealMediaMetadata", false)',
   '"${golden.fixture}: signature length"',
 ]) {
-  requireContract(s24FrameAccuracyTest.includes(marker), `S24 exact report contract missing ${marker}`);
+  requireContract(s24ExactV2Evidence.includes(marker), `S24 exact report contract missing ${marker}`);
+}
+for (const marker of [
+  "runId",
+  "runtimeSourceSha",
+  "harnessSourceSha",
+  "runtimeInputsTreeSha256",
+  "artifactSetRevision",
+  "startedAtElapsedRealtimeNs",
+  "finishedAtElapsedRealtimeNs",
+  "duplicate instrumentation runId",
+]) {
+  requireContract(validationHarnessV2.includes(marker), `validation harness v2 missing ${marker}`);
+}
+for (const marker of [
+  "ccr.outstanding_foreground_target_depth_max",
+  "ccr.release_after_accepted_target_count",
+  "ccr.hold_prefetch_started",
+  "ccr.counter_complete",
+  "ccr.run_identity",
+]) {
+  requireContract(benchmarkActivity.includes(marker), `benchmark harness v2 missing ${marker}`);
+}
+for (const marker of [
+  "ccr-benchmark-harness-v2",
+  "source-equivalent pinned benchmark measurement build",
+  "CcrCounterMetric",
+  "expectedTraceCount",
+  "ccrBenchmarkHarnessV2",
+]) {
+  requireContract(macrobenchmark.includes(marker), `macrobenchmark harness v2 missing ${marker}`);
 }
 requireContract(
   resumableScripts.get("run-s24-codec-switch.ps1").includes("CHUNKED_SAFE_CHECKPOINTS"),

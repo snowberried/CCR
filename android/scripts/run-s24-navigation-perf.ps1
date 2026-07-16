@@ -1,152 +1,342 @@
 param(
-  [ValidateRange(1, 4)][int]$ScenarioLimit = 4,
-  [ValidateSet("all", "1080")][string]$ScenarioSet = "all",
-  [ValidateRange(1, 120)][int]$MaxMinutes = 25,
-  [switch]$Resume,
-  [string]$OutputDirectory
+  [Parameter(Mandatory = $true)][string]$ArtifactManifest,
+  [Parameter(Mandatory = $true)][string]$OutputDirectory,
+  [switch]$PreflightOnly
 )
 
 $ErrorActionPreference = "Stop"
-. (Join-Path $PSScriptRoot "s24-validation-common.ps1")
-$startedAt = [DateTime]::UtcNow
-$context = New-CcrS24Context "s24-navigation-perf" $OutputDirectory
-if (-not $Resume) {
-  Clear-CcrRunArtifacts $context @("navigation-perf-summary.json") @("hold*.gradle*.log")
-}
-$checkpoint = Get-CcrCheckpoint $context -Resume:$Resume
-if ($Resume) {
-  if ([int]$checkpoint.scenarioLimit -ne $ScenarioLimit) { throw "S24_CHECKPOINT_PARAMETER_MISMATCH" }
-  if ([string]$checkpoint.scenarioSet -ne $ScenarioSet) { throw "S24_CHECKPOINT_PARAMETER_MISMATCH" }
-} else {
-  $checkpoint | Add-Member -NotePropertyName scenarioLimit -NotePropertyValue $ScenarioLimit
-  $checkpoint | Add-Member -NotePropertyName scenarioSet -NotePropertyValue $ScenarioSet
-}
-Save-CcrCheckpoint $context $checkpoint
-$summaryPath = Join-Path $context.OutputDirectory "navigation-perf-summary.json"
-$traceDirectory = Join-Path $context.OutputDirectory "traces"
-[System.IO.Directory]::CreateDirectory($traceDirectory) | Out-Null
-if (-not $Resume) {
-  Get-ChildItem -Recurse -File -LiteralPath $traceDirectory -ErrorAction SilentlyContinue | Remove-Item -Force
-}
-$deadline = $startedAt.AddMinutes($MaxMinutes)
-$availableScenarios = if ($ScenarioSet -eq "1080") {
-  @("hold1080PlusOne", "hold1080PlusFive")
-} else {
-  @("hold720PlusOne", "hold720PlusFive", "hold1080PlusOne", "hold1080PlusFive")
-}
-$scenarios = $availableScenarios | Select-Object -First $ScenarioLimit
-$completed = [int]$checkpoint.completedIterations
-$status = "Pending"
-$reason = "NOT_STARTED"
-$failure = $null
-$recovered = [System.Collections.Generic.List[string]]::new()
-if ($Resume) {
-  Get-ChildItem -File -LiteralPath $traceDirectory -ErrorAction SilentlyContinue |
-    ForEach-Object { $recovered.Add($_.Name) }
+. (Join-Path $PSScriptRoot "s24-pinned-artifacts.ps1")
+
+function Write-CcrPerfJson {
+  param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][object]$Value)
+  [System.IO.File]::WriteAllText(
+    [System.IO.Path]::GetFullPath($Path),
+    ($Value | ConvertTo-Json -Depth 20),
+    [System.Text.UTF8Encoding]::new($false)
+  )
 }
 
-function Invoke-GradleStep {
-  param([string[]]$Tasks, [string]$LogStem)
-  $stdout = Join-Path $context.OutputDirectory "$LogStem.gradle.log"
-  $stderr = Join-Path $context.OutputDirectory "$LogStem.gradle.err.log"
-  (Invoke-CcrTimedProcess `
-    (Join-Path $context.AndroidRoot "gradlew.bat") `
-    $Tasks `
-    $deadline `
-    $stdout `
-    $stderr `
-    "(?m)^BUILD SUCCESSFUL" `
-    $context.AndroidRoot).status
+function Get-CcrBenchmarkEvidenceFromOutput {
+  param([Parameter(Mandatory = $true)][string]$Output)
+  $matches = [regex]::Matches(
+    $Output,
+    '(?m)^INSTRUMENTATION_STATUS: ccrBenchmarkHarnessV2=(?<json>\{[^\r\n]*\})\r?$'
+  )
+  if ($matches.Count -ne 1) { throw "PINNED_BENCHMARK_STATUS_JSON_COUNT_MISMATCH" }
+  try {
+    return $matches[0].Groups["json"].Value | ConvertFrom-Json
+  } catch {
+    throw "PINNED_BENCHMARK_STATUS_JSON_INVALID"
+  }
 }
+
+function Assert-CcrBenchmarkData {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+  try { $null = $text | ConvertFrom-Json } catch { throw "PINNED_BENCHMARK_DATA_JSON_INVALID" }
+  foreach ($metric in @(
+    "ccrPublicationIntervalP50Us",
+    "ccrPublishedFpsMilli",
+    "ccrRawLagMax",
+    "ccrOutstandingForegroundTargetDepthMax",
+    "ccrAcceptedTargetCount",
+    "ccrReleaseAfterAcceptedTargetCount",
+    "ccrHoldPrefetchStarted",
+    "ccrHoldPrefetchCompleted",
+    "ccrCounterComplete",
+    "ccrRunIteration",
+    "ccrRunIdHash53",
+    "ccrTraceIdentityHash53",
+    "ccrRuntimeSourceHash53",
+    "ccrHarnessSourceHash53",
+    "ccrRuntimeInputsTreeHash53"
+  )) {
+    if (-not $text.Contains('"' + $metric + '"')) { throw "PINNED_BENCHMARK_DATA_METRIC_MISSING:$metric" }
+  }
+}
+
+function Assert-CcrPerformanceGate {
+  param(
+    [Parameter(Mandatory = $true)][object]$Evidence,
+    [Parameter(Mandatory = $true)][object]$Scenario
+  )
+  foreach ($iteration in @($Evidence.iterations)) {
+    $iterationNumber = [int]$iteration.runIteration
+    if ([long]$iteration.activeMs -le 0 -or [long]$iteration.published -le 0 -or
+        [long]$iteration.acceptedTargetCount -le 0) {
+      throw "PINNED_PERF_EMPTY_MEASUREMENT:$($Scenario.Method)/$iterationNumber"
+    }
+    if ([long]$iteration.publicationIntervalP50Us -gt [long]$Scenario.IntervalP50UsMax) {
+      throw "PINNED_PERF_INTERVAL_GATE_FAILED:$($Scenario.Method)/$iterationNumber"
+    }
+    if ([double]$iteration.publishedFps -lt [double]$Scenario.PublishedFpsMin) {
+      throw "PINNED_PERF_FPS_GATE_FAILED:$($Scenario.Method)/$iterationNumber"
+    }
+    if ([long]$iteration.rawLagMax -gt [long]$Scenario.RawLagMax) {
+      throw "PINNED_PERF_RAW_LAG_GATE_FAILED:$($Scenario.Method)/$iterationNumber"
+    }
+    if ([long]$iteration.outstandingForegroundTargetDepthMax -gt 1) {
+      throw "PINNED_PERF_OUTSTANDING_TARGET_GATE_FAILED:$($Scenario.Method)/$iterationNumber"
+    }
+    if ([long]$iteration.releaseAfterAcceptedTargetCount -ne 0) {
+      throw "PINNED_PERF_RELEASE_ACCEPTANCE_GATE_FAILED:$($Scenario.Method)/$iterationNumber"
+    }
+    if ([long]$iteration.holdPrefetchStarted -ne 0 -or [long]$iteration.holdPrefetchCompleted -ne 0) {
+      throw "PINNED_PERF_HOLD_PREFETCH_GATE_FAILED:$($Scenario.Method)/$iterationNumber"
+    }
+  }
+}
+
+function Test-CcrPackageAbsent {
+  param([Parameter(Mandatory = $true)][object]$Context, [Parameter(Mandatory = $true)][string]$PackageName)
+  $query = Invoke-CcrPinnedAdb $Context @("-s", $Context.Serial, "shell", "pm", "list", "packages", "--user", "0", $PackageName)
+  if ($query.exitCode -ne 0) { return $false }
+  return -not (@($query.output -split "`r?`n") | Where-Object { $_.Trim() -ceq "package:$PackageName" })
+}
+
+$context = Invoke-CcrPinnedPreflight -ArtifactManifest $ArtifactManifest -OutputDirectory $OutputDirectory
+$summaryPath = Join-Path $context.OutputDirectory "navigation-perf-v2-summary.json"
+
+if ($PreflightOnly) {
+  $preflight = [PSCustomObject]@{
+    schemaVersion = 2
+    kind = "s24-navigation-perf-preflight"
+    status = "PASS"
+    preflightOnly = $true
+    deviceMutationCount = 0
+    artifactSetRevision = $script:CcrPinnedArtifactSetRevision
+    artifactManifest = $context.ArtifactSet.ManifestPath
+    artifactManifestSha256 = $context.ArtifactSet.ManifestSha256
+    runtimeSourceSha = $context.ArtifactSet.RuntimeSourceSha
+    harnessSourceSha = $context.ArtifactSet.HarnessSourceSha
+    runtimeInputsTreeSha256 = $context.ArtifactSet.RuntimeInputsTreeSha256
+    serial = $context.Serial
+    model = $context.Model
+    fingerprint = $context.Fingerprint
+    securityPatch = $context.SecurityPatch
+    syntheticOnly = $true
+    containsRealMediaMetadata = $false
+  }
+  Write-CcrPerfJson $summaryPath $preflight
+  Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath
+  return
+}
+
+$scenarios = @(
+  [PSCustomObject]@{
+    Method = "hold1080PlusOne"
+    Label = "+1"
+    RunPrefix = "perf-plus1"
+    IntervalP50UsMax = 132200L
+    PublishedFpsMin = 6.79
+    RawLagMax = 1L
+  },
+  [PSCustomObject]@{
+    Method = "hold1080PlusFive"
+    Label = "+5"
+    RunPrefix = "perf-plus5"
+    IntervalP50UsMax = 151900L
+    PublishedFpsMin = 6.45
+    RawLagMax = 5L
+  }
+)
+
+$remoteDirectories = [System.Collections.Generic.List[string]]::new()
+$results = [System.Collections.Generic.List[object]]::new()
+$cleanupFailures = [System.Collections.Generic.List[string]]::new()
+$primaryFailure = $null
+$manualReviewReady = $false
+$settingsSaved = $false
 
 try {
-  Enter-CcrDeviceState $context
-  if ($completed -lt $scenarios.Count) {
-    $build = Invoke-GradleStep @("assembleInternalBenchmark", ":macrobenchmark:assembleInternalBenchmark", "--no-daemon") "build"
-    if ($build -ne "PASS") {
-      $status = if ($build -eq "TIME_LIMIT") { "Pending" } else { "FAIL" }
-      $reason = if ($build -eq "TIME_LIMIT") { "MAX_MINUTES_REACHED_DURING_BUILD" } else { "BENCHMARK_BUILD_FAILED" }
-    } else {
-      while ($completed -lt $scenarios.Count -and [DateTime]::UtcNow -lt $deadline) {
-        $scenario = $scenarios[$completed]
-        $startedAt = [DateTime]::UtcNow
-        $selector = "-Pandroid.testInstrumentationRunnerArguments.class=com.snowberried.ctcinereviewer.macrobenchmark.CcrProductMacrobenchmark#$scenario"
-        $run = Invoke-GradleStep @(
-          ":macrobenchmark:connectedInternalBenchmarkAndroidTest",
-          $selector,
-          "--no-daemon"
-        ) $scenario
-        $sourceRoots = @(
-          (Join-Path $context.AndroidRoot "macrobenchmark\build\outputs\connected_android_test_additional_output"),
-          (Join-Path $context.AndroidRoot "macrobenchmark\build\outputs\androidTest-results")
-        )
-        foreach ($sourceRoot in $sourceRoots) {
-          if (-not (Test-Path -LiteralPath $sourceRoot)) { continue }
-          Get-ChildItem -Recurse -File -LiteralPath $sourceRoot |
-            Where-Object { $_.LastWriteTimeUtc -ge $startedAt.AddSeconds(-2) -and $_.Name -match "perfetto-trace|benchmarkData|additionaltestoutput|^TEST-.*\.xml$" } |
-            ForEach-Object {
-              $targetName = "$scenario-$($_.Name)"
-              $target = Join-Path $traceDirectory $targetName
-              Copy-Item -LiteralPath $_.FullName -Destination $target -Force
-              if (-not $recovered.Contains($targetName)) { $recovered.Add($targetName) }
-            }
+  Save-CcrPinnedDeviceSettings $context | Out-Null
+  $settingsSaved = $true
+  Set-CcrPinnedDeviceSetting $context "global" "stay_on_while_plugged_in" "7"
+  Set-CcrPinnedDeviceSetting $context "system" "screen_off_timeout" "1800000"
+  Set-CcrPinnedDeviceSetting $context "system" "accelerometer_rotation" "0"
+  Set-CcrPinnedDeviceSetting $context "system" "user_rotation" "0"
+  $wake = Invoke-CcrPinnedAdb $context @("-s", $context.Serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
+  if ($wake.exitCode -ne 0) { throw "PINNED_PERF_DEVICE_WAKE_FAILED" }
+  $unlock = Invoke-CcrPinnedAdb $context @("-s", $context.Serial, "shell", "wm", "dismiss-keyguard")
+  if ($unlock.exitCode -ne 0) { throw "PINNED_PERF_KEYGUARD_DISMISS_FAILED" }
+
+  Install-CcrPinnedArtifactSet $context "Benchmark"
+
+  foreach ($scenario in $scenarios) {
+    $runId = New-CcrPinnedRunId $context.OutputDirectory $scenario.RunPrefix
+    $remoteDirectory = "/sdcard/Android/media/$script:CcrPinnedMacrobenchmarkPackage/$runId"
+    $remoteDirectories.Add($remoteDirectory) | Out-Null
+    Remove-CcrPinnedRemoteTraceDirectory $context $remoteDirectory
+    $createRemote = Invoke-CcrPinnedAdb $context @("-s", $context.Serial, "shell", "mkdir", "-p", $remoteDirectory)
+    if ($createRemote.exitCode -ne 0) { throw "PINNED_BENCHMARK_REMOTE_DIRECTORY_CREATE_FAILED:$($scenario.Method)" }
+
+    $instrumentation = Invoke-CcrPinnedInstrumentation `
+      -Context $context `
+      -TestRole "macrobenchmarkTest" `
+      -ClassName "com.snowberried.ctcinereviewer.macrobenchmark.CcrProductMacrobenchmark#$($scenario.Method)" `
+      -RunId $runId `
+      -ExpectedTestCount 1 `
+      -AdditionalArguments @{
+        "additionalTestOutputDir" = $remoteDirectory
+        "androidx.benchmark.output.enable" = "true"
+      }
+
+    $evidence = Get-CcrBenchmarkEvidenceFromOutput $instrumentation.Output
+    $localRunDirectory = Join-Path $context.OutputDirectory $runId
+    if (Test-Path -LiteralPath $localRunDirectory) { throw "PINNED_BENCHMARK_LOCAL_RUN_ALREADY_EXISTS:$runId" }
+    $pull = Invoke-CcrPinnedAdb $context @("-s", $context.Serial, "pull", $remoteDirectory, $localRunDirectory)
+    if ($pull.exitCode -ne 0 -or -not (Test-Path -LiteralPath $localRunDirectory -PathType Container)) {
+      throw "PINNED_BENCHMARK_OUTPUT_PULL_FAILED:$($scenario.Method)"
+    }
+
+    $instrumentationPath = Join-Path $localRunDirectory "instrumentation-output.txt"
+    [System.IO.File]::WriteAllText($instrumentationPath, $instrumentation.Output, [System.Text.UTF8Encoding]::new($false))
+    $evidencePath = Join-Path $localRunDirectory "ccrBenchmarkHarnessV2.json"
+    Write-CcrPerfJson $evidencePath $evidence
+
+    $files = @(Get-ChildItem -Recurse -File -LiteralPath $localRunDirectory)
+    $traces = @($files | Where-Object {
+      $_.Name.Contains("perfetto-trace", [System.StringComparison]::OrdinalIgnoreCase) -and $_.Length -gt 0
+    })
+    if ($traces.Count -ne 3) { throw "PINNED_BENCHMARK_VALID_TRACE_COUNT_MISMATCH:$($scenario.Method)" }
+    $benchmarkDataFiles = @($files | Where-Object {
+      $_.Name.EndsWith("benchmarkData.json", [System.StringComparison]::OrdinalIgnoreCase) -and $_.Length -gt 0
+    })
+    if ($benchmarkDataFiles.Count -ne 1) { throw "PINNED_BENCHMARK_DATA_COUNT_MISMATCH:$($scenario.Method)" }
+    if ((Get-Item -LiteralPath $evidencePath).Length -le 0) { throw "PINNED_BENCHMARK_EVIDENCE_EMPTY:$($scenario.Method)" }
+
+    Assert-CcrBenchmarkData $benchmarkDataFiles[0].FullName
+    Assert-CcrPinnedBenchmarkEvidence $evidence $context.ArtifactSet $runId $scenario.Method $traces.Count | Out-Null
+    Assert-CcrPerformanceGate $evidence $scenario
+
+    $results.Add([PSCustomObject]@{
+      scenario = $scenario.Method
+      label = $scenario.Label
+      runId = $runId
+      status = "PASS"
+      traceCount = $traces.Count
+      tracePaths = @($traces | ForEach-Object FullName)
+      benchmarkDataPath = $benchmarkDataFiles[0].FullName
+      evidencePath = $evidencePath
+      thresholds = [PSCustomObject]@{
+        publicationIntervalP50UsMax = $scenario.IntervalP50UsMax
+        publishedFpsMin = $scenario.PublishedFpsMin
+        rawLagMax = $scenario.RawLagMax
+        outstandingForegroundTargetDepthMax = 1
+        releaseAfterAcceptedTargetCount = 0
+        holdPrefetchStarted = 0
+        holdPrefetchCompleted = 0
+        validTraceCount = 3
+      }
+      iterations = @($evidence.iterations)
+    }) | Out-Null
+  }
+} catch {
+  $primaryFailure = $_
+} finally {
+  foreach ($remoteDirectory in $remoteDirectories) {
+    try {
+      Remove-CcrPinnedRemoteTraceDirectory $context $remoteDirectory
+    } catch {
+      $cleanupFailures.Add("REMOTE_OUTPUT_CLEANUP_FAILED:${remoteDirectory}:$($_.Exception.Message)") | Out-Null
+    }
+  }
+
+  try {
+    foreach ($failure in @(Invoke-CcrPinnedCleanup $context)) { $cleanupFailures.Add([string]$failure) | Out-Null }
+  } catch {
+    $cleanupFailures.Add("PINNED_CLEANUP_FAILED:$($_.Exception.Message)") | Out-Null
+  }
+
+  if ($settingsSaved) {
+    foreach ($setting in @(
+      @("global", "stay_on_while_plugged_in", $context.SavedSettings.stayAwake),
+      @("system", "screen_brightness_mode", $context.SavedSettings.brightnessMode),
+      @("system", "screen_brightness", $context.SavedSettings.brightness),
+      @("system", "screen_off_timeout", $context.SavedSettings.screenTimeout),
+      @("system", "accelerometer_rotation", $context.SavedSettings.accelerometerRotation),
+      @("system", "user_rotation", $context.SavedSettings.userRotation)
+    )) {
+      try {
+        $actual = Get-CcrPinnedDeviceSetting $context $setting[0] $setting[1]
+        if ([string]$actual -cne [string]$setting[2]) {
+          $cleanupFailures.Add("SETTING_RESTORE_VERIFY_FAILED:$($setting[0])/$($setting[1])") | Out-Null
         }
-        if ($run -ne "PASS") {
-          $status = if ($run -eq "TIME_LIMIT") { "Pending" } else { "FAIL" }
-          $reason = if ($run -eq "TIME_LIMIT") { "MAX_MINUTES_REACHED" } else { "MACROBENCHMARK_FAILED: $scenario" }
-          break
-        }
-        $completed += 1
-        $checkpoint.completedIterations = $completed
-        $checkpoint.nextIteration = $completed
-        Save-CcrCheckpoint $context $checkpoint
+      } catch {
+        $cleanupFailures.Add("SETTING_RESTORE_VERIFY_FAILED:$($setting[0])/$($setting[1]):$($_.Exception.Message)") | Out-Null
       }
     }
   }
-  if ($completed -ge $scenarios.Count -and $recovered.Count -gt 0) {
-    $status = "MEASURED_PENDING_ANALYSIS"
-    $reason = "PERFETTO_AND_BENCHMARK_OUTPUT_RECOVERED; PERFORMANCE_GATE_NOT_AUTO_PASSED"
-  } elseif ($completed -ge $scenarios.Count) {
-    $status = "FAIL"
-    $reason = "BENCHMARK_ARTIFACT_RECOVERY_FAILED"
-  } elseif ($status -eq "Pending" -and $reason -eq "NOT_STARTED") {
-    $reason = "MAX_MINUTES_REACHED"
-  }
-} catch {
-  $failure = $_
-  $status = "FAIL"
-  $reason = $_.Exception.Message
-} finally {
-  & (Join-Path $context.AndroidRoot "gradlew.bat") --stop | Out-Null
-  if ($LASTEXITCODE -ne 0) { $context.CleanupFailures.Add("GRADLE_STOP_FAILED") | Out-Null }
-  $cleanupFailures = @(Complete-CcrCleanup $context @("com.snowberried.ctcinereviewer.macrobenchmark"))
-  $batteryAtEnd = Get-CcrBatteryStateSafe $context
-  $cleanupFailures = @($context.CleanupFailures)
-  if ($cleanupFailures.Count -gt 0 -and $status -ne "FAIL") {
-    $status = "FAIL"
-    $reason = "CLEANUP_FAILED"
-  }
-  $checkpoint.completedIterations = $completed
-  $checkpoint.nextIteration = $completed
-  $checkpoint.status = $status
-  Save-CcrCheckpoint $context $checkpoint
-  Save-CcrJson $summaryPath ([PSCustomObject]@{
-    schemaVersion = 1; kind = "s24-navigation-perf"; status = $status; reason = $reason
-    versionName = $script:CcrExpectedVersionName; versionCode = $script:CcrExpectedVersionCode
-    commitSha = $context.CommitSha; model = $context.Model
-    scenarios = $scenarios; completedScenarios = $completed; recoveredFiles = $recovered
-    alpha3Baseline = [PSCustomObject]@{
-      hold1080PlusOneIntervalP50Ms = 188.9; hold1080PlusOneFps = 4.529
-      hold1080PlusFiveIntervalP50Ms = 217.0; hold1080PlusFiveFps = 4.299
+
+  foreach ($packageName in @($script:CcrPinnedDebugTestPackage, $script:CcrPinnedMacrobenchmarkPackage)) {
+    try {
+      if (-not (Test-CcrPackageAbsent $context $packageName)) {
+        $cleanupFailures.Add("TEST_PACKAGE_STILL_INSTALLED:$packageName") | Out-Null
+      }
+    } catch {
+      $cleanupFailures.Add("TEST_PACKAGE_ABSENCE_VERIFY_FAILED:${packageName}:$($_.Exception.Message)") | Out-Null
     }
-    gate = "Pending until counters prove >=30% interval reduction, >=1.5x fps, outstanding target depth <=1, +1 raw lag <=1, +5 raw lag <=5, and no correctness regression"
-    sourceIdentity = "clean committed worktree required"
-    chargingAtStart = $context.BatteryAtStart.pluggedOrCharging
-    batteryAtStart = $context.BatteryAtStart; batteryAtEnd = $batteryAtEnd
-    cleanupFailures = $cleanupFailures
-    syntheticOnly = $true; containsRealMediaMetadata = $false
-  })
+  }
+
+  try {
+    $debugApp = Get-CcrPinnedArtifact $context "debugApp"
+    $installDebug = Invoke-CcrPinnedAdb $context @("-s", $context.Serial, "install", "-r", [string]$debugApp.path)
+    if ($installDebug.exitCode -ne 0 -or $installDebug.output -notmatch "(?m)^Success\s*$") {
+      throw "PINNED_DEBUG_APP_REINSTALL_FAILED"
+    }
+    Assert-CcrPinnedInstalledArtifact $context "debugApp"
+    $launch = Invoke-CcrPinnedAdb $context @(
+      "-s", $context.Serial, "shell", "am", "start", "-n", "$script:CcrPinnedAppPackage/.MainActivity"
+    )
+    if ($launch.exitCode -ne 0 -or $launch.output -match "(?i)error|exception") {
+      throw "PINNED_DEBUG_APP_LAUNCH_FAILED"
+    }
+    $manualReviewReady = $true
+  } catch {
+    $cleanupFailures.Add("MANUAL_REVIEW_APP_PREPARE_FAILED:$($_.Exception.Message)") | Out-Null
+  }
+
+  $status = if ($null -eq $primaryFailure -and $cleanupFailures.Count -eq 0 -and $results.Count -eq 2) { "PASS" } else { "FAIL" }
+  $summary = [PSCustomObject]@{
+    schemaVersion = 2
+    kind = "s24-navigation-perf"
+    status = $status
+    primaryFailure = if ($null -eq $primaryFailure) { $null } else { $primaryFailure.Exception.Message }
+    cleanupFailures = @($cleanupFailures)
+    artifactSetRevision = $script:CcrPinnedArtifactSetRevision
+    artifactManifest = $context.ArtifactSet.ManifestPath
+    artifactManifestSha256 = $context.ArtifactSet.ManifestSha256
+    runtimeSourceSha = $context.ArtifactSet.RuntimeSourceSha
+    harnessSourceSha = $context.ArtifactSet.HarnessSourceSha
+    runtimeInputsTreeSha256 = $context.ArtifactSet.RuntimeInputsTreeSha256
+    benchmarkAppSha256 = [string](Get-CcrPinnedArtifact $context "benchmarkApp").sha256
+    macrobenchmarkTestSha256 = [string](Get-CcrPinnedArtifact $context "macrobenchmarkTest").sha256
+    fixedDebugAppSha256 = [string](Get-CcrPinnedArtifact $context "debugApp").sha256
+    measurementDescription = "source-equivalent pinned benchmark measurement build"
+    serial = $context.Serial
+    model = $context.Model
+    fingerprint = $context.Fingerprint
+    securityPatch = $context.SecurityPatch
+    scenarios = @($results)
+    manualReviewReady = $manualReviewReady
+    testPackagesRemoved = -not (@($cleanupFailures) | Where-Object { $_ -match "TEST_PACKAGE" })
+    settingsRestored = -not (@($cleanupFailures) | Where-Object { $_ -match "SETTING_" })
+    remoteOutputsRemoved = -not (@($cleanupFailures) | Where-Object { $_ -match "REMOTE_OUTPUT" })
+    syntheticOnly = $true
+    containsRealMediaMetadata = $false
+  }
+  try {
+    Write-CcrPerfJson $summaryPath $summary
+  } catch {
+    $cleanupFailures.Add("SUMMARY_WRITE_FAILED:$($_.Exception.Message)") | Out-Null
+  }
 }
 
-if ($failure) { throw $failure }
+if ($null -ne $primaryFailure -or $cleanupFailures.Count -gt 0) {
+  $messages = [System.Collections.Generic.List[string]]::new()
+  if ($null -ne $primaryFailure) { $messages.Add("PRIMARY:$($primaryFailure.Exception.Message)") | Out-Null }
+  foreach ($failure in $cleanupFailures) { $messages.Add("CLEANUP:$failure") | Out-Null }
+  throw ($messages -join " | ")
+}
+
 Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath
