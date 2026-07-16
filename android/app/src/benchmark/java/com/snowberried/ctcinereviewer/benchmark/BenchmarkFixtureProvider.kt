@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.ParcelFileDescriptor
 import java.io.File
 import java.io.FileNotFoundException
+import org.json.JSONObject
 
 class BenchmarkFixtureProvider : ContentProvider() {
     override fun onCreate(): Boolean = true
@@ -42,9 +43,9 @@ class BenchmarkFixtureProvider : ContentProvider() {
 
         private fun prepareFixture(context: Context, name: String): File {
             val directory = File(context.cacheDir, "benchmark-fixtures").apply { mkdirs() }
-            val destination = File(directory, name)
+            val destination = cacheFile(context, directory, name)
             if (!destination.isFile) {
-                context.assets.open("frame-accuracy/$name").use { input ->
+                context.assets.open("${assetDirectory(name)}/$name").use { input ->
                     destination.outputStream().use(input::copyTo)
                 }
             }
@@ -53,5 +54,23 @@ class BenchmarkFixtureProvider : ContentProvider() {
 
         private fun validatedName(name: String?): String =
             name?.takeIf(FIXTURE_NAME::matches) ?: throw FileNotFoundException("INVALID_FIXTURE_NAME")
+
+        private fun assetDirectory(name: String): String =
+            if (name.startsWith("720p-") || name.startsWith("1080p-")) {
+                "representative-resolution"
+            } else {
+                "frame-accuracy"
+            }
+
+        private fun cacheFile(context: Context, directory: File, name: String): File {
+            if (!name.startsWith("720p-") && !name.startsWith("1080p-")) return File(directory, name)
+            val manifestName = name.removeSuffix(".mp4")
+            val sourceSha = context.assets.open("representative-resolution/$manifestName.json")
+                .bufferedReader()
+                .use { JSONObject(it.readText()).getString("sourceSha256") }
+                .takeIf { it.matches(Regex("[a-f0-9]{64}")) }
+                ?: throw FileNotFoundException("INVALID_FIXTURE_SHA")
+            return File(directory, "$manifestName-$sourceSha.mp4")
+        }
     }
 }

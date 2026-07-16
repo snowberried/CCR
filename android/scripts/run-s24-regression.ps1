@@ -81,7 +81,7 @@ try {
   }
 
   $packageInfo = (& $adb -s $serial shell dumpsys package $appPackage) -join "`n"
-  if ($packageInfo -notmatch "versionName=0\.2\.0-alpha\.2" -or $packageInfo -notmatch "versionCode=3\b") {
+  if ($packageInfo -notmatch "versionName=0\.2\.0-alpha\.3" -or $packageInfo -notmatch "versionCode=4\b") {
     throw "S24_REGRESSION_INSTALLED_VERSION_MISMATCH"
   }
 } catch {
@@ -114,8 +114,8 @@ if ($LASTEXITCODE -ne 0) { throw "S24_INTERNAL_APP_LAUNCH_FAILED" }
 [PSCustomObject]@{
   status = "PASS"
   model = $model
-  versionName = "0.2.0-alpha.2"
-  versionCode = 3
+  versionName = "0.2.0-alpha.3"
+  versionCode = 4
   pilotReadbackGateRuns = 1
   navigationRepeatRuns = 1
   navigationHoldIntegrationRuns = 1

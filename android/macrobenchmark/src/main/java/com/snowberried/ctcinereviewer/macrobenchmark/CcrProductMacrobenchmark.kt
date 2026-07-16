@@ -95,6 +95,30 @@ class CcrProductMacrobenchmark {
         awaitComplete(SCENARIO_BACKGROUND_FOREGROUND)
     }
 
+    @Test
+    fun hold720PlusOne() = representativeFixture(SCENARIO_HOLD_720_PLUS_ONE)
+
+    @Test
+    fun hold720PlusFive() = representativeFixture(SCENARIO_HOLD_720_PLUS_FIVE)
+
+    @Test
+    fun hold1080PlusOne() = representativeFixture(SCENARIO_HOLD_1080_PLUS_ONE)
+
+    @Test
+    fun hold1080PlusFive() = representativeFixture(SCENARIO_HOLD_1080_PLUS_FIVE)
+
+    @Test
+    fun reverse1080() = representativeFixture(SCENARIO_REVERSE_1080)
+
+    @Test
+    fun distantSeek1080() = representativeFixture(SCENARIO_SEEK_1080)
+
+    @Test
+    fun switch1080H264ToHevc() = representativeFixture(SCENARIO_SWITCH_1080_H264_HEVC)
+
+    @Test
+    fun switch1080HevcToH264() = representativeFixture(SCENARIO_SWITCH_1080_HEVC_H264)
+
     private fun startup(mode: StartupMode) = benchmarkRule.measureRepeated(
         packageName = TARGET_PACKAGE,
         metrics = listOf(StartupTimingMetric()),
@@ -121,6 +145,22 @@ class CcrProductMacrobenchmark {
         awaitComplete(scenario)
     }
 
+    private fun representativeFixture(scenario: String) = benchmarkRule.measureRepeated(
+        packageName = TARGET_PACKAGE,
+        metrics = interactionMetrics(TRACE_REPRESENTATIVE_SMOOTHNESS),
+        iterations = REPRESENTATIVE_ITERATIONS,
+        compilationMode = CompilationMode.Ignore(),
+        startupMode = null,
+        setupBlock = {
+            startActivityAndWait(benchmarkIntent(SCENARIO_PREPARE))
+            awaitComplete(SCENARIO_PREPARE)
+            killProcess()
+        },
+    ) {
+        startActivityAndWait(benchmarkIntent(scenario))
+        awaitComplete(scenario, REPRESENTATIVE_SCENARIO_TIMEOUT_MS)
+    }
+
     private fun interactionMetrics(traceSection: String): List<Metric> = listOf(
         TraceSectionMetric(
             sectionName = traceSection,
@@ -141,11 +181,11 @@ class CcrProductMacrobenchmark {
         addFlags(taskFlags)
     }
 
-    private fun awaitComplete(scenario: String) {
+    private fun awaitComplete(scenario: String, timeoutMs: Long = SCENARIO_TIMEOUT_MS) {
         check(
             device.wait(
-                Until.hasObject(By.text("$STATUS_PREFIX-$scenario-$SUFFIX_COMPLETE")),
-                SCENARIO_TIMEOUT_MS,
+                Until.hasObject(By.textStartsWith("$STATUS_PREFIX-$scenario-$SUFFIX_COMPLETE")),
+                timeoutMs,
             ),
         ) { "Benchmark scenario did not complete: $scenario" }
     }
@@ -175,6 +215,14 @@ class CcrProductMacrobenchmark {
         private const val SCENARIO_SWITCH_HEVC_H264 = "switch-hevc-h264"
         private const val SCENARIO_SWITCH_HEVC_HEVC = "switch-hevc-hevc"
         private const val SCENARIO_BACKGROUND_FOREGROUND = "background-foreground"
+        private const val SCENARIO_HOLD_720_PLUS_ONE = "720p-hold-plus-one"
+        private const val SCENARIO_HOLD_720_PLUS_FIVE = "720p-hold-plus-five"
+        private const val SCENARIO_HOLD_1080_PLUS_ONE = "1080p-hold-plus-one"
+        private const val SCENARIO_HOLD_1080_PLUS_FIVE = "1080p-hold-plus-five"
+        private const val SCENARIO_REVERSE_1080 = "1080p-direction-reverse"
+        private const val SCENARIO_SEEK_1080 = "1080p-distant-seek"
+        private const val SCENARIO_SWITCH_1080_H264_HEVC = "1080p-switch-h264-hevc"
+        private const val SCENARIO_SWITCH_1080_HEVC_H264 = "1080p-switch-hevc-h264"
 
         private const val TRACE_OPEN_TO_INDEX = "ccr.open_to_index"
         private const val TRACE_OPEN_TO_FIRST_FRAME = "ccr.open_to_first_frame"
@@ -182,5 +230,8 @@ class CcrProductMacrobenchmark {
         private const val TRACE_SWITCH_TO_FIRST_FRAME = "ccr.switch_to_first_frame"
         private const val TRACE_FIXTURE_ENTRY = "ccr.fixture_entry"
         private const val TRACE_BACKGROUND_TO_FIRST_FRAME = "ccr.background_to_first_frame"
+        private const val TRACE_REPRESENTATIVE_SMOOTHNESS = "ccr.representative_smoothness"
+        private const val REPRESENTATIVE_ITERATIONS = 3
+        private const val REPRESENTATIVE_SCENARIO_TIMEOUT_MS = 180_000L
     }
 }

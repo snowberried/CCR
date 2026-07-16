@@ -51,8 +51,8 @@ android {
         applicationId = "com.snowberried.ctcinereviewer"
         minSdk = 34
         targetSdk = 37
-        versionCode = 3
-        versionName = "0.2.0-alpha.2"
+        versionCode = 4
+        versionName = "0.2.0-alpha.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "COMMIT_SHA", "\"$escapedCommitSha\"")
     }
@@ -107,8 +107,12 @@ android {
         noCompress += listOf("mp4", "json")
     }
 
-    sourceSets.getByName("debug").assets.directories.add("../testdata")
-    sourceSets.getByName("benchmark").assets.directories.add("../testdata")
+    sourceSets.getByName("debug").assets.directories.addAll(
+        listOf("../testdata", "../.generated/testdata"),
+    )
+    sourceSets.getByName("benchmark").assets.directories.addAll(
+        listOf("../testdata", "../.generated/testdata"),
+    )
 }
 
 dependencies {
@@ -123,6 +127,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    add("benchmarkImplementation", "androidx.metrics:metrics-performance:1.0.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")

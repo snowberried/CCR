@@ -124,7 +124,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun CcrSpikeApp(
+internal fun CcrSpikeApp(
     state: ViewerUiState,
     onOpen: (Uri) -> Unit,
     onRequest: (Int) -> Unit,
