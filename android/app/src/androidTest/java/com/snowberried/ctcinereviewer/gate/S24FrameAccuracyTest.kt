@@ -20,6 +20,8 @@ import com.snowberried.ctcinereviewer.media.IndexedVideo
 import com.snowberried.ctcinereviewer.media.PublicationEvent
 import com.snowberried.ctcinereviewer.media.PublicationResult
 import com.snowberried.ctcinereviewer.media.RequestAcceptance
+import com.snowberried.ctcinereviewer.validation.ValidationHarnessIdentity
+import com.snowberried.ctcinereviewer.validation.ValidationHarnessV2
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -100,7 +102,7 @@ class S24FrameAccuracyTest {
 
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val targetContext = instrumentation.targetContext
-    private val report = Report(targetContext, instrumentation.context)
+    private val report = Report(targetContext)
     private val latencyMs = mutableListOf<Double>()
     private var lastDiagnostics = DecoderDiagnostics()
     private var mismatchCount = 0
@@ -108,6 +110,7 @@ class S24FrameAccuracyTest {
     @Test
     fun allGoldenVectorsRemainExactOnS24Ultra() {
         assumeTrue("S24 Ultra Gate requires Samsung SM-S928*", Build.MANUFACTURER.equals("samsung", true) && Build.MODEL.startsWith("SM-S928"))
+        report.bind(ValidationHarnessV2.requireIdentity(targetContext, instrumentation.context))
         ReadOnlyFixtureProvider.writeOpenCount.set(0)
         val scenario = ActivityScenario.launch(GateActivity::class.java)
         val activity = AtomicReference<GateActivity>()
@@ -176,6 +179,7 @@ class S24FrameAccuracyTest {
             "S24 Ultra Gate requires Samsung SM-S928*",
             Build.MANUFACTURER.equals("samsung", true) && Build.MODEL.startsWith("SM-S928"),
         )
+        report.bind(ValidationHarnessV2.requireIdentity(targetContext, instrumentation.context))
         ReadOnlyFixtureProvider.writeOpenCount.set(0)
         val scenario = ActivityScenario.launch(GateActivity::class.java)
         val activity = AtomicReference<GateActivity>()
@@ -583,10 +587,7 @@ class S24FrameAccuracyTest {
 
     private fun JSONArray.toIntList(): List<Int> = List(length()) { getInt(it) }
 
-    private class Report(
-        private val context: Context,
-        private val testContext: Context,
-    ) {
+    private class Report(private val context: Context) {
         val fixtures = mutableListOf<JSONObject>()
         val sequentialRuns = mutableListOf<JSONObject>()
         val codecComponents = linkedSetOf<String>()
@@ -606,6 +607,13 @@ class S24FrameAccuracyTest {
         private var cacheRejectionCount = 0L
         private var cacheThrashCount = 0L
         private var textureDoubleReleaseCount = 0L
+        private lateinit var identity: ValidationHarnessIdentity
+        private var startedAtElapsedRealtimeNs = 0L
+
+        fun bind(identity: ValidationHarnessIdentity) {
+            this.identity = identity
+            startedAtElapsedRealtimeNs = SystemClock.elapsedRealtimeNanos()
+        }
 
         fun captureDisplay(width: Int, height: Int, refreshRate: Float) {
             displayWidth = width
@@ -655,12 +663,14 @@ class S24FrameAccuracyTest {
             val power = context.getSystemService(PowerManager::class.java)
             val battery = context.getSystemService(BatteryManager::class.java)
             val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+            val kind = if (fileName == SEQUENTIAL_REPORT_FILE) {
+                "forward-sequential-exact"
+            } else {
+                "frame-accuracy-exact"
+            }
             val json = JSONObject()
                 .put("schemaVersion", 2)
-                .put(
-                    "kind",
-                    if (fileName == SEQUENTIAL_REPORT_FILE) "forward-sequential-exact" else "frame-accuracy-exact",
-                )
+                .put("kind", kind)
                 .put("status", status)
                 .put("gate", "Samsung SM-S928* S24 Ultra")
                 .put("device", JSONObject()
@@ -676,8 +686,6 @@ class S24FrameAccuracyTest {
                 .put("appVersionName", packageInfo.versionName)
                 .put("appVersionCode", packageInfo.longVersionCode)
                 .put("appCommitSha", BuildConfig.COMMIT_SHA)
-                .put("appSha256", sha256(File(context.applicationInfo.sourceDir)))
-                .put("testApkSha256", sha256(File(testContext.applicationInfo.sourceDir)))
                 .put("codecComponents", JSONArray(codecComponents.toList()))
                 .put("fixtures", JSONArray(fixtures))
                 .put("forwardSequentialRuns", JSONArray(sequentialRuns))
@@ -738,6 +746,14 @@ class S24FrameAccuracyTest {
                 .put("performanceGateApplied", false)
                 .put("syntheticOnly", true)
                 .put("containsRealMediaMetadata", false)
+            ValidationHarnessV2.putReportIdentity(
+                report = json,
+                identity = identity,
+                startedAtElapsedRealtimeNs = startedAtElapsedRealtimeNs,
+                finishedAtElapsedRealtimeNs = SystemClock.elapsedRealtimeNanos(),
+                testCount = 1,
+                instrumentationExpectedTestCount = 2,
+            )
             if (failure != null) {
                 json.put("failure", JSONObject()
                     .put("type", failure.javaClass.simpleName)
@@ -754,18 +770,6 @@ class S24FrameAccuracyTest {
             File(context.filesDir, fileName).writeText(json.toString(2))
         }
 
-        private fun sha256(file: File): String {
-            val digest = MessageDigest.getInstance("SHA-256")
-            file.inputStream().use { input ->
-                val buffer = ByteArray(8192)
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    digest.update(buffer, 0, count)
-                }
-            }
-            return digest.digest().joinToString("") { "%02x".format(it) }
-        }
     }
 
     companion object {

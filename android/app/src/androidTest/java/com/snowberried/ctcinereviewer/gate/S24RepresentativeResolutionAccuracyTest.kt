@@ -13,6 +13,8 @@ import com.snowberried.ctcinereviewer.media.ContainerMetadata
 import com.snowberried.ctcinereviewer.media.DecodedOutputMetadata
 import com.snowberried.ctcinereviewer.media.FrameResult
 import com.snowberried.ctcinereviewer.media.IndexedVideo
+import com.snowberried.ctcinereviewer.validation.ValidationHarnessIdentity
+import com.snowberried.ctcinereviewer.validation.ValidationHarnessV2
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -68,6 +70,8 @@ class S24RepresentativeResolutionAccuracyTest {
     private val context = instrumentation.targetContext
     private var mismatchCount = 0
     private var writeOpenCount = 0
+    private lateinit var identity: ValidationHarnessIdentity
+    private var startedAtElapsedRealtimeNs = 0L
 
     @Test
     fun representativeResolutionExactSubsetRemainsExact() {
@@ -75,6 +79,8 @@ class S24RepresentativeResolutionAccuracyTest {
             "representative-resolution Gate requires Samsung SM-S928*",
             Build.MANUFACTURER.equals("samsung", true) && Build.MODEL.startsWith("SM-S928"),
         )
+        identity = ValidationHarnessV2.requireIdentity(context, instrumentation.context)
+        startedAtElapsedRealtimeNs = SystemClock.elapsedRealtimeNanos()
         ReadOnlyFixtureProvider.writeOpenCount.set(0)
         val fixtureReports = JSONArray()
         val outcome = runCatching {
@@ -376,6 +382,14 @@ class S24RepresentativeResolutionAccuracyTest {
             .put("mismatchCount", mismatchCount)
             .put("writeOpenCount", writeOpenCount)
             .put("performanceGateApplied", false)
+        ValidationHarnessV2.putReportIdentity(
+            report = report,
+            identity = identity,
+            startedAtElapsedRealtimeNs = startedAtElapsedRealtimeNs,
+            finishedAtElapsedRealtimeNs = SystemClock.elapsedRealtimeNanos(),
+            testCount = 1,
+            instrumentationExpectedTestCount = 1,
+        )
         outcome.exceptionOrNull()?.let {
             report.put("failure", JSONObject()
                 .put("type", it.javaClass.simpleName)
