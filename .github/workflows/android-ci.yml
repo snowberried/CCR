@@ -52,6 +52,7 @@ jobs:
       - name: Verify fixed frame-accuracy fixtures
         run: |
           node .\android\tools\verify-frame-accuracy.mjs
+          node .\android\tools\verify-representative-resolution-fixtures.mjs --manifest-only
           node .\android\tools\verify-source-contract.mjs
 
       - name: Test and build internal APK
