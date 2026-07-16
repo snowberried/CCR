@@ -80,6 +80,7 @@ class ExactFrameSession(
         val format: MediaFormat,
         val codecInfo: MediaCodecInfo,
         var codec: MediaCodec,
+        var codecGeneration: Long,
         var outputSurface: Surface,
         val video: IndexedVideo,
         val metadata: ContainerMetadata,
@@ -89,6 +90,7 @@ class ExactFrameSession(
     private data class DecodeWork(
         val request: FrameRequest,
         val prefetchPermit: PrefetchPermit?,
+        val forwardTraversalStride: Int?,
     )
 
     private val appContext = context.applicationContext
@@ -120,6 +122,9 @@ class ExactFrameSession(
     private var activePrefetch: PrefetchRunState? = null
     private var prefetchCancellationWaste = 0L
     private val requestCoalescedCount = AtomicLong(0)
+    private val forwardSequentialState = ForwardSequentialDecodeState()
+    private val adaptivePrefetchDepth = AdaptivePrefetchDepth()
+    private var nextCodecGeneration = 0L
 
     fun createViewport(context: Context): VideoViewport = VideoViewport(context, renderer)
 
@@ -139,6 +144,7 @@ class ExactFrameSession(
 
     private fun enqueueOpen(uri: Uri, initialFrameIndex: Int, token: GenerationToken): GenerationToken {
         currentVideo.set(null)
+        forwardSequentialState.invalidate()
         latestRequest.clear()
         actor.removeCallbacksAndMessages(requestMessageToken)
         notifyStatus(token.fileGeneration, "indexing")
@@ -150,12 +156,14 @@ class ExactFrameSession(
         frameIndex = frameIndex,
         nonBlocking = false,
         prefetchPermit = null,
+        forwardTraversalStride = null,
     )
 
     fun tryRequestFrame(frameIndex: Int): RequestAcceptance? = requestFrameInternal(
         frameIndex = frameIndex,
         nonBlocking = true,
         prefetchPermit = null,
+        forwardTraversalStride = null,
     )
 
     internal fun requestDirectionalFrame(
@@ -166,15 +174,18 @@ class ExactFrameSession(
         frameIndex = frameIndex,
         nonBlocking = false,
         prefetchPermit = newDirectionalPrefetchPermit(direction, directionalInputElapsedRealtimeMs),
+        forwardTraversalStride = null,
     )
 
     internal fun tryRequestFrame(
         frameIndex: Int,
         prefetchPermit: PrefetchPermit?,
+        forwardTraversalStride: Int? = null,
     ): RequestAcceptance? = requestFrameInternal(
         frameIndex = frameIndex,
         nonBlocking = true,
         prefetchPermit = prefetchPermit,
+        forwardTraversalStride = forwardTraversalStride,
     )
 
     internal fun newDirectionalPrefetchPermit(
@@ -189,6 +200,7 @@ class ExactFrameSession(
         frameIndex: Int,
         nonBlocking: Boolean,
         prefetchPermit: PrefetchPermit?,
+        forwardTraversalStride: Int?,
     ): RequestAcceptance? {
         val video = currentVideo.get() ?: run {
             notifyStatus(null, "error", "VIDEO_NOT_READY")
@@ -203,20 +215,23 @@ class ExactFrameSession(
         } else {
             publicationGate.acceptRequest(video.fileGeneration, frameIndex, video.frames[frameIndex].key)
         } ?: return null
-        if (latestRequest.offer(
-            DecodeWork(
-                request = acceptance.request,
-                prefetchPermit = prefetchPermit,
-            ),
-        )) requestCoalescedCount.incrementAndGet()
-        actor.removeCallbacksAndMessages(requestMessageToken)
-        actor.postAtTime(
-            {
-                latestRequest.take()?.let(::decodeInternal)
-            },
-            requestMessageToken,
-            SystemClock.uptimeMillis(),
-        )
+        CcrTrace.section(CcrTrace.requestLabel(CcrTrace.REQUEST_ACCEPT, acceptance.request)) {
+            if (latestRequest.offer(
+                DecodeWork(
+                    request = acceptance.request,
+                    prefetchPermit = prefetchPermit,
+                    forwardTraversalStride = forwardTraversalStride,
+                ),
+            )) requestCoalescedCount.incrementAndGet()
+            actor.removeCallbacksAndMessages(requestMessageToken)
+            actor.postAtTime(
+                {
+                    latestRequest.take()?.let(::decodeInternal)
+                },
+                requestMessageToken,
+                SystemClock.uptimeMillis(),
+            )
+        }
         notifyStatus(acceptance.request.token.fileGeneration, "decoding")
         return acceptance
     }
@@ -234,6 +249,7 @@ class ExactFrameSession(
             publicationGate.invalidateRequest()
         } ?: return null
         latestRequest.clear()
+        forwardSequentialState.invalidate()
         actor.removeCallbacksAndMessages(requestMessageToken)
         notifyStatus(token.fileGeneration, "cancelled")
         return token
@@ -281,6 +297,7 @@ class ExactFrameSession(
         suspendPrefetch()
         renderer.cancelImmediately()
         publicationGate.tryInvalidateRequest()
+        forwardSequentialState.invalidate()
         latestRequest.clear()
         actor.removeCallbacksAndMessages(requestMessageToken)
         actor.post {
@@ -296,6 +313,7 @@ class ExactFrameSession(
         diagnostics = DecoderDiagnostics()
         activePrefetch = null
         prefetchCancellationWaste = 0
+        adaptivePrefetchDepth.reset()
         requestCoalescedCount.set(0)
         var descriptor: ParcelFileDescriptor? = null
         var extractor: MediaExtractor? = null
@@ -353,6 +371,7 @@ class ExactFrameSession(
                 format,
                 codecInfo,
                 codec,
+                ++nextCodecGeneration,
                 outputSurface,
                 video,
                 metadata,
@@ -370,7 +389,7 @@ class ExactFrameSession(
                 targetIndex,
                 video.frames[targetIndex].key,
             )?.request ?: return
-            decodeInternal(DecodeWork(firstRequest, prefetchPermit = null))
+            decodeInternal(DecodeWork(firstRequest, prefetchPermit = null, forwardTraversalStride = null))
         } catch (error: Throwable) {
             codec?.let(::releaseCodec)
             extractor?.release()
@@ -386,20 +405,29 @@ class ExactFrameSession(
         }
     }
 
-    private fun decodeInternal(work: DecodeWork) {
+    private fun decodeInternal(work: DecodeWork) = CcrTrace.section(
+        CcrTrace.requestLabel(CcrTrace.ACTOR_START, work.request),
+    ) {
+        decodeInternalTraced(work)
+    }
+
+    private fun decodeInternalTraced(work: DecodeWork) {
         val request = work.request
         if (closed.get()) return
         if (!isCurrent(request.token)) {
+            forwardSequentialState.invalidate()
             report(FrameResult.DiscardedStale(request, "before-decode"))
             return
         }
         beforeDecodeHookForTest?.invoke(request)
         if (!isCurrent(request.token)) {
+            forwardSequentialState.invalidate()
             report(FrameResult.DiscardedStale(request, "after-test-hook"))
             return
         }
         var current = resources
         if (current == null || current.fileGeneration != request.token.fileGeneration) {
+            forwardSequentialState.invalidate()
             report(FrameResult.Error(request, "DECODER_NOT_READY"))
             return
         }
@@ -420,6 +448,7 @@ class ExactFrameSession(
 
         val cached = renderer.presentCached(request)
         if (cached != null) {
+            forwardSequentialState.invalidate()
             when (cached.status) {
                 EglFrameRenderer.AckStatus.PUBLISHED -> {
                     diagnostics = diagnostics.copy(cacheHitCount = diagnostics.cacheHitCount + 1)
@@ -447,27 +476,50 @@ class ExactFrameSession(
         val target = current.video.frames[request.requestedFrameIndex]
         val startSample = current.video.previousSyncSample(target)
         val prefetch = preparePrefetch(current, request, target, startSample, work.prefetchPermit)
-        val duplicateCounts = mutableMapOf<Long, Int>()
-        current.video.frames.asSequence()
-            .filter { it.sampleOrdinal < startSample.sampleOrdinal }
-            .forEach { duplicateCounts[it.key.ptsUs] = duplicateCounts.getOrDefault(it.key.ptsUs, 0) + 1 }
+        val sequentialRequested = work.forwardTraversalStride != null
+        val sequentialDecision = forwardSequentialState.decide(
+            fileGeneration = current.fileGeneration,
+            codecGeneration = current.codecGeneration,
+            targetFrameIndex = target.key.displayFrameIndex,
+            stride = work.forwardTraversalStride,
+        )
+        var sequentialActive = sequentialDecision.enter && work.prefetchPermit == null
+        if (sequentialDecision.enter && !sequentialActive) forwardSequentialState.invalidate()
+        diagnostics = diagnostics.copy(
+            sequentialEntryCount = diagnostics.sequentialEntryCount + if (sequentialActive) 1 else 0,
+            sequentialFallbackCount = diagnostics.sequentialFallbackCount +
+                if (sequentialRequested && !sequentialActive) 1 else 0,
+        )
+        var duplicateCounts = sequentialDecision.duplicateCounts.toMutableMap()
+        var inputEos = false
+        var inputFirstTraced = false
+        var outputFirstTraced = false
+        var publishedCursorRecorded = false
 
         try {
-            if (current.codecInputState.flushRequiredBeforeDecode) {
-                current.codec.flush()
-                current.codecInputState.onFlushCompleted()
+            fun restartWithExactSeek(fromSequential: Boolean) {
+                if (fromSequential) {
+                    forwardSequentialState.invalidate()
+                    diagnostics = diagnostics.copy(
+                        sequentialFallbackCount = diagnostics.sequentialFallbackCount + 1,
+                    )
+                }
+                duplicateCounts = prepareExactSeek(current, request, target, startSample)
+                inputEos = false
+                sequentialActive = false
             }
-            current.extractor.seekTo(target.key.ptsUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-            var inputEos = false
+
+            if (!sequentialActive) restartWithExactSeek(fromSequential = false)
             var decodeOrdinal = 0L
             val info = MediaCodec.BufferInfo()
             val deadline = SystemClock.elapsedRealtime() + 15_000
-            while (SystemClock.elapsedRealtime() < deadline) {
+            decodeLoop@ while (SystemClock.elapsedRealtime() < deadline) {
                 if (closed.get()) {
                     cancelPrefetch(prefetch)
                     return
                 }
                 if (!isCurrent(request.token)) {
+                    forwardSequentialState.invalidate()
                     cancelPrefetch(prefetch)
                     diagnostics = diagnostics.copy(staleDiscardCount = diagnostics.staleDiscardCount + 1)
                     report(FrameResult.DiscardedStale(request, "decode-loop"))
@@ -477,23 +529,44 @@ class ExactFrameSession(
                 if (!inputEos) {
                     val inputIndex = current.codec.dequeueInputBuffer(0)
                     if (inputIndex >= 0) {
-                        val inputBuffer = current.codec.getInputBuffer(inputIndex) ?: error("INPUT_BUFFER_MISSING")
-                        val sampleTrack = current.extractor.sampleTrackIndex
-                        if (sampleTrack < 0) {
-                            current.codec.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            current.codecInputState.onInputQueued()
-                            inputEos = true
-                        } else {
-                            val size = current.extractor.readSampleData(inputBuffer, 0)
-                            if (size < 0) {
+                        val queueInput = {
+                            val inputBuffer = current.codec.getInputBuffer(inputIndex)
+                                ?: error("INPUT_BUFFER_MISSING")
+                            val sampleTrack = current.extractor.sampleTrackIndex
+                            if (sampleTrack < 0) {
                                 current.codec.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                 current.codecInputState.onInputQueued()
                                 inputEos = true
                             } else {
-                                current.codec.queueInputBuffer(inputIndex, 0, size, current.extractor.sampleTime, 0)
-                                current.codecInputState.onInputQueued()
-                                current.extractor.advance()
+                                val size = current.extractor.readSampleData(inputBuffer, 0)
+                                if (size < 0) {
+                                    current.codec.queueInputBuffer(
+                                        inputIndex,
+                                        0,
+                                        0,
+                                        0,
+                                        MediaCodec.BUFFER_FLAG_END_OF_STREAM,
+                                    )
+                                    current.codecInputState.onInputQueued()
+                                    inputEos = true
+                                } else {
+                                    current.codec.queueInputBuffer(
+                                        inputIndex,
+                                        0,
+                                        size,
+                                        current.extractor.sampleTime,
+                                        0,
+                                    )
+                                    current.codecInputState.onInputQueued()
+                                    current.extractor.advance()
+                                }
                             }
+                        }
+                        if (inputFirstTraced) {
+                            queueInput()
+                        } else {
+                            CcrTrace.section(CcrTrace.requestLabel(CcrTrace.INPUT_FIRST, request), queueInput)
+                            inputFirstTraced = true
                         }
                     }
                 }
@@ -516,6 +589,10 @@ class ExactFrameSession(
                             VideoSupport.Supported -> {
                                 renderer.configureFrame(current.metadata, decoded)
                                 refreshPrefetchLimit(prefetch)
+                                if (sequentialActive) {
+                                    restartWithExactSeek(fromSequential = true)
+                                    continue@decodeLoop
+                                }
                             }
                             is VideoSupport.Unsupported -> {
                                 report(FrameResult.Unsupported(request, support.reason))
@@ -524,14 +601,26 @@ class ExactFrameSession(
                         }
                     }
                     else -> if (outputIndex >= 0) {
+                        if (!outputFirstTraced) {
+                            CcrTrace.section(CcrTrace.requestLabel(CcrTrace.OUTPUT_FIRST, request)) { Unit }
+                            outputFirstTraced = true
+                        }
                         decodeOrdinal += 1
-                        diagnostics = diagnostics.copy(decodeOrdinal = diagnostics.decodeOrdinal + 1)
+                        diagnostics = diagnostics.copy(
+                            decodeOrdinal = diagnostics.decodeOrdinal + 1,
+                            sequentialOutputCount = diagnostics.sequentialOutputCount +
+                                if (sequentialActive) 1 else 0,
+                        )
                         val ptsUs = info.presentationTimeUs
                         val duplicateOrdinal = duplicateCounts.getOrDefault(ptsUs, 0)
                         duplicateCounts[ptsUs] = duplicateOrdinal + 1
                         val outputFrame = current.video.frameForOutput(ptsUs, duplicateOrdinal)
                         if (outputFrame == null) {
                             current.codec.releaseOutputBuffer(outputIndex, false)
+                            if (sequentialActive) {
+                                restartWithExactSeek(fromSequential = true)
+                                continue@decodeLoop
+                            }
                         } else if (outputFrame.key.displayFrameIndex < target.key.displayFrameIndex) {
                             if (prefetch?.direction == DirectionalPrefetchDirection.REVERSE && prefetch.contains(outputFrame.key.displayFrameIndex)) {
                                 if (!isCurrent(request.token)) {
@@ -565,6 +654,10 @@ class ExactFrameSession(
                             }
                         } else if (outputFrame.key != target.key) {
                             current.codec.releaseOutputBuffer(outputIndex, false)
+                            if (sequentialActive) {
+                                restartWithExactSeek(fromSequential = true)
+                                continue@decodeLoop
+                            }
                             report(FrameResult.Error(request, "OUTPUT_PASSED_TARGET"))
                             return
                         } else {
@@ -577,12 +670,30 @@ class ExactFrameSession(
                                 report(FrameResult.Error(request, "RENDER_TARGET_BUSY"))
                                 return
                             }
-                            current.codec.releaseOutputBuffer(outputIndex, true)
-                            val ack = renderer.awaitTarget(handle, 3_000)
+                            val ack = CcrTrace.section(
+                                CcrTrace.requestLabel(CcrTrace.OUTPUT_TARGET, request),
+                            ) {
+                                CcrTrace.section(CcrTrace.requestLabel(CcrTrace.SURFACE_WAIT, request)) {
+                                    current.codec.releaseOutputBuffer(outputIndex, true)
+                                    renderer.awaitTarget(handle, 3_000)
+                                }
+                            }
                             when (ack.status) {
                                 EglFrameRenderer.AckStatus.PUBLISHED -> {
                                     if (prefetch?.direction == DirectionalPrefetchDirection.REVERSE) {
                                         cancelPrefetch(prefetch)
+                                    }
+                                    if (prefetch?.direction == DirectionalPrefetchDirection.FORWARD) {
+                                        forwardSequentialState.invalidate()
+                                    } else {
+                                        forwardSequentialState.recordPublished(
+                                            fileGeneration = current.fileGeneration,
+                                            codecGeneration = current.codecGeneration,
+                                            outputFrameIndex = target.key.displayFrameIndex,
+                                            duplicateCounts = duplicateCounts,
+                                            inputEos = inputEos,
+                                        )
+                                        publishedCursorRecorded = true
                                     }
                                     report(
                                         FrameResult.Published(
@@ -617,6 +728,10 @@ class ExactFrameSession(
                             return
                         }
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            if (sequentialActive) {
+                                restartWithExactSeek(fromSequential = true)
+                                continue@decodeLoop
+                            }
                             report(FrameResult.Error(request, "EOS_BEFORE_TARGET"))
                             return
                         }
@@ -633,7 +748,35 @@ class ExactFrameSession(
                 },
             )
         } finally {
+            if (!publishedCursorRecorded) forwardSequentialState.invalidate()
             cancelPrefetch(prefetch)
+        }
+    }
+
+    private fun prepareExactSeek(
+        current: DecoderResources,
+        request: FrameRequest,
+        target: IndexedFrame,
+        startSample: IndexedSample,
+    ): MutableMap<Long, Int> {
+        forwardSequentialState.invalidate()
+        if (current.codecInputState.flushRequiredBeforeDecode) {
+            CcrTrace.section(CcrTrace.requestLabel(CcrTrace.FLUSH, request)) {
+                current.codec.flush()
+            }
+            current.codecInputState.onFlushCompleted()
+            diagnostics = diagnostics.copy(flushCount = diagnostics.flushCount + 1)
+        }
+        CcrTrace.section(CcrTrace.requestLabel(CcrTrace.SEEK, request)) {
+            current.extractor.seekTo(target.key.ptsUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+        }
+        diagnostics = diagnostics.copy(seekCount = diagnostics.seekCount + 1)
+        return mutableMapOf<Long, Int>().also { counts ->
+            current.video.frames.asSequence()
+                .filter { it.sampleOrdinal < startSample.sampleOrdinal }
+                .forEach { frame ->
+                    counts[frame.key.ptsUs] = counts.getOrDefault(frame.key.ptsUs, 0) + 1
+                }
         }
     }
 
@@ -645,14 +788,23 @@ class ExactFrameSession(
         permit: PrefetchPermit?,
     ): PrefetchRunState? {
         cancelPrefetch(activePrefetch)
-        val budget = renderer.prefetchSnapshot().budget
-        updatePrefetchBudget(budget)
         if (permit == null || !prefetchGate.isActive(permit) || !isCurrent(request.token)) return null
+        val snapshot = renderer.prefetchSnapshot()
+        val budget = snapshot.budget
+        val adaptiveLimit = adaptivePrefetchDepth.observe(
+            PrefetchEfficiencySample(
+                completed = diagnostics.prefetchCompleted,
+                evictedBeforeUse = snapshot.evictedBeforeUseCount,
+                usefulHits = snapshot.cacheHitCount,
+            ),
+        )
+        val effectiveLimit = effectiveDiscretePrefetchLimit(budget.effectivePrefetchLimit, adaptiveLimit)
+        updatePrefetchBudget(budget, effectiveLimit)
         val plan = directionalPrefetchPlan(
             direction = permit.direction,
             targetFrameIndex = target.key.displayFrameIndex,
             frameCount = current.video.frameCount,
-            frameLimit = budget.effectivePrefetchLimit,
+            frameLimit = effectiveLimit,
         )
         val candidates = plan.frameIndexes
             .filter { frameIndex ->
@@ -675,21 +827,33 @@ class ExactFrameSession(
     }
 
     private fun refreshPrefetchLimit(prefetch: PrefetchRunState?) {
-        val budget = renderer.prefetchSnapshot().budget
-        updatePrefetchBudget(budget)
+        val snapshot = renderer.prefetchSnapshot()
+        val budget = snapshot.budget
+        val adaptiveLimit = adaptivePrefetchDepth.observe(
+            PrefetchEfficiencySample(
+                completed = diagnostics.prefetchCompleted,
+                evictedBeforeUse = snapshot.evictedBeforeUseCount,
+                usefulHits = snapshot.cacheHitCount,
+            ),
+        )
+        val effectiveLimit = effectiveDiscretePrefetchLimit(budget.effectivePrefetchLimit, adaptiveLimit)
+        updatePrefetchBudget(budget, effectiveLimit)
         if (prefetch == null) return
         if (!isPrefetchActive(prefetch)) {
             cancelPrefetch(prefetch)
             return
         }
-        val cancellation = prefetch.limitTo(budget.effectivePrefetchLimit)
+        val cancellation = prefetch.limitTo(effectiveLimit)
         recordPrefetchCancellation(cancellation)
         if (prefetch.isComplete && activePrefetch === prefetch) activePrefetch = null
     }
 
-    private fun updatePrefetchBudget(budget: PrefetchBudgetDecision) {
+    private fun updatePrefetchBudget(
+        budget: PrefetchBudgetDecision,
+        effectiveLimit: Int = budget.effectivePrefetchLimit,
+    ) {
         diagnostics = diagnostics.copy(
-            effectivePrefetchLimit = budget.effectivePrefetchLimit,
+            effectivePrefetchLimit = effectiveLimit,
             canonicalFrameBytes = budget.canonicalFrameBytes,
             cacheBudgetBytes = budget.cacheBudgetBytes,
         )
@@ -887,9 +1051,11 @@ class ExactFrameSession(
     }
 
     private fun recreateCodec(current: DecoderResources): DecoderResources {
+        forwardSequentialState.invalidate()
         releaseCodec(current.codec)
         val surface = renderer.awaitDecoderSurface(3_000) ?: error("RENDER_SURFACE_NOT_READY")
         current.codec = createCodec(current.codecInfo, current.format, surface)
+        current.codecGeneration = ++nextCodecGeneration
         current.outputSurface = surface
         current.codecInputState.onCodecCreated()
         diagnostics = diagnostics.copy(decoderRecreateCount = diagnostics.decoderRecreateCount + 1)
@@ -1022,6 +1188,7 @@ class ExactFrameSession(
     }
 
     private fun closeResources() {
+        forwardSequentialState.invalidate()
         currentVideo.set(null)
         resources?.let {
             releaseCodec(it.codec)
@@ -1034,6 +1201,7 @@ class ExactFrameSession(
     private fun invalidateForSurfaceLoss() {
         if (closed.get()) return
         suspendPrefetch()
+        forwardSequentialState.invalidate()
         publicationGate.invalidateRequest()
         latestRequest.clear()
         actor.removeCallbacksAndMessages(requestMessageToken)
@@ -1069,7 +1237,6 @@ class ExactFrameSession(
             prefetchEvictedBeforeUse = prefetch.evictedBeforeUseCount,
             prefetchWasted = prefetchCancellationWaste + prefetch.wastedCount,
             currentPrefetchDepth = prefetch.currentDepth,
-            effectivePrefetchLimit = prefetch.budget.effectivePrefetchLimit,
             canonicalFrameBytes = prefetch.budget.canonicalFrameBytes,
             cacheBudgetBytes = prefetch.budget.cacheBudgetBytes,
             cacheEntryCount = prefetch.cacheEntryCount,

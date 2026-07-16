@@ -3,6 +3,7 @@ package com.snowberried.ctcinereviewer.media
 import java.util.concurrent.atomic.AtomicLong
 
 internal const val DIRECTIONAL_PREFETCH_FRAME_LIMIT = 12
+internal const val DISCRETE_PREFETCH_MAX_DEPTH = 2
 internal const val PREFETCH_SAFETY_FRAME_COUNT = 2
 internal const val PREFETCH_RESERVED_FRAME_COUNT = 2 + PREFETCH_SAFETY_FRAME_COUNT
 internal const val DIRECTIONAL_PREFETCH_IDLE_TIMEOUT_MS = 500L
@@ -26,6 +27,75 @@ internal data class PrefetchCancellation(
     val cancelled: Int,
     val wasted: Int,
 )
+
+internal data class PrefetchEfficiencySample(
+    val completed: Long,
+    val evictedBeforeUse: Long,
+    val usefulHits: Long,
+)
+
+/**
+ * Keeps the tiny discrete-navigation prefetch window from repeatedly filling and evicting itself.
+ * Values are cumulative so callers do not need another hot-path allocation or event stream.
+ */
+internal class AdaptivePrefetchDepth(
+    private val maximumDepth: Int = DISCRETE_PREFETCH_MAX_DEPTH,
+) {
+    init {
+        require(maximumDepth >= 0)
+    }
+
+    private var previous = PrefetchEfficiencySample(0, 0, 0)
+    private var usefulWindows = 0
+
+    var currentDepth: Int = maximumDepth
+        private set
+
+    fun observe(sample: PrefetchEfficiencySample): Int {
+        val completed = (sample.completed - previous.completed).coerceAtLeast(0)
+        val evicted = (sample.evictedBeforeUse - previous.evictedBeforeUse).coerceAtLeast(0)
+        val hits = (sample.usefulHits - previous.usefulHits).coerceAtLeast(0)
+        previous = sample
+        if (completed == 0L && evicted == 0L && hits == 0L) return currentDepth
+
+        val evictionRatio = if (completed == 0L) {
+            if (evicted == 0L) 0.0 else Double.POSITIVE_INFINITY
+        } else {
+            evicted.toDouble() / completed.toDouble()
+        }
+        when {
+            evictionRatio > 0.50 -> {
+                currentDepth = 0
+                usefulWindows = 0
+            }
+            evictionRatio > 0.20 -> {
+                currentDepth = (currentDepth / 2).coerceAtLeast(1).coerceAtMost(maximumDepth)
+                usefulWindows = 0
+            }
+            hits > 0 && evicted == 0L -> {
+                usefulWindows += 1
+                if (usefulWindows >= 2) {
+                    currentDepth = (currentDepth + 1).coerceAtMost(maximumDepth)
+                    usefulWindows = 0
+                }
+            }
+            else -> usefulWindows = 0
+        }
+        return currentDepth
+    }
+
+    fun reset() {
+        previous = PrefetchEfficiencySample(0, 0, 0)
+        usefulWindows = 0
+        currentDepth = maximumDepth
+    }
+}
+
+internal fun effectiveDiscretePrefetchLimit(rendererLimit: Int, adaptiveDepth: Int): Int = minOf(
+    rendererLimit,
+    DISCRETE_PREFETCH_MAX_DEPTH,
+    adaptiveDepth,
+).coerceAtLeast(0)
 
 internal data class PrefetchPermit(
     val epoch: Long,

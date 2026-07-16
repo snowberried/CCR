@@ -153,7 +153,11 @@ class PublicationGate(
             val stale = request.token.fileGeneration != currentFileGeneration ||
                 request.token.requestGeneration != currentRequestGeneration
             val surfaceIsValid = !stale && surfaceValid()
-            val swapResult = if (surfaceIsValid) swap() else null
+            val swapResult = if (surfaceIsValid) {
+                CcrTrace.section(CcrTrace.requestLabel(CcrTrace.SWAP, request), swap)
+            } else {
+                null
+            }
             val result = when {
                 stale -> PublicationResult.STALE_BEFORE_SWAP
                 !surfaceIsValid -> PublicationResult.SURFACE_INVALID

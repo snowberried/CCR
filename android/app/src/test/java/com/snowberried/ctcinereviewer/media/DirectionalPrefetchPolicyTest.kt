@@ -197,4 +197,59 @@ class DirectionalPrefetchPolicyTest {
         assertEquals(600L, directionalPrefetchDeadline(100L, timeoutMs = 500L))
         assertEquals(Long.MAX_VALUE, directionalPrefetchDeadline(Long.MAX_VALUE - 10L, timeoutMs = 500L))
     }
+
+    @Test
+    fun `discrete prefetch starts at two and halves above twenty percent eviction`() {
+        val policy = AdaptivePrefetchDepth()
+
+        assertEquals(2, policy.currentDepth)
+        assertEquals(1, policy.observe(PrefetchEfficiencySample(completed = 4, evictedBeforeUse = 1, usefulHits = 0)))
+    }
+
+    @Test
+    fun `adaptive prefetch stops above fifty percent eviction`() {
+        val policy = AdaptivePrefetchDepth()
+
+        assertEquals(0, policy.observe(PrefetchEfficiencySample(completed = 3, evictedBeforeUse = 2, usefulHits = 0)))
+    }
+
+    @Test
+    fun `adaptive prefetch grows only after consecutive useful windows`() {
+        val policy = AdaptivePrefetchDepth()
+        policy.observe(PrefetchEfficiencySample(completed = 4, evictedBeforeUse = 1, usefulHits = 0))
+        assertEquals(1, policy.currentDepth)
+
+        assertEquals(1, policy.observe(PrefetchEfficiencySample(completed = 5, evictedBeforeUse = 1, usefulHits = 1)))
+        assertEquals(2, policy.observe(PrefetchEfficiencySample(completed = 6, evictedBeforeUse = 1, usefulHits = 2)))
+    }
+
+    @Test
+    fun `adaptive prefetch recovers from useful hits without another completion`() {
+        val policy = AdaptivePrefetchDepth()
+        policy.observe(PrefetchEfficiencySample(completed = 4, evictedBeforeUse = 1, usefulHits = 0))
+        assertEquals(1, policy.currentDepth)
+
+        assertEquals(1, policy.observe(PrefetchEfficiencySample(completed = 4, evictedBeforeUse = 1, usefulHits = 1)))
+        assertEquals(1, policy.observe(PrefetchEfficiencySample(completed = 4, evictedBeforeUse = 1, usefulHits = 1)))
+        assertEquals(2, policy.observe(PrefetchEfficiencySample(completed = 4, evictedBeforeUse = 1, usefulHits = 2)))
+    }
+
+    @Test
+    fun `effective discrete prefetch limit preserves adaptive zero to two range`() {
+        assertEquals(2, effectiveDiscretePrefetchLimit(rendererLimit = 12, adaptiveDepth = 2))
+        assertEquals(1, effectiveDiscretePrefetchLimit(rendererLimit = 4, adaptiveDepth = 1))
+        assertEquals(0, effectiveDiscretePrefetchLimit(rendererLimit = 4, adaptiveDepth = 0))
+        assertEquals(0, effectiveDiscretePrefetchLimit(rendererLimit = 0, adaptiveDepth = 2))
+    }
+
+    @Test
+    fun `file switch resets adaptive prefetch depth`() {
+        val policy = AdaptivePrefetchDepth()
+        policy.observe(PrefetchEfficiencySample(completed = 2, evictedBeforeUse = 2, usefulHits = 0))
+        assertEquals(0, policy.currentDepth)
+
+        policy.reset()
+
+        assertEquals(DISCRETE_PREFETCH_MAX_DEPTH, policy.currentDepth)
+    }
 }

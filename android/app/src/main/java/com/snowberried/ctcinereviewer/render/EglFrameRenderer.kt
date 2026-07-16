@@ -15,6 +15,7 @@ import android.util.Log
 import android.view.Surface
 import com.snowberried.ctcinereviewer.cache.DirectionalByteCache
 import com.snowberried.ctcinereviewer.media.ContainerMetadata
+import com.snowberried.ctcinereviewer.media.CcrTrace
 import com.snowberried.ctcinereviewer.media.DecodedOutputMetadata
 import com.snowberried.ctcinereviewer.media.DirectionalPrefetchDirection
 import com.snowberried.ctcinereviewer.media.FrameImageProbe
@@ -202,7 +203,9 @@ class EglFrameRenderer(
         byteBudget = byteBudget,
         frameIndex = { it.displayFrameIndex },
         onEvict = { key, texture ->
-            releaseCachedTexture(texture)
+            CcrTrace.section(CcrTrace.frameLabel(CcrTrace.CACHE_EVICT, fileGeneration, key)) {
+                releaseCachedTexture(texture)
+            }
             if (prefetchedKeys.remove(key)) {
                 prefetchEvictedBeforeUseCount += 1
                 prefetchWastedCount += 1
@@ -325,7 +328,9 @@ class EglFrameRenderer(
             cache.recordRequest(request.requestedFrameIndex)
             val cached = cache.get(request.expectedKey) ?: return@callOnRenderer null
             if (prefetchedKeys.remove(request.expectedKey)) prefetchCacheHitCount += 1
-            drawTextureToWindow(cached)
+            CcrTrace.section(CcrTrace.requestLabel(CcrTrace.DRAW, request)) {
+                drawTextureToWindow(cached)
+            }
             val event = publish(request, cached.timestampNs)
             if (event.result == PublicationResult.PUBLISHED) lastPublishedKey = request.expectedKey
             renderAckFor(
@@ -573,7 +578,12 @@ class EglFrameRenderer(
             return
         }
         try {
-            source.updateTexImage()
+            CcrTrace.section(
+                pendingTarget?.let { CcrTrace.frameLabel(CcrTrace.TEXTURE_UPDATE, it.token, it.expectedKey) }
+                    ?: CcrTrace.TEXTURE_UPDATE,
+            ) {
+                source.updateTexImage()
+            }
         } catch (_: Throwable) {
             pendingTarget?.complete?.invoke(RenderAck(AckStatus.ERROR, 0, "TEXTURE_UPDATE_FAILED"))
             pendingTarget = null
@@ -595,7 +605,9 @@ class EglFrameRenderer(
         val textureMatrix = FloatArray(16)
         source.getTransformMatrix(textureMatrix)
         val cached = try {
-            copyExternalTexture(textureMatrix, canonicalGeometry.rotationDegrees, timestampNs)
+            CcrTrace.section(CcrTrace.frameLabel(CcrTrace.CANONICAL_COPY, handle.token, handle.expectedKey)) {
+                copyExternalTexture(textureMatrix, canonicalGeometry.rotationDegrees, timestampNs)
+            }
         } catch (_: Throwable) {
             handle.complete(RenderAck(AckStatus.ERROR, timestampNs, "TEXTURE_COPY_FAILED"))
             return
@@ -609,20 +621,24 @@ class EglFrameRenderer(
         val frameBytes = prefetchBudget.canonicalFrameBytes
         val retentionAllowed = handle.publicationRequest != null || handle.cacheRetentionAllowed?.invoke() == true
         var cacheAdmissionAttempted = false
-        val retained = retentionAllowed && frameBytes > 0 && publicationGate.runIfCurrent(handle.token) {
-            cacheAdmissionAttempted = true
-            cache.put(
-                key = handle.expectedKey,
-                value = cached,
-                bytes = frameBytes,
-                protectedKeys = setOfNotNull(lastPublishedKey),
-                maximumByteSize = if (handle.publicationRequest == null) {
-                    prefetchBudget.availablePrefetchBytes + frameBytes
-                } else {
-                    byteBudget
-                },
-            )
-        } == true
+        val retained = retentionAllowed && frameBytes > 0 && CcrTrace.section(
+            CcrTrace.frameLabel(CcrTrace.CACHE_PUT, handle.token, handle.expectedKey),
+        ) {
+            publicationGate.runIfCurrent(handle.token) {
+                cacheAdmissionAttempted = true
+                cache.put(
+                    key = handle.expectedKey,
+                    value = cached,
+                    bytes = frameBytes,
+                    protectedKeys = setOfNotNull(lastPublishedKey),
+                    maximumByteSize = if (handle.publicationRequest == null) {
+                        prefetchBudget.availablePrefetchBytes + frameBytes
+                    } else {
+                        byteBudget
+                    },
+                )
+            } == true
+        }
         completeCachedTextureTarget(
             publicationRequest = handle.publicationRequest,
             onCacheOnly = {
@@ -642,7 +658,9 @@ class EglFrameRenderer(
                 }
             },
             onPublish = { publicationRequest ->
-                drawTextureToWindow(cached)
+                CcrTrace.section(CcrTrace.requestLabel(CcrTrace.DRAW, publicationRequest)) {
+                    drawTextureToWindow(cached)
+                }
                 val event = publish(publicationRequest, timestampNs)
                 if (event.result == PublicationResult.PUBLISHED) lastPublishedKey = handle.expectedKey
                 handle.complete(renderAckFor(event, imageProbe = cached.imageProbe))
@@ -652,17 +670,19 @@ class EglFrameRenderer(
     }
 
     private fun publish(request: FrameRequest, textureTimestampNs: Long): PublicationEvent =
-        publicationGate.publish(
-            request = request,
-            textureTimestampNs = textureTimestampNs,
-            surfaceValid = {
-                !unavailable() &&
-                    display != EGL14.EGL_NO_DISPLAY &&
-                    eglWindowSurface != EGL14.EGL_NO_SURFACE &&
-                    windowSurface?.isValid == true
-            },
-            swap = { EGL14.eglSwapBuffers(display, eglWindowSurface) },
-        )
+        CcrTrace.section(CcrTrace.requestLabel(CcrTrace.PUBLISH, request)) {
+            publicationGate.publish(
+                request = request,
+                textureTimestampNs = textureTimestampNs,
+                surfaceValid = {
+                    !unavailable() &&
+                        display != EGL14.EGL_NO_DISPLAY &&
+                        eglWindowSurface != EGL14.EGL_NO_SURFACE &&
+                        windowSurface?.isValid == true
+                },
+                swap = { EGL14.eglSwapBuffers(display, eglWindowSurface) },
+            )
+        }
 
     private fun renderAckFor(
         event: PublicationEvent,
