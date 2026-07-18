@@ -20,6 +20,8 @@ import com.snowberried.ctcinereviewer.render.VideoViewport
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 class GateActivity : Activity(), ExactFrameSession.Listener {
     data class ObservedResult(val result: FrameResult, val diagnostics: DecoderDiagnostics)
@@ -33,8 +35,12 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
     private val results = LinkedBlockingQueue<ObservedResult>()
     private val statuses = LinkedBlockingQueue<Pair<String, String?>>()
     private val publicationEvents = LinkedBlockingQueue<PublicationEvent>()
+    private val surfaceAvailabilityLock = ReentrantLock()
+    private val surfaceAvailabilityChanged = surfaceAvailabilityLock.newCondition()
     @Volatile private var replacementSurfaceReady: CountDownLatch? = null
     @Volatile private var latestDiagnostics = DecoderDiagnostics()
+    private var surfaceAvailabilityGeneration = 0L
+    private var surfaceAvailable = false
     private var lastRequestedIndex = 0
     private var nextHoldGestureGeneration = 0L
 
@@ -133,6 +139,28 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
     }
 
     fun awaitActorIdle(timeoutMs: Long = 5_000): Boolean = session.awaitActorIdleForTest(timeoutMs)
+    fun surfaceAvailabilityGeneration(): Long = surfaceAvailabilityLock.withLock {
+        surfaceAvailabilityGeneration
+    }
+    fun awaitSurfaceAvailabilityAfter(
+        previousGeneration: Long,
+        expectedAvailable: Boolean,
+        timeoutMs: Long = 5_000,
+    ): Boolean {
+        var remainingNs = TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        return surfaceAvailabilityLock.withLock {
+            while (surfaceAvailabilityGeneration <= previousGeneration || surfaceAvailable != expectedAvailable) {
+                if (remainingNs <= 0L) return@withLock false
+                remainingNs = surfaceAvailabilityChanged.awaitNanos(remainingNs)
+            }
+            true
+        }
+    }
+    fun awaitMainCallbacks(timeoutMs: Long = 5_000): Boolean {
+        val completed = CountDownLatch(1)
+        runOnUiThread(completed::countDown)
+        return completed.await(timeoutMs, TimeUnit.MILLISECONDS)
+    }
     fun armReverseWindowBuildBarrier(): Boolean = session.armReverseWindowBuildBarrierForTest()
     fun awaitReverseWindowBuildBarrierEntry(timeoutMs: Long = 5_000): Boolean =
         session.awaitReverseWindowBuildBarrierEntryForTest(timeoutMs)
@@ -177,6 +205,11 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
     }
 
     override fun onSurfaceAvailabilityChanged(available: Boolean) {
+        surfaceAvailabilityLock.withLock {
+            surfaceAvailabilityGeneration += 1
+            surfaceAvailable = available
+            surfaceAvailabilityChanged.signalAll()
+        }
         if (available) {
             decoderSurfaceReady.countDown()
             replacementSurfaceReady?.countDown()
