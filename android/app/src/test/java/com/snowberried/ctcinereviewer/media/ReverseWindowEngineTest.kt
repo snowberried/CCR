@@ -7,6 +7,19 @@ import org.junit.Test
 
 class ReverseWindowEngineTest {
     @Test
+    fun `foreground requests pause without changing the semantic refill epoch`() {
+        val epochs = ReverseRefillEpochs()
+        val semantic = epochs.semanticEpoch()
+
+        assertEquals(1L, epochs.acceptForeground())
+        assertEquals(2L, epochs.acceptForeground())
+        assertTrue(epochs.isSemanticCurrent(semantic))
+
+        epochs.invalidateSemantic()
+        assertFalse(epochs.isSemanticCurrent(semantic))
+    }
+
+    @Test
     fun `one READY slot consumes publication order then permits refill`() {
         val video = video(12)
         val firstPlan = plan(video, anchorIndex = 10, targetCount = 3)
@@ -30,7 +43,8 @@ class ReverseWindowEngineTest {
             assertEquals(2 - index, hit.remainingTargetCount)
             assertEquals(index == 2, hit.refillRequired)
         }
-        assertEquals(ReverseWindowSlotState.EMPTY, engine.snapshot().state)
+        assertEquals(ReverseWindowSlotState.EXHAUSTED, engine.snapshot().state)
+        assertTrue(engine.snapshot().refillNeeded)
 
         val secondPlan = plan(video, anchorIndex = 7, targetCount = 3)
         assertTrue(
@@ -38,6 +52,8 @@ class ReverseWindowEngineTest {
                 ReverseWindowRefillResult.Ready,
         )
         assertEquals(2L, engine.snapshot().refillCount)
+        assertEquals(2L, engine.snapshot().initialWindowReadyCount)
+        assertEquals(0L, engine.snapshot().rollingAppendRefillCount)
         assertEquals(3L, engine.snapshot().consumedCount)
     }
 
@@ -82,6 +98,38 @@ class ReverseWindowEngineTest {
         assertEquals(9, engine.snapshot().nextTarget?.displayFrameIndex)
         assertEquals(5, engine.snapshot().oldestTarget?.displayFrameIndex)
         assertEquals(2L, engine.snapshot().refillCount)
+        assertEquals(1L, engine.snapshot().initialWindowReadyCount)
+        assertEquals(1L, engine.snapshot().rollingAppendRefillCount)
+        assertFalse(engine.snapshot().refillNeeded)
+    }
+
+    @Test
+    fun `exhausted refill-needed latch survives until a rolling append becomes READY`() {
+        val video = video(16)
+        val initial = plan(video, anchorIndex = 8, targetCount = 2)
+        val engine = readyEngine(initial)
+        initial.publicationTargets.forEach { engine.consume(it.key, IDENTITY) }
+
+        val exhausted = engine.snapshot()
+        assertEquals(ReverseWindowSlotState.EXHAUSTED, exhausted.state)
+        assertEquals(0, exhausted.readyWindowCount)
+        assertEquals(0, exhausted.remainingTargetCount)
+        assertTrue(exhausted.refillNeeded)
+        assertEquals(initial.publicationTargets.last().key, exhausted.oldestTarget)
+        assertEquals(1L, exhausted.initialWindowReadyCount)
+        assertEquals(0L, exhausted.rollingAppendRefillCount)
+
+        val rolling = plan(video, anchorIndex = 6, targetCount = 2)
+        assertTrue(
+            engine.appendRefill(rolling, rolling.publicationTargets.map { it.key }, IDENTITY) is
+                ReverseWindowRefillResult.Ready,
+        )
+        val ready = engine.snapshot()
+        assertEquals(ReverseWindowSlotState.READY, ready.state)
+        assertFalse(ready.refillNeeded)
+        assertEquals(1L, ready.initialWindowReadyCount)
+        assertEquals(1L, ready.rollingAppendRefillCount)
+        assertEquals(2L, ready.refillCount)
     }
 
     @Test

@@ -59,6 +59,16 @@ internal class CodecInputState {
     }
 }
 
+internal class ReverseRefillEpochs {
+    private val foreground = AtomicLong(0)
+    private val semantic = AtomicLong(0)
+
+    fun acceptForeground(): Long = foreground.incrementAndGet()
+    fun invalidateSemantic(): Long = semantic.incrementAndGet()
+    fun semanticEpoch(): Long = semantic.get()
+    fun isSemanticCurrent(epoch: Long): Boolean = semantic.get() == epoch
+}
+
 class ExactFrameSession(
     context: Context,
     private val listener: Listener,
@@ -102,17 +112,23 @@ class ExactFrameSession(
     private data class ReverseRefillTrigger(
         val request: FrameRequest,
         val identity: ReverseWindowIdentity,
-        val foregroundIntentEpoch: Long,
+        val semanticEpoch: Long,
     )
 
     private data class ReverseRefillWork(
-        val trigger: ReverseRefillTrigger,
+        var trigger: ReverseRefillTrigger,
         val plan: ReverseWindowPlan,
         val duplicateCounts: MutableMap<Long, Int>,
         val cachedKeys: MutableSet<FrameKey> = mutableSetOf(),
         var inputEos: Boolean = false,
-        val startedAtMs: Long = SystemClock.elapsedRealtime(),
+        var restartAfterForegroundPreemption: Boolean = false,
+        var startedAtMs: Long = SystemClock.elapsedRealtime(),
     )
+
+    private class ReverseWindowBuildBarrierForTest {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+    }
 
     private val appContext = context.applicationContext
     private val mainHandler = Handler(appContext.mainLooper)
@@ -128,12 +144,15 @@ class ExactFrameSession(
     private val surfaceChanged = AtomicBoolean(false)
     private val surfaceGeneration = AtomicLong(0)
     private val activeReverseGestureGeneration = AtomicLong(NO_GESTURE)
-    private val foregroundIntentEpoch = AtomicLong(0)
+    private val activeReverseStride = AtomicLong(NO_REVERSE_STRIDE)
+    private val reverseRefillEpochs = ReverseRefillEpochs()
     private val closed = AtomicBoolean(false)
     private val requestMessageToken = Any()
     private val reverseRefillMessageToken = Any()
     @Volatile private var beforeDecodeHookForTest: ((FrameRequest) -> Unit)? = null
     @Volatile private var beforePrefetchCacheHookForTest: ((FrameRequest, FrameKey) -> Unit)? = null
+    private val reverseWindowBuildEntryCountForTest = AtomicLong(0)
+    private val reverseWindowBuildBarrierForTest = AtomicReference<ReverseWindowBuildBarrierForTest?>()
     private val renderer: EglFrameRenderer = EglFrameRenderer(publicationGate, { available ->
         onRendererSurfaceChanged(available)
     }, renderMode)
@@ -141,6 +160,7 @@ class ExactFrameSession(
     private fun onRendererSurfaceChanged(available: Boolean) {
         surfaceGeneration.incrementAndGet()
         surfaceChanged.set(true)
+        reverseRefillEpochs.invalidateSemantic()
         reverseWindowEngine.invalidate(ReverseWindowFallbackReason.SURFACE_GENERATION_CHANGED)
         actor.post { renderer.invalidateReverseWindow() }
         if (!available) invalidateForSurfaceLoss()
@@ -183,6 +203,8 @@ class ExactFrameSession(
         currentVideo.set(null)
         forwardSequentialState.invalidate()
         activeReverseGestureGeneration.set(NO_GESTURE)
+        activeReverseStride.set(NO_REVERSE_STRIDE)
+        reverseRefillEpochs.invalidateSemantic()
         reverseWindowEngine.invalidate(ReverseWindowFallbackReason.FILE_GENERATION_CHANGED)
         latestRequest.clear()
         actor.removeCallbacksAndMessages(requestMessageToken)
@@ -280,19 +302,26 @@ class ExactFrameSession(
         } else {
             publicationGate.acceptRequest(video.fileGeneration, frameIndex, video.frames[frameIndex].key)
         } ?: return null
-        val intentEpoch = foregroundIntentEpoch.incrementAndGet()
-        renderer.preemptReverseWindowCacheTarget()
+        val intentEpoch = reverseRefillEpochs.acceptForeground()
         if (
             navigationMode == NavigationMode.HOLD_REVERSE &&
             holdTraversalStride in setOf(-1, -5) &&
             holdGestureGeneration != null
         ) {
+            val reverseStride = requireNotNull(holdTraversalStride)
             val previousGesture = activeReverseGestureGeneration.getAndSet(holdGestureGeneration)
-            if (previousGesture != NO_GESTURE && previousGesture != holdGestureGeneration) {
+            val previousStride = activeReverseStride.getAndSet(reverseStride.toLong())
+            if (
+                previousGesture != holdGestureGeneration ||
+                previousStride != reverseStride.toLong()
+            ) {
+                reverseRefillEpochs.invalidateSemantic()
                 reverseWindowEngine.invalidate(ReverseWindowFallbackReason.GESTURE_EPOCH_CHANGED)
             }
         } else {
             activeReverseGestureGeneration.set(NO_GESTURE)
+            activeReverseStride.set(NO_REVERSE_STRIDE)
+            reverseRefillEpochs.invalidateSemantic()
             reverseWindowEngine.invalidate(
                 when (navigationMode) {
                     NavigationMode.DIRECT_FRAME_SEEK,
@@ -313,6 +342,9 @@ class ExactFrameSession(
                     acceptedElapsedRealtimeNanos = acceptance.elapsedRealtimeNanos,
                 ),
             )) requestCoalescedCount.incrementAndGet()
+            // Publish the foreground intent before waking a cache-only Surface wait. The actor can
+            // then distinguish a resumable same-semantic pause from a real cache failure.
+            renderer.preemptReverseWindowCacheTarget()
             actor.removeCallbacksAndMessages(requestMessageToken)
             actor.postAtTime(
                 {
@@ -341,6 +373,8 @@ class ExactFrameSession(
         latestRequest.clear()
         forwardSequentialState.invalidate()
         activeReverseGestureGeneration.set(NO_GESTURE)
+        activeReverseStride.set(NO_REVERSE_STRIDE)
+        reverseRefillEpochs.invalidateSemantic()
         reverseWindowEngine.invalidate(ReverseWindowFallbackReason.CANCELLED)
         actor.removeCallbacksAndMessages(requestMessageToken)
         actor.post { renderer.invalidateReverseWindow() }
@@ -349,6 +383,7 @@ class ExactFrameSession(
     }
 
     fun trimMemory(level: Int) {
+        reverseRefillEpochs.invalidateSemantic()
         reverseWindowEngine.invalidate(ReverseWindowFallbackReason.CACHE_ADMISSION_FAILED)
         actor.post { renderer.invalidateReverseWindow() }
         renderer.trimCache(level)
@@ -356,6 +391,8 @@ class ExactFrameSession(
 
     internal fun endHoldTraversal(gestureGeneration: Long) {
         if (activeReverseGestureGeneration.compareAndSet(gestureGeneration, NO_GESTURE)) {
+            activeReverseStride.set(NO_REVERSE_STRIDE)
+            reverseRefillEpochs.invalidateSemantic()
             reverseWindowEngine.invalidate(ReverseWindowFallbackReason.CANCELLED)
             actor.post { renderer.invalidateReverseWindow() }
         }
@@ -377,6 +414,31 @@ class ExactFrameSession(
         beforePrefetchCacheHookForTest = hook
     }
 
+    internal fun reverseWindowBuildEntryCountForTest(): Long =
+        reverseWindowBuildEntryCountForTest.get()
+
+    internal fun armReverseWindowBuildBarrierForTest(): Boolean =
+        reverseWindowBuildBarrierForTest.compareAndSet(null, ReverseWindowBuildBarrierForTest())
+
+    internal fun awaitReverseWindowBuildBarrierEntryForTest(timeoutMs: Long = 5_000): Boolean =
+        reverseWindowBuildBarrierForTest.get()?.entered?.await(timeoutMs, TimeUnit.MILLISECONDS) == true
+
+    internal fun releaseReverseWindowBuildBarrierForTest() {
+        reverseWindowBuildBarrierForTest.getAndSet(null)?.release?.countDown()
+    }
+
+    private fun recordReverseWindowBuildEntryForTest() {
+        reverseWindowBuildEntryCountForTest.incrementAndGet()
+        reverseWindowBuildBarrierForTest.get()?.let { barrier ->
+            barrier.entered.countDown()
+            if (!barrier.release.await(REVERSE_BUILD_TEST_BARRIER_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                reverseWindowBuildBarrierForTest.compareAndSet(barrier, null)
+                error("REVERSE_WINDOW_BUILD_TEST_BARRIER_TIMEOUT")
+            }
+            reverseWindowBuildBarrierForTest.compareAndSet(barrier, null)
+        }
+    }
+
     internal fun awaitActorIdleForTest(timeoutMs: Long = 5_000): Boolean {
         val latch = CountDownLatch(1)
         actor.post(latch::countDown)
@@ -396,11 +458,14 @@ class ExactFrameSession(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        releaseReverseWindowBuildBarrierForTest()
         suspendPrefetch()
         renderer.cancelImmediately()
         publicationGate.tryInvalidateRequest()
         forwardSequentialState.invalidate()
         activeReverseGestureGeneration.set(NO_GESTURE)
+        activeReverseStride.set(NO_REVERSE_STRIDE)
+        reverseRefillEpochs.invalidateSemantic()
         reverseWindowEngine.invalidate(ReverseWindowFallbackReason.CANCELLED)
         latestRequest.clear()
         actor.removeCallbacksAndMessages(requestMessageToken)
@@ -495,7 +560,7 @@ class ExactFrameSession(
                 video.frames[targetIndex].key,
             ) ?: return
             val firstRequest = firstAcceptance.request
-            val intentEpoch = foregroundIntentEpoch.incrementAndGet()
+            val intentEpoch = reverseRefillEpochs.acceptForeground()
             decodeInternal(
                 DecodeWork(
                     firstRequest,
@@ -542,11 +607,11 @@ class ExactFrameSession(
             report(FrameResult.DiscardedStale(request, "after-test-hook"))
             return
         }
+        val reverseWindowAtAcceptance = reverseWindowEngine.snapshot()
         val reverseRefillWasExpected = work.navigationMode == NavigationMode.HOLD_REVERSE &&
-            (reverseRefillTrigger != null || reverseWindowEngine.snapshot().state == ReverseWindowSlotState.READY)
-        if (reverseRefillTrigger?.foregroundIntentEpoch != work.foregroundIntentEpoch) {
-            cancelReverseRefillState()
-        }
+            (reverseRefillTrigger != null || reverseRefillWork != null ||
+                reverseWindowAtAcceptance.state == ReverseWindowSlotState.READY ||
+                reverseWindowAtAcceptance.refillNeeded)
         var current = resources
         if (current == null || current.fileGeneration != request.token.fileGeneration) {
             forwardSequentialState.invalidate()
@@ -628,7 +693,7 @@ class ExactFrameSession(
                         ),
                     )
                     if (reverseWindowConsumed && reverseIdentity != null) {
-                        scheduleReverseWindowRefill(current, request, reverseIdentity, work.foregroundIntentEpoch)
+                        scheduleReverseWindowRefill(current, request, reverseIdentity)
                     }
                 }
                 EglFrameRenderer.AckStatus.CACHED -> {
@@ -648,6 +713,11 @@ class ExactFrameSession(
         }
         if (reverseWindowConsumed) {
             invalidateReverseWindow(ReverseWindowFallbackReason.READY_KEYS_MISMATCH)
+        }
+        if (reverseIdentity != null && (reverseRefillTrigger != null || reverseRefillWork != null)) {
+            // A cache miss makes the foreground path touch/seek the shared codec. A paused rolling
+            // decode can no longer be resumed from its cursor, so only this fallback discards it.
+            invalidateReverseWindow(ReverseWindowFallbackReason.WINDOW_BUILD_FAILED)
         }
         val reverseRefillStallStartedNanos = work.acceptedElapsedRealtimeNanos.takeIf {
             reverseIdentity != null && reverseRefillWasExpected
@@ -863,6 +933,7 @@ class ExactFrameSession(
                                     CcrTrace.section(
                                         CcrTrace.requestLabel(CcrTrace.REVERSE_WINDOW_BUILD, request),
                                     ) {
+                                        recordReverseWindowBuildEntryForTest()
                                         cacheReverseWindowOutput(
                                             current = current,
                                             request = request,
@@ -938,6 +1009,7 @@ class ExactFrameSession(
                                 val cacheAck = CcrTrace.section(
                                     CcrTrace.requestLabel(CcrTrace.REVERSE_WINDOW_BUILD, request),
                                 ) {
+                                    recordReverseWindowBuildEntryForTest()
                                     cacheReverseWindowOutput(
                                         current = current,
                                         request = request,
@@ -1048,7 +1120,7 @@ class ExactFrameSession(
                                         ),
                                     )
                                     if (reverseWindowInstalled && reverseIdentity != null) {
-                                        scheduleReverseWindowRefill(current, request, reverseIdentity, work.foregroundIntentEpoch)
+                                        scheduleReverseWindowRefill(current, request, reverseIdentity)
                                     }
                                     if (prefetch?.direction == DirectionalPrefetchDirection.FORWARD) {
                                         prefetchForward(
@@ -1165,7 +1237,11 @@ class ExactFrameSession(
             renderer.invalidateReverseWindow(preserveCachedKey)
             return null
         }
-        if (activeReverseGestureGeneration.get() != gesture) {
+        val reverseStride = requireNotNull(stride)
+        if (
+            activeReverseGestureGeneration.get() != gesture ||
+            activeReverseStride.get() != reverseStride.toLong()
+        ) {
             invalidateReverseWindow(ReverseWindowFallbackReason.GESTURE_EPOCH_CHANGED)
             return null
         }
@@ -1335,14 +1411,13 @@ class ExactFrameSession(
         outputIndex: Int,
         identity: ReverseWindowIdentity,
         requireCurrentRequest: Boolean = true,
-        foregroundIntentEpoch: Long? = null,
+        semanticEpoch: Long? = null,
     ): EglFrameRenderer.RenderAck {
         val currentEnough = if (requireCurrentRequest) {
             isReverseWindowBuildCurrent(current, request, identity)
         } else {
             isReverseWindowIdentityCurrent(current, identity) &&
-                foregroundIntentEpoch == this.foregroundIntentEpoch.get() &&
-                !latestRequest.hasPending()
+                semanticEpoch?.let(reverseRefillEpochs::isSemanticCurrent) == true
         }
         if (!currentEnough) {
             current.codec.releaseOutputBuffer(outputIndex, false)
@@ -1356,8 +1431,7 @@ class ExactFrameSession(
                     isReverseWindowBuildCurrent(current, request, identity)
                 } else {
                     isReverseWindowIdentityCurrent(current, identity) &&
-                        foregroundIntentEpoch == this.foregroundIntentEpoch.get() &&
-                        !latestRequest.hasPending()
+                        semanticEpoch?.let(reverseRefillEpochs::isSemanticCurrent) == true
                 }
             },
             kind = EglFrameRenderer.CacheTargetKind.REVERSE_WINDOW,
@@ -1385,7 +1459,8 @@ class ExactFrameSession(
         work: DecodeWork,
         identity: ReverseWindowIdentity,
     ): Boolean = isReverseWindowBuildCurrent(current, work.request, identity) &&
-        work.holdGestureGeneration == identity.gestureEpoch
+        work.holdGestureGeneration == identity.gestureEpoch &&
+        work.holdTraversalStride?.toLong() == activeReverseStride.get()
 
     private fun isReverseWindowBuildCurrent(
         current: DecoderResources,
@@ -1407,6 +1482,7 @@ class ExactFrameSession(
         activeReverseGestureGeneration.get() == identity.gestureEpoch
 
     private fun invalidateReverseWindow(reason: ReverseWindowFallbackReason) {
+        reverseRefillEpochs.invalidateSemantic()
         cancelReverseRefillState()
         reverseWindowEngine.invalidate(reason)
         renderer.invalidateReverseWindow()
@@ -1416,11 +1492,20 @@ class ExactFrameSession(
         current: DecoderResources,
         request: FrameRequest,
         identity: ReverseWindowIdentity,
-        intentEpoch: Long,
     ) {
         if (!isReverseWindowIdentityCurrent(current, identity)) return
-        if (foregroundIntentEpoch.get() != intentEpoch) return
-        reverseRefillTrigger = ReverseRefillTrigger(request, identity, intentEpoch)
+        val trigger = ReverseRefillTrigger(request, identity, reverseRefillEpochs.semanticEpoch())
+        val activeWork = reverseRefillWork
+        if (activeWork != null) {
+            if (activeWork.trigger.identity != identity ||
+                activeWork.trigger.semanticEpoch != trigger.semanticEpoch
+            ) {
+                cancelReverseRefillState()
+            } else {
+                activeWork.trigger = trigger
+            }
+        }
+        reverseRefillTrigger = trigger
         postReverseRefillSlice()
     }
 
@@ -1443,12 +1528,13 @@ class ExactFrameSession(
             return
         }
         val trigger = reverseRefillTrigger ?: return
-        if (!isReverseWindowIdentityCurrent(current, trigger.identity)) {
+        if (!isReverseRefillSemanticCurrent(current, trigger)) {
             cancelReverseRefillState()
             renderer.invalidateReverseWindow()
             return
         }
         if (!isReverseRefillForegroundIdle(trigger)) {
+            reverseRefillWork?.startedAtMs = SystemClock.elapsedRealtime()
             postReverseRefillSlice(REFILL_YIELD_DELAY_MS)
             return
         }
@@ -1459,7 +1545,7 @@ class ExactFrameSession(
             val freeSlots = window.targetCapacity - window.remainingTargetCount
             val anchorKey = window.oldestTarget
             if (
-                window.state != ReverseWindowSlotState.READY ||
+                window.state !in setOf(ReverseWindowSlotState.READY, ReverseWindowSlotState.EXHAUSTED) ||
                 anchorKey == null ||
                 window.signedStride !in setOf(-1, -5) ||
                 freeSlots < REFILL_MIN_FREE_SLOTS
@@ -1513,8 +1599,26 @@ class ExactFrameSession(
             return
         }
         if (!isReverseRefillForegroundIdle(refill.trigger)) {
+            refill.startedAtMs = SystemClock.elapsedRealtime()
             postReverseRefillSlice(REFILL_YIELD_DELAY_MS)
             return
+        }
+        if (refill.restartAfterForegroundPreemption) {
+            refill.duplicateCounts.clear()
+            refill.duplicateCounts.putAll(
+                prepareExactSeek(
+                    current = current,
+                    request = refill.trigger.request,
+                    target = refill.plan.decodeTargets.first(),
+                    startSample = refill.plan.previousSyncSample,
+                ),
+            )
+            refill.inputEos = false
+            refill.restartAfterForegroundPreemption = false
+            refill.startedAtMs = SystemClock.elapsedRealtime()
+            diagnostics = diagnostics.copy(
+                reverseWindowSeekCount = diagnostics.reverseWindowSeekCount + 1,
+            )
         }
 
         CcrTrace.section(CcrTrace.requestLabel(CcrTrace.REVERSE_WINDOW_REFILL, refill.trigger.request)) {
@@ -1581,6 +1685,8 @@ class ExactFrameSession(
                     val newestTargetIndex = refill.plan.decodeTargets.last().key.displayFrameIndex
                     when {
                         outputFrame == null -> current.codec.releaseOutputBuffer(outputIndex, false)
+                        outputFrame.key in refill.cachedKeys ->
+                            current.codec.releaseOutputBuffer(outputIndex, false)
                         outputFrame.key in refill.plan.publicationTargets.map { it.key } -> {
                             val ack = cacheReverseWindowOutput(
                                 current = current,
@@ -1589,11 +1695,15 @@ class ExactFrameSession(
                                 outputIndex = outputIndex,
                                 identity = refill.trigger.identity,
                                 requireCurrentRequest = false,
-                                foregroundIntentEpoch = refill.trigger.foregroundIntentEpoch,
+                                semanticEpoch = refill.trigger.semanticEpoch,
                             )
                             if (ack.status != EglFrameRenderer.AckStatus.CACHED) {
-                                if (!isReverseRefillForegroundIdle(refill.trigger)) {
-                                    cancelReverseRefillState()
+                                if (
+                                    isReverseRefillSemanticCurrent(current, refill.trigger) &&
+                                    latestRequest.hasPending()
+                                ) {
+                                    refill.restartAfterForegroundPreemption = true
+                                    refill.startedAtMs = SystemClock.elapsedRealtime()
                                     return@section
                                 }
                                 invalidateReverseWindow(ReverseWindowFallbackReason.CACHE_ADMISSION_FAILED)
@@ -1622,6 +1732,10 @@ class ExactFrameSession(
         }
 
         if (reverseRefillWork !== refill) return
+        if (refill.restartAfterForegroundPreemption) {
+            postReverseRefillSlice(REFILL_YIELD_DELAY_MS)
+            return
+        }
         if (refill.cachedKeys.size == refill.plan.publicationTargets.size) {
             val remainingKeys = reverseWindowEngine.snapshot().remainingTargetKeys.toSet()
             val refillKeys = refill.plan.publicationTargets.map { it.key }.toSet()
@@ -1655,8 +1769,16 @@ class ExactFrameSession(
         reverseRefillTrigger = null
     }
 
-    private fun isReverseRefillForegroundIdle(trigger: ReverseRefillTrigger): Boolean =
-        foregroundIntentEpoch.get() == trigger.foregroundIntentEpoch && !latestRequest.hasPending()
+    private fun isReverseRefillSemanticCurrent(
+        current: DecoderResources,
+        trigger: ReverseRefillTrigger,
+    ): Boolean = isReverseWindowIdentityCurrent(current, trigger.identity) &&
+        reverseRefillEpochs.isSemanticCurrent(trigger.semanticEpoch)
+
+    private fun isReverseRefillForegroundIdle(trigger: ReverseRefillTrigger): Boolean {
+        val current = resources ?: return false
+        return isReverseRefillSemanticCurrent(current, trigger) && !latestRequest.hasPending()
+    }
 
     private fun recordReverseWindowRefillStall(startedNanos: Long) {
         val elapsedUs = ((SystemClock.elapsedRealtimeNanos() - startedNanos) / 1_000L).coerceAtLeast(0)
@@ -1942,8 +2064,7 @@ class ExactFrameSession(
 
     private fun recreateCodec(current: DecoderResources): DecoderResources {
         forwardSequentialState.invalidate()
-        reverseWindowEngine.invalidate(ReverseWindowFallbackReason.CODEC_ERROR)
-        renderer.invalidateReverseWindow()
+        invalidateReverseWindow(ReverseWindowFallbackReason.CODEC_ERROR)
         releaseCodec(current.codec)
         val surface = renderer.awaitDecoderSurface(3_000) ?: error("RENDER_SURFACE_NOT_READY")
         current.codec = createCodec(current.codecInfo, current.format, surface)
@@ -2082,6 +2203,9 @@ class ExactFrameSession(
     private fun closeResources() {
         forwardSequentialState.invalidate()
         activeReverseGestureGeneration.set(NO_GESTURE)
+        activeReverseStride.set(NO_REVERSE_STRIDE)
+        reverseRefillEpochs.invalidateSemantic()
+        cancelReverseRefillState()
         reverseWindowEngine.invalidate(ReverseWindowFallbackReason.FILE_GENERATION_CHANGED)
         currentVideo.set(null)
         resources?.let {
@@ -2097,6 +2221,9 @@ class ExactFrameSession(
         suspendPrefetch()
         forwardSequentialState.invalidate()
         activeReverseGestureGeneration.set(NO_GESTURE)
+        activeReverseStride.set(NO_REVERSE_STRIDE)
+        reverseRefillEpochs.invalidateSemantic()
+        cancelReverseRefillState()
         reverseWindowEngine.invalidate(ReverseWindowFallbackReason.SURFACE_GENERATION_CHANGED)
         publicationGate.invalidateRequest()
         latestRequest.clear()
@@ -2154,6 +2281,9 @@ class ExactFrameSession(
             reverseWindowReadyCount = reverseWindow.readyWindowCount,
             reverseWindowHitCount = prefetch.reverseWindowHitCount,
             reverseWindowRefillCount = reverseWindow.refillCount,
+            reverseWindowInitialReadyCount = reverseWindow.initialWindowReadyCount,
+            reverseWindowRollingAppendRefillCount = reverseWindow.rollingAppendRefillCount,
+            reverseWindowRefillNeeded = reverseWindow.refillNeeded,
             reverseWindowConsumedCount = reverseWindow.consumedCount,
             reverseWindowInvalidationCount = reverseWindow.invalidationCount,
             requestCoalescedCount = requestCoalescedCount.get(),
@@ -2208,11 +2338,13 @@ class ExactFrameSession(
 
     companion object {
         private const val NO_GESTURE = Long.MIN_VALUE
+        private const val NO_REVERSE_STRIDE = Long.MIN_VALUE
         private const val REFILL_MIN_FREE_SLOTS = 2
         private const val REFILL_BATCH_TARGETS = 2
         private const val REFILL_YIELD_DELAY_MS = 1L
         private const val REFILL_TIMEOUT_MS = 5_000L
         private const val REFILL_STALL_LIMIT_US = 250_000L
+        private const val REVERSE_BUILD_TEST_BARRIER_TIMEOUT_MS = 10_000L
         private val UNSUPPORTED_CODES = setOf(
             "DOLBY_VISION_UNSUPPORTED",
             "CODEC_UNSUPPORTED",

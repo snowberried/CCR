@@ -3,6 +3,7 @@ package com.snowberried.ctcinereviewer.media
 internal enum class ReverseWindowSlotState {
     EMPTY,
     READY,
+    EXHAUSTED,
 }
 
 internal data class ReverseWindowSnapshot(
@@ -14,7 +15,11 @@ internal data class ReverseWindowSnapshot(
     val oldestTarget: FrameKey?,
     val signedStride: Int?,
     val targetCapacity: Int,
+    val refillNeeded: Boolean,
+    /** Compatibility total: initialWindowReadyCount + rollingAppendRefillCount. */
     val refillCount: Long,
+    val initialWindowReadyCount: Long,
+    val rollingAppendRefillCount: Long,
     val consumedCount: Long,
     val invalidationCount: Long,
     val lastFallbackReason: ReverseWindowFallbackReason?,
@@ -50,7 +55,8 @@ internal class ReverseWindowEngine {
     )
 
     private var readyWindow: ReadyWindow? = null
-    private var refillCount = 0L
+    private var initialWindowReadyCount = 0L
+    private var rollingAppendRefillCount = 0L
     private var consumedCount = 0L
     private var invalidationCount = 0L
     private var lastFallbackReason: ReverseWindowFallbackReason? = null
@@ -65,7 +71,7 @@ internal class ReverseWindowEngine {
             invalidateInternal(reason)
             return ReverseWindowRefillResult.Fallback(reason)
         }
-        if (readyWindow != null) {
+        if (readyWindow?.remainingTargets?.isNotEmpty() == true) {
             return refillFallback(ReverseWindowFallbackReason.WINDOW_ALREADY_READY)
         }
 
@@ -75,7 +81,7 @@ internal class ReverseWindowEngine {
         }
 
         readyWindow = ReadyWindow(plan, ArrayDeque(plan.publicationTargets))
-        refillCount += 1
+        initialWindowReadyCount += 1
         lastFallbackReason = null
         return ReverseWindowRefillResult.Ready(plan, expectedKeys.size)
     }
@@ -91,7 +97,8 @@ internal class ReverseWindowEngine {
             return consumeFallback(reason, invalidate = true)
         }
 
-        val next = window.remainingTargets.first()
+        val next = window.remainingTargets.firstOrNull()
+            ?: return consumeFallback(ReverseWindowFallbackReason.WINDOW_NOT_READY, invalidate = false)
         if (expectedKey != next.key) {
             val reason = when {
                 expectedKey.displayFrameIndex == next.key.displayFrameIndex ||
@@ -106,7 +113,6 @@ internal class ReverseWindowEngine {
         window.remainingTargets.removeFirst()
         consumedCount += 1
         val remaining = window.remainingTargets.size
-        if (remaining == 0) readyWindow = null
         lastFallbackReason = null
         return ReverseWindowConsumeResult.Hit(
             target = next,
@@ -131,8 +137,10 @@ internal class ReverseWindowEngine {
             return refillFallback(reason)
         }
         val expectedKeys = plan.publicationTargets.map { it.key }
+        val appendAnchor = window.remainingTargets.lastOrNull()?.key
+            ?: window.plan.publicationTargets.lastOrNull()?.key
         val valid = plan.signedStride == window.plan.signedStride &&
-            plan.anchorKey == window.remainingTargets.lastOrNull()?.key &&
+            plan.anchorKey == appendAnchor &&
             readyKeys.size == expectedKeys.size &&
             readyKeys.toSet() == expectedKeys.toSet() &&
             window.remainingTargets.none { it.key in expectedKeys } &&
@@ -140,7 +148,7 @@ internal class ReverseWindowEngine {
         if (!valid) return refillFallback(ReverseWindowFallbackReason.READY_KEYS_MISMATCH)
 
         plan.publicationTargets.forEach(window.remainingTargets::addLast)
-        refillCount += 1
+        rollingAppendRefillCount += 1
         lastFallbackReason = null
         return ReverseWindowRefillResult.Ready(plan, expectedKeys.size)
     }
@@ -153,16 +161,25 @@ internal class ReverseWindowEngine {
     @Synchronized
     fun snapshot(): ReverseWindowSnapshot {
         val window = readyWindow
+        val remainingCount = window?.remainingTargets?.size ?: 0
         return ReverseWindowSnapshot(
-            state = if (window == null) ReverseWindowSlotState.EMPTY else ReverseWindowSlotState.READY,
-            readyWindowCount = if (window == null) 0 else 1,
-            remainingTargetCount = window?.remainingTargets?.size ?: 0,
+            state = when {
+                window == null -> ReverseWindowSlotState.EMPTY
+                remainingCount == 0 -> ReverseWindowSlotState.EXHAUSTED
+                else -> ReverseWindowSlotState.READY
+            },
+            readyWindowCount = if (remainingCount == 0) 0 else 1,
+            remainingTargetCount = remainingCount,
             remainingTargetKeys = window?.remainingTargets?.map { it.key }.orEmpty(),
             nextTarget = window?.remainingTargets?.firstOrNull()?.key,
-            oldestTarget = window?.remainingTargets?.lastOrNull()?.key,
+            oldestTarget = window?.remainingTargets?.lastOrNull()?.key
+                ?: window?.plan?.publicationTargets?.lastOrNull()?.key,
             signedStride = window?.plan?.signedStride,
             targetCapacity = window?.plan?.capacity?.targetCount ?: 0,
-            refillCount = refillCount,
+            refillNeeded = window != null && remainingCount == 0,
+            refillCount = initialWindowReadyCount + rollingAppendRefillCount,
+            initialWindowReadyCount = initialWindowReadyCount,
+            rollingAppendRefillCount = rollingAppendRefillCount,
             consumedCount = consumedCount,
             invalidationCount = invalidationCount,
             lastFallbackReason = lastFallbackReason,

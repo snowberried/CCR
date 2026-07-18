@@ -133,6 +133,11 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
     }
 
     fun awaitActorIdle(timeoutMs: Long = 5_000): Boolean = session.awaitActorIdleForTest(timeoutMs)
+    fun armReverseWindowBuildBarrier(): Boolean = session.armReverseWindowBuildBarrierForTest()
+    fun awaitReverseWindowBuildBarrierEntry(timeoutMs: Long = 5_000): Boolean =
+        session.awaitReverseWindowBuildBarrierEntryForTest(timeoutMs)
+    fun releaseReverseWindowBuildBarrier() = session.releaseReverseWindowBuildBarrierForTest()
+    fun reverseWindowBuildEntryCount(): Long = session.reverseWindowBuildEntryCountForTest()
     fun diagnosticsSnapshot(): DecoderDiagnostics = latestDiagnostics
     fun configureValidationDisplay(brightness: Float) {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

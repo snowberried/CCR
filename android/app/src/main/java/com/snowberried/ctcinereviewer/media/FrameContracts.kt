@@ -208,7 +208,11 @@ data class DecoderDiagnostics(
     val reverseWindowFallbackCount: Long = 0,
     val reverseWindowSeekCount: Long = 0,
     val reverseWindowCachedFrameCount: Long = 0,
+    /** Compatibility total: initial READY installations plus rolling append refills. */
     val reverseWindowRefillCount: Long = 0,
+    val reverseWindowInitialReadyCount: Long = 0,
+    val reverseWindowRollingAppendRefillCount: Long = 0,
+    val reverseWindowRefillNeeded: Boolean = false,
     val reverseWindowRefillStallCount: Long = 0,
     val reverseWindowRefillStallMaxUs: Long = 0,
     val reverseWindowRefillStallOver250MsCount: Long = 0,
