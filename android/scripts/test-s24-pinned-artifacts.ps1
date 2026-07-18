@@ -1136,9 +1136,13 @@ try {
       'Alpha4Reverse', 'hold1080MinusOneAlpha4Baseline', 'hold1080MinusFiveAlpha4Baseline',
       'MEASURED_NOT_GATED', 'Invoke-CcrAlpha4TimedInstrumentation', 'requestStageTraceMetrics',
       '$Resume', 'COMPLETE_THREE_ITERATIONS_ONLY', 'Assert-CcrPerfFileIdentity',
-      'Save-CcrPerfFailureArtifacts', 'failureArtifacts', 'failureCheckpoint', 'failedAttemptSuccessCounted'
+      'Save-CcrPerfFailureArtifacts', 'failureArtifacts', 'failureCheckpoint', 'failedAttemptSuccessCounted',
+      'RunPrefix = "a4-r1"', 'RunPrefix = "a4-r5"'
     )) {
       if (-not $perfSource.Contains($contract)) { throw "reverse baseline contract missing: $contract" }
+    }
+    foreach ($forbiddenPrefix in @('RunPrefix = "alpha4-reverse-minus1"', 'RunPrefix = "alpha4-reverse-minus5"')) {
+      if ($perfSource.Contains($forbiddenPrefix)) { throw "reverse runId prefix exceeds macrobenchmark limit" }
     }
     foreach ($forbidden in @('gradlew', 'assemble', 'bundleInternal', 'connectedAndroidTest')) {
       if ($randomSource -match [regex]::Escape($forbidden) -or $combinedSource -match [regex]::Escape($forbidden) -or
