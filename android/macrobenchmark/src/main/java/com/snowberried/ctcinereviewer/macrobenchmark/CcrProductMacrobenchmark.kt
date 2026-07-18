@@ -27,6 +27,8 @@ import org.json.JSONObject
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
+import java.security.MessageDigest
 import kotlin.math.ceil
 
 @LargeTest
@@ -260,11 +262,16 @@ class CcrProductMacrobenchmark {
                 "ccr.published_fps_milli" to "ccrPublishedFpsMilli",
                 "ccr.publication_count" to "ccrPublicationCount",
                 "ccr.active_duration_ms" to "ccrActiveDurationMs",
+                "ccr.measurement_target_ms" to "ccrMeasurementTargetMs",
                 "ccr.requested_displayed_lag_p50" to "ccrRawLagP50",
                 "ccr.requested_displayed_lag_p95" to "ccrRawLagP95",
                 "ccr.raw_lag_max" to "ccrRawLagMax",
                 "ccr.outstanding_foreground_target_depth_max" to "ccrOutstandingForegroundTargetDepthMax",
                 "ccr.accepted_target_count" to "ccrAcceptedTargetCount",
+                "ccr.accepted_target_sequence_count" to "ccrAcceptedTargetSequenceCount",
+                "ccr.raw_lag_sample_count" to "ccrRawLagSampleCount",
+                "ccr.outstanding_foreground_target_sample_count" to
+                    "ccrOutstandingForegroundTargetSampleCount",
                 "ccr.release_after_accepted_target_count" to "ccrReleaseAfterAcceptedTargetCount",
                 "ccr.hold_prefetch_started" to "ccrHoldPrefetchStarted",
                 "ccr.hold_prefetch_completed" to "ccrHoldPrefetchCompleted",
@@ -276,6 +283,8 @@ class CcrProductMacrobenchmark {
                 "ccr.runtime_source_hash53" to "ccrRuntimeSourceHash53",
                 "ccr.harness_source_hash53" to "ccrHarnessSourceHash53",
                 "ccr.runtime_inputs_tree_hash53" to "ccrRuntimeInputsTreeHash53",
+                "ccr.app_apk_hash53" to "ccrAppApkHash53",
+                "ccr.test_apk_hash53" to "ccrTestApkHash53",
             )
             val COUNTERS = METRIC_NAMES.keys
         }
@@ -286,6 +295,8 @@ class CcrProductMacrobenchmark {
         val runtimeSourceSha: String,
         val harnessSourceSha: String,
         val runtimeInputsTreeSha256: String,
+        val appApkSha256: String,
+        val testApkSha256: String,
         val artifactSetRevision: Int,
     )
 
@@ -392,10 +403,10 @@ class CcrProductMacrobenchmark {
     fun hold1080PlusFive() = representativeFixture(SCENARIO_HOLD_1080_PLUS_FIVE)
 
     @Test
-    fun hold1080MinusOneAlpha4Baseline() = representativeFixture(SCENARIO_HOLD_1080_MINUS_ONE)
+    fun hold1080MinusOne() = representativeFixture(SCENARIO_HOLD_1080_MINUS_ONE)
 
     @Test
-    fun hold1080MinusFiveAlpha4Baseline() = representativeFixture(SCENARIO_HOLD_1080_MINUS_FIVE)
+    fun hold1080MinusFive() = representativeFixture(SCENARIO_HOLD_1080_MINUS_FIVE)
 
     @Test
     fun reverse1080() = representativeFixture(SCENARIO_REVERSE_1080)
@@ -447,7 +458,7 @@ class CcrProductMacrobenchmark {
         lateinit var traceIdentity: String
         val traceIdentities = mutableSetOf<String>()
         val iterationEvidence = mutableListOf<IterationEvidence>()
-        val requestStageMetrics = if (scenario in ALPHA4_REVERSE_BASELINE_SCENARIOS) {
+        val requestStageMetrics = if (scenario in REVERSE_HOLD_SCENARIOS) {
             listOf(CcrRequestStageMetric())
         } else {
             emptyList()
@@ -518,6 +529,8 @@ class CcrProductMacrobenchmark {
         putExtra(EXTRA_RUNTIME_SOURCE_SHA, harnessIdentity.runtimeSourceSha)
         putExtra(EXTRA_HARNESS_SOURCE_SHA, harnessIdentity.harnessSourceSha)
         putExtra(EXTRA_RUNTIME_INPUTS_TREE_SHA256, harnessIdentity.runtimeInputsTreeSha256)
+        putExtra(EXTRA_APP_APK_SHA256, harnessIdentity.appApkSha256)
+        putExtra(EXTRA_TEST_APK_SHA256, harnessIdentity.testApkSha256)
         putExtra(EXTRA_TRACE_IDENTITY, traceIdentity)
         putExtra(EXTRA_RUN_ITERATION, runIteration)
         putExtra(EXTRA_ARTIFACT_SET_REVISION, harnessIdentity.artifactSetRevision)
@@ -545,6 +558,9 @@ class CcrProductMacrobenchmark {
             "|runtimeSourceSha=${harnessIdentity.runtimeSourceSha}",
             "|harnessSourceSha=${harnessIdentity.harnessSourceSha}",
             "|runtimeInputsTreeSha256=${harnessIdentity.runtimeInputsTreeSha256}",
+            "|appApkSha256=${harnessIdentity.appApkSha256}",
+            "|testApkSha256=${harnessIdentity.testApkSha256}",
+            "|status=PASS",
             "|runId=${harnessIdentity.runId}",
             "|traceIdentity=$expectedTraceIdentity",
             "|runIteration=$expectedIteration",
@@ -556,16 +572,32 @@ class CcrProductMacrobenchmark {
             val requiredCounters = listOf(
                 "|published=",
                 "|fps=",
+                "|measurementTargetMs=",
                 "|intervalP50Us=",
                 "|lagMax=",
                 "|outstandingForegroundTargetDepthMax=",
                 "|acceptedTargetCount=",
+                "|acceptedTargetSequenceCount=",
+                "|acceptedTargetSequenceSha256=",
+                "|rawLagSampleCount=",
+                "|outstandingForegroundTargetSampleCount=",
                 "|releaseAfterAcceptedTargetCount=",
                 "|holdPrefetchStarted=",
                 "|holdPrefetchCompleted=",
                 "|codecComponent=",
                 "|cacheBudgetBytes=",
                 "|cacheBytes=",
+                "|peakCacheBytes=",
+                "|reverseWindowRefillStallCount=",
+                "|reverseWindowRefillStallMaxUs=",
+                "|reverseWindowRefillStallOver250MsCount=",
+                "|reverseWindowBuildCount=",
+                "|reverseWindowHitCount=",
+                "|reverseWindowSeekCount=",
+                "|reverseWindowRefillCount=",
+                "|reverseWindowInitialReadyCount=",
+                "|reverseWindowRollingAppendRefillCount=",
+                "|reverseWindowRefillNeeded=",
                 "|textureDoubleReleaseCount=",
                 "|staleBeforeSwapCount=",
                 "|surfaceInvalidCount=",
@@ -610,19 +642,54 @@ class CcrProductMacrobenchmark {
             check(required("runtimeInputsTreeSha256") == harnessIdentity.runtimeInputsTreeSha256) {
                 "Report runtime inputs tree mismatch"
             }
+            check(required("appApkSha256") == harnessIdentity.appApkSha256) {
+                "Report app APK mismatch"
+            }
+            check(required("testApkSha256") == harnessIdentity.testApkSha256) {
+                "Report test APK mismatch"
+            }
+            check(required("status") == "PASS") { "Report artifact identity did not pass" }
             check(required("traceIdentity") == item.traceIdentity) { "Report trace identity mismatch" }
             check(required("runIteration").toInt() == item.runIteration) { "Report iteration mismatch" }
             check(required("counterComplete").toBooleanStrict()) { "Report counters incomplete" }
             check(required("codecComponent") != "UNKNOWN") { "Decoder component unavailable" }
             check(required("hardwareAccelerated").toBooleanStrict()) { "Software decoder forbidden" }
+            val activeMs = required("activeMs").toLong()
+            val measurementTargetMs = required("measurementTargetMs").toLong()
+            if (scenario in FIXED_HORIZON_HOLD_SCENARIOS) {
+                check(measurementTargetMs == EXPECTED_HOLD_ACTIVE_MS) {
+                    "Hold measurement target is not the fixed 30-second horizon"
+                }
+                check(activeMs in measurementTargetMs..(measurementTargetMs + HOLD_HORIZON_TOLERANCE_MS)) {
+                    "Hold active duration is outside the fixed-horizon completion tolerance"
+                }
+                val acceptedTargetCount = required("acceptedTargetCount").toLong()
+                check(acceptedTargetCount > 0L) { "No accepted hold target was observed" }
+                check(required("acceptedTargetSequenceCount").toLong() == acceptedTargetCount) {
+                    "Accepted-target sequence coverage is incomplete"
+                }
+                check(required("rawLagSampleCount").toLong() == acceptedTargetCount) {
+                    "Raw lag coverage is incomplete"
+                }
+                check(required("outstandingForegroundTargetSampleCount").toLong() >= acceptedTargetCount) {
+                    "Outstanding-target sampling coverage is incomplete"
+                }
+                check(required("acceptedTargetSequenceSha256").matches(SHA256_PATTERN)) {
+                    "Accepted-target sequence digest is invalid"
+                }
+            }
             val canonicalFrameBytes = required("canonicalFrameBytes").toLong()
             val cacheBudgetBytes = required("cacheBudgetBytes").toLong()
             val cacheBytes = required("cacheBytes").toLong()
-            check(canonicalFrameBytes > 0L && cacheBudgetBytes > 0L) {
+            val peakCacheBytes = required("peakCacheBytes").toLong()
+            check(canonicalFrameBytes > 0L && cacheBudgetBytes == EXPECTED_CACHE_BUDGET_BYTES) {
                 "Cache byte contract unavailable"
             }
             check(cacheBytes in 0L..cacheBudgetBytes) {
                 "Cache budget exceeded"
+            }
+            check(peakCacheBytes in cacheBytes..cacheBudgetBytes) {
+                "Peak cache budget exceeded"
             }
             check(required("staleDiscardCount").toLong() == 0L) { "Stale decode result observed" }
             check(required("outstandingForegroundTargetDepthMax").toInt() <= 1) {
@@ -643,12 +710,23 @@ class CcrProductMacrobenchmark {
             check(required("gpuMetricAvailability") == "UNKNOWN") {
                 "Unexpected GPU metric availability value"
             }
+            val reverseWindowRefillCount = required("reverseWindowRefillCount").toLong()
+            val reverseWindowInitialReadyCount = required("reverseWindowInitialReadyCount").toLong()
+            val reverseWindowRollingAppendRefillCount =
+                required("reverseWindowRollingAppendRefillCount").toLong()
+            check(reverseWindowRefillCount == reverseWindowInitialReadyCount + reverseWindowRollingAppendRefillCount) {
+                "Reverse refill accounting mismatch"
+            }
             iterations.put(
                 JSONObject()
                     .put("runIteration", item.runIteration)
                     .put("traceIdentity", item.traceIdentity)
+                    .put("appApkSha256", harnessIdentity.appApkSha256)
+                    .put("testApkSha256", harnessIdentity.testApkSha256)
+                    .put("status", "PASS")
                     .put("counterComplete", true)
-                    .put("activeMs", required("activeMs").toLong())
+                    .put("activeMs", activeMs)
+                    .put("measurementTargetMs", measurementTargetMs)
                     .put("published", required("published").toLong())
                     .put("publishedFps", required("fps").toDouble())
                     .put("publicationIntervalP50Us", required("intervalP50Us").toLong())
@@ -663,6 +741,19 @@ class CcrProductMacrobenchmark {
                         required("outstandingForegroundTargetDepthMax").toLong(),
                     )
                     .put("acceptedTargetCount", required("acceptedTargetCount").toLong())
+                    .put(
+                        "acceptedTargetSequenceCount",
+                        required("acceptedTargetSequenceCount").toLong(),
+                    )
+                    .put(
+                        "acceptedTargetSequenceSha256",
+                        required("acceptedTargetSequenceSha256"),
+                    )
+                    .put("rawLagSampleCount", required("rawLagSampleCount").toLong())
+                    .put(
+                        "outstandingForegroundTargetSampleCount",
+                        required("outstandingForegroundTargetSampleCount").toLong(),
+                    )
                     .put(
                         "releaseAfterAcceptedTargetCount",
                         required("releaseAfterAcceptedTargetCount").toLong(),
@@ -685,6 +776,7 @@ class CcrProductMacrobenchmark {
                     .put("canonicalFrameBytes", required("canonicalFrameBytes").toLong())
                     .put("cacheBudgetBytes", required("cacheBudgetBytes").toLong())
                     .put("cacheBytes", required("cacheBytes").toLong())
+                    .put("peakCacheBytes", required("peakCacheBytes").toLong())
                     .put("cacheEntryCount", required("cacheEntryCount").toLong())
                     .put("peakCacheEntryCount", required("peakCacheEntryCount").toLong())
                     .put("cacheRejectionCount", required("cacheRejectionCount").toLong())
@@ -692,6 +784,28 @@ class CcrProductMacrobenchmark {
                     .put("liveTextureCount", required("liveTextureCount").toLong())
                     .put("peakLiveTextureCount", required("peakLiveTextureCount").toLong())
                     .put("textureDoubleReleaseCount", required("textureDoubleReleaseCount").toLong())
+                    .put("reverseWindowBuildCount", required("reverseWindowBuildCount").toLong())
+                    .put("reverseWindowHitCount", required("reverseWindowHitCount").toLong())
+                    .put("reverseWindowSeekCount", required("reverseWindowSeekCount").toLong())
+                    .put("reverseWindowRefillCount", reverseWindowRefillCount)
+                    .put("reverseWindowInitialReadyCount", reverseWindowInitialReadyCount)
+                    .put("reverseWindowRollingAppendRefillCount", reverseWindowRollingAppendRefillCount)
+                    .put(
+                        "reverseWindowRefillNeeded",
+                        required("reverseWindowRefillNeeded").toBooleanStrict(),
+                    )
+                    .put(
+                        "reverseWindowRefillStallCount",
+                        required("reverseWindowRefillStallCount").toLong(),
+                    )
+                    .put(
+                        "reverseWindowRefillStallMaxUs",
+                        required("reverseWindowRefillStallMaxUs").toLong(),
+                    )
+                    .put(
+                        "reverseWindowRefillStallOver250MsCount",
+                        required("reverseWindowRefillStallOver250MsCount").toLong(),
+                    )
                     .put("staleDiscardCount", required("staleDiscardCount").toLong())
                     .put("staleBeforeSwapCount", required("staleBeforeSwapCount").toLong())
                     .put("surfaceInvalidCount", required("surfaceInvalidCount").toLong())
@@ -714,6 +828,9 @@ class CcrProductMacrobenchmark {
             .put("runtimeSourceSha", harnessIdentity.runtimeSourceSha)
             .put("harnessSourceSha", harnessIdentity.harnessSourceSha)
             .put("runtimeInputsTreeSha256", harnessIdentity.runtimeInputsTreeSha256)
+            .put("appApkSha256", harnessIdentity.appApkSha256)
+            .put("testApkSha256", harnessIdentity.testApkSha256)
+            .put("status", "PASS")
             .put("scenario", scenario)
             .put("measurementDescription", "source-equivalent pinned benchmark measurement build")
             .put("expectedTraceCount", REPRESENTATIVE_ITERATIONS)
@@ -739,6 +856,8 @@ class CcrProductMacrobenchmark {
             runtimeSourceSha = required(ARG_RUNTIME_SOURCE_SHA),
             harnessSourceSha = required(ARG_HARNESS_SOURCE_SHA),
             runtimeInputsTreeSha256 = required(ARG_RUNTIME_INPUTS_TREE_SHA256),
+            appApkSha256 = required(ARG_EXPECTED_APP_SHA256),
+            testApkSha256 = required(ARG_EXPECTED_TEST_APK_SHA256),
             artifactSetRevision = required(ARG_ARTIFACT_SET_REVISION).toIntOrNull()
                 ?: error("Invalid instrumentation argument: $ARG_ARTIFACT_SET_REVISION"),
         )
@@ -746,8 +865,34 @@ class CcrProductMacrobenchmark {
         check(identity.runtimeSourceSha == EXPECTED_RUNTIME_SOURCE_SHA) { "Runtime source mismatch" }
         check(identity.harnessSourceSha.matches(GIT_SHA_PATTERN)) { "Invalid harness source SHA" }
         check(identity.runtimeInputsTreeSha256.matches(SHA256_PATTERN)) { "Invalid runtime inputs tree SHA" }
+        check(identity.runtimeInputsTreeSha256 == EXPECTED_RUNTIME_INPUTS_TREE_SHA256) {
+            "Runtime inputs tree mismatch"
+        }
+        check(identity.appApkSha256.matches(SHA256_PATTERN)) { "Invalid expected app APK SHA-256" }
+        check(identity.testApkSha256.matches(SHA256_PATTERN)) { "Invalid expected test APK SHA-256" }
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val packageManager = instrumentation.context.packageManager
+        val installedAppSha256 = sha256(
+            File(packageManager.getApplicationInfo(TARGET_PACKAGE, 0).sourceDir),
+        )
+        val installedTestSha256 = sha256(File(instrumentation.context.applicationInfo.sourceDir))
+        check(installedAppSha256 == identity.appApkSha256) { "Installed app APK SHA-256 mismatch" }
+        check(installedTestSha256 == identity.testApkSha256) { "Installed test APK SHA-256 mismatch" }
         check(identity.artifactSetRevision == ARTIFACT_SET_REVISION) { "Artifact set revision mismatch" }
         return identity
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
     companion object {
@@ -760,6 +905,8 @@ class CcrProductMacrobenchmark {
         private const val EXTRA_RUNTIME_SOURCE_SHA = "benchmark-runtime-source-sha"
         private const val EXTRA_HARNESS_SOURCE_SHA = "benchmark-harness-source-sha"
         private const val EXTRA_RUNTIME_INPUTS_TREE_SHA256 = "benchmark-runtime-inputs-tree-sha256"
+        private const val EXTRA_APP_APK_SHA256 = "benchmark-app-apk-sha256"
+        private const val EXTRA_TEST_APK_SHA256 = "benchmark-test-apk-sha256"
         private const val EXTRA_TRACE_IDENTITY = "benchmark-trace-identity"
         private const val EXTRA_RUN_ITERATION = "benchmark-run-iteration"
         private const val EXTRA_ARTIFACT_SET_REVISION = "benchmark-artifact-set-revision"
@@ -767,6 +914,8 @@ class CcrProductMacrobenchmark {
         private const val ARG_RUNTIME_SOURCE_SHA = "runtimeSourceSha"
         private const val ARG_HARNESS_SOURCE_SHA = "harnessSourceSha"
         private const val ARG_RUNTIME_INPUTS_TREE_SHA256 = "runtimeInputsTreeSha256"
+        private const val ARG_EXPECTED_APP_SHA256 = "expectedAppSha256"
+        private const val ARG_EXPECTED_TEST_APK_SHA256 = "expectedTestApkSha256"
         private const val ARG_ARTIFACT_SET_REVISION = "artifactSetRevision"
         private const val HARNESS_REPORT_STATUS_KEY = "ccrBenchmarkHarnessV2"
         private const val HARNESS_REPORT_STATUS_CODE = 2
@@ -809,14 +958,28 @@ class CcrProductMacrobenchmark {
         private const val TRACE_REPRESENTATIVE_SMOOTHNESS = "ccr.representative_smoothness"
         private const val REPRESENTATIVE_ITERATIONS = 3
         private const val REPRESENTATIVE_SCENARIO_TIMEOUT_MS = 180_000L
-        private const val ARTIFACT_SET_REVISION = 2
-        private const val EXPECTED_RUNTIME_SOURCE_SHA = "189e6e1edb8419f0c2be449e6ab9fd9b54bf5b1e"
+        private const val EXPECTED_HOLD_ACTIVE_MS = 30_000L
+        private const val HOLD_HORIZON_TOLERANCE_MS = 2_000L
+        private const val EXPECTED_CACHE_BUDGET_BYTES = 64L * 1_024L * 1_024L
+        private const val ARTIFACT_SET_REVISION = 3
+        private const val EXPECTED_RUNTIME_SOURCE_SHA = "bd3a803a1f13584f578357fcc60dce8abf2c2200"
+        private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
+            "1d1f46d89c73f537d2dd496d8717b23323d3ce59b36ebdc39f618aa8107239fd"
         private val RUN_ID_PATTERN = Regex("[A-Za-z0-9._:-]{1,48}")
         private val GIT_SHA_PATTERN = Regex("[0-9a-f]{40}")
         private val SHA256_PATTERN = Regex("[0-9a-f]{64}")
-        private val ALPHA4_REVERSE_BASELINE_SCENARIOS = setOf(
+        private val REVERSE_HOLD_SCENARIOS = setOf(
             SCENARIO_HOLD_1080_MINUS_ONE,
             SCENARIO_HOLD_1080_MINUS_FIVE,
+        )
+        private val FIXED_HORIZON_HOLD_SCENARIOS = setOf(
+            SCENARIO_HOLD_720_PLUS_ONE,
+            SCENARIO_HOLD_720_PLUS_FIVE,
+            SCENARIO_HOLD_1080_PLUS_ONE,
+            SCENARIO_HOLD_1080_PLUS_FIVE,
+            SCENARIO_HOLD_1080_MINUS_ONE,
+            SCENARIO_HOLD_1080_MINUS_FIVE,
+            SCENARIO_REVERSE_1080,
         )
     }
 }

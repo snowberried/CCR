@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const toolDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(toolDir, "..", "..");
-const manifestPath = resolve(repoRoot, "android/validation/runtime-inputs-v2.json");
-const runtimeSourceSha = "189e6e1edb8419f0c2be449e6ab9fd9b54bf5b1e";
+const manifestPath = resolve(repoRoot, "android/validation/runtime-inputs-alpha5-v1.json");
+const runtimeSourceSha = "bd3a803a1f13584f578357fcc60dce8abf2c2200";
 const includePaths = [
   "android/app/src/main",
   "android/app/src/debug",
@@ -65,6 +65,21 @@ function assert(condition, message) {
   if (!condition) throw new Error(`runtime inputs verification failed: ${message}`);
 }
 
+function assertNoRuntimeWorkingTreeChanges() {
+  for (const args of [
+    ["diff", "--quiet", "--", ...includePaths],
+    ["diff", "--cached", "--quiet", "--", ...includePaths],
+  ]) {
+    const result = spawnSync("git", args, { cwd: repoRoot });
+    assert(result.status === 0, `tracked runtime input differs in worktree: git ${args.join(" ")}`);
+  }
+  const untracked = git(["ls-files", "--others", "--exclude-standard", "-z", "--", ...includePaths])
+    .toString("utf8")
+    .split("\0")
+    .filter(Boolean);
+  assert(untracked.length === 0, `untracked runtime input: ${untracked.join(", ")}`);
+}
+
 if (process.argv.includes("--write")) {
   const runtime = snapshot(runtimeSourceSha);
   const generated = {
@@ -105,8 +120,9 @@ assert(
 assert(new Set(manifest.files.map((file) => file.path)).size === manifest.files.length, "duplicate path");
 assert(manifest.runtimeInputsTreeSha256 === hashTree(manifest.files), "tree SHA");
 
-const historical = snapshot(runtimeSourceSha);
-assert(JSON.stringify(historical.files) === JSON.stringify(manifest.files), "historical runtime snapshot");
+const head = snapshot("HEAD");
+assert(JSON.stringify(head.files) === JSON.stringify(manifest.files), "HEAD changes frozen runtime inputs");
+assertNoRuntimeWorkingTreeChanges();
 
 console.log(`verified ${manifest.files.length} frozen runtime inputs`);
 console.log(`runtimeInputsTreeSha256=${manifest.runtimeInputsTreeSha256}`);

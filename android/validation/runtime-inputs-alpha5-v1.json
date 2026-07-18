@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 1,
+  "manifestKind": "ccr-android-runtime-inputs",
+  "runtimeSourceSha": "bd3a803a1f13584f578357fcc60dce8abf2c2200",
+  "treeAlgorithm": "sha256(CCR_RUNTIME_INPUTS_V1\\0 + sorted(path\\0byteSize\\0fileSha256\\n))",
+  "includePaths": [
+    "android/app/src/main",
+    "android/app/src/debug",
+    "android/app/build.gradle.kts",
+    "android/build.gradle.kts",
+    "android/settings.gradle.kts",
+    "android/gradle.properties",
+    "android/gradle/wrapper/gradle-wrapper.properties"
+  ],
+  "runtimeInputsTreeSha256": "1d1f46d89c73f537d2dd496d8717b23323d3ce59b36ebdc39f618aa8107239fd",
+  "files": [
+    {
+      "path": "android/app/build.gradle.kts",
+      "byteSize": 4828,
+      "sha256": "d0ad2100419e4c2d4c01cb90109803bed89d0f289e41c17cef6968fb9723008d"
+    },
+    {
+      "path": "android/app/src/debug/AndroidManifest.xml",
+      "byteSize": 517,
+      "sha256": "fe5dc3fe098df3b8c577a94f9bdada15bbc0b0075738703cd2c87f60080fa671"
+    },
+    {
+      "path": "android/app/src/debug/java/com/snowberried/ctcinereviewer/DebugApplication.kt",
+      "byteSize": 1602,
+      "sha256": "55238ac877718b371cdda15529b7f6ba658039eb54f4e4592a3d9b453e1c3f99"
+    },
+    {
+      "path": "android/app/src/debug/java/com/snowberried/ctcinereviewer/gate/GateActivity.kt",
+      "byteSize": 9481,
+      "sha256": "1fbe292f24b8d4124c7ea6bb691442d2eab9dc546f0e91212ce8b17f708b97e4"
+    },
+    {
+      "path": "android/app/src/debug/java/com/snowberried/ctcinereviewer/gate/ReadOnlyFixtureProvider.kt",
+      "byteSize": 2981,
+      "sha256": "7ea39d458ae0d8f38c71971cdc26a896732167192057dd262373116127229325"
+    },
+    {
+      "path": "android/app/src/main/AndroidManifest.xml",
+      "byteSize": 780,
+      "sha256": "4a58f5033ec191703a747e8688515f73bb4fa00efb1f5c4d068e26849a71ceb4"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/CompletionDrivenHoldController.kt",
+      "byteSize": 4906,
+      "sha256": "5dc3aca24fd0ce2086f65cfb2abef151dc4710c2a8e51c9e938f4a37b803d738"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/MainActivity.kt",
+      "byteSize": 21118,
+      "sha256": "bd624e0072839512774475d2f42e22ab174d1b42d4acf2b7c19d62b0723d4fde"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/NavigationCadencePolicy.kt",
+      "byteSize": 2068,
+      "sha256": "79ca10fe2f75ce536c94b1d18976cb774a6a8ecfc4c2bc4adc1fec8c9a47a46e"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/NavigationGestureGate.kt",
+      "byteSize": 869,
+      "sha256": "2615481ff9462b9a508e7ebe6c7ea057c3df3b584adf9cd2210991e551c24a01"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/SanitizedDiagnostics.kt",
+      "byteSize": 7571,
+      "sha256": "910d92c4e30c0ce06a08683ebe8a54d542b06ac9d3b24884fea67914e61c6372"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/ViewerViewModel.kt",
+      "byteSize": 30647,
+      "sha256": "0423c4883658384eca7bd923a077ca164b902e3ae869fa2c3fbc2b51e1adb4d0"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/cache/DirectionalByteCache.kt",
+      "byteSize": 4649,
+      "sha256": "b0ab7fb7641c27170b8a69c9439b91cd074f7800cc23d0a7f6fe4488cb94a9b1"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/BackwardHistoryRing.kt",
+      "byteSize": 1931,
+      "sha256": "a1b1ce56597ffc1b2c7361f082bcd69d022d3e5b27a65a82e1b0327abdf5c87e"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/CcrTrace.kt",
+      "byteSize": 3223,
+      "sha256": "ba8a3a358324f73c9b0c61e0278991aef3463252da344c68e6e4dfe4bed4c823"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/DirectionalPrefetchPolicy.kt",
+      "byteSize": 8831,
+      "sha256": "04d3aadc55171703ad359277b4266b87c8928f776c400a66e528b4486a020c38"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/ExactFrameSession.kt",
+      "byteSize": 112416,
+      "sha256": "f31af0f46d1a3bb9a1772541b705e108a8c92db027e93b7147c2985c3bf17b45"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/ForwardSequentialDecodeState.kt",
+      "byteSize": 3902,
+      "sha256": "79bdfaccfca34747874323a6ba3c36fd4ce290712d7a22b30deec81a6258c8e6"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/FrameContracts.kt",
+      "byteSize": 9202,
+      "sha256": "6eedf850b421e4426461082b86c3703bbf8558bc5856a44ecc97e10193ff904f"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/FrameNavigation.kt",
+      "byteSize": 1469,
+      "sha256": "000d946829f67547f9f556e007532a96f0bca78cf0724a9d737f4e33db9fb7dd"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/PublicationGate.kt",
+      "byteSize": 8417,
+      "sha256": "7fb34f4456a899a8bb99ff6d47237c2ad3930636ee603b4e14666bcc7258acc8"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/RandomSeekPlanner.kt",
+      "byteSize": 7653,
+      "sha256": "2b7bacef66786a80669774be156db9c383f75327633da1c3639523d6b5f16ea4"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/ReverseWindowEngine.kt",
+      "byteSize": 9004,
+      "sha256": "baad7bc39676a4a6303c4f9296997e2c3ae4dc0e354be63700d4f1c570e63c64"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/ReverseWindowPlan.kt",
+      "byteSize": 4432,
+      "sha256": "08f14924eb07ce86fe554f83ad2bcc021251f4ce00719d2f94542e87092e5d39"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/VideoFormatPolicy.kt",
+      "byteSize": 1388,
+      "sha256": "25696566724b621f1e3d2fc27c8561c7c2466ff9d05ec58e568a255cd108b2fd"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/render/CanonicalGeometry.kt",
+      "byteSize": 1662,
+      "sha256": "d2e2f0ce819e1472e578d24fee581fe17773c6cdc43bb24189153b288edf09fc"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/render/EglFrameRenderer.kt",
+      "byteSize": 52033,
+      "sha256": "15df574ae8575943124ee77329b566d5296a3c9acb87fb750dfcaae41529cfef"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/render/FrameProbe.kt",
+      "byteSize": 5705,
+      "sha256": "bf23d3c929587b2349ea32342de5e8ebfd35523c23552e533762d7fec5a384c0"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/render/FrameProbePolicy.kt",
+      "byteSize": 610,
+      "sha256": "b26c87669344b0e0d143f7e82391abae810324fa94fc981d2c0918f4ce978731"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/render/SurfaceLeaseTracker.kt",
+      "byteSize": 543,
+      "sha256": "bd7cef3cb292d6e16eb7512d3fcadf6bcc08173ef89ae1d8efb9c22809f4bd19"
+    },
+    {
+      "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/render/VideoViewport.kt",
+      "byteSize": 1027,
+      "sha256": "3307d4fb332adc52d63ceeb60c05b9a06719ca0b255dbf9617f20b06bbab7003"
+    },
+    {
+      "path": "android/app/src/main/res/values/strings.xml",
+      "byteSize": 122,
+      "sha256": "c8e6e5e0ea52b5d76c9125591b206fd0ad857606947e7c41ef3c427fe8691a22"
+    },
+    {
+      "path": "android/app/src/main/res/values/themes.xml",
+      "byteSize": 457,
+      "sha256": "0f16dd14d362a3606988e9fde3fe2bedfd223af2ec47a12e7de37635b7cab82f"
+    },
+    {
+      "path": "android/build.gradle.kts",
+      "byteSize": 204,
+      "sha256": "e14e7919826197956982f1e33b36ecab42efda2c9f38b579bcbdd368eff49923"
+    },
+    {
+      "path": "android/gradle.properties",
+      "byteSize": 109,
+      "sha256": "e6b436ff6a08da8b8c05e0e2fc1a7f40f41701bb506cd80fc2ddfd7b6e3b3b2b"
+    },
+    {
+      "path": "android/gradle/wrapper/gradle-wrapper.properties",
+      "byteSize": 339,
+      "sha256": "93b4f2c5ddcfc9e6f630fc7e004b31b389695cd0228be6da42e196e5d4af7acb"
+    },
+    {
+      "path": "android/settings.gradle.kts",
+      "byteSize": 368,
+      "sha256": "8230414df0df2dbaff1e5b742c646ec231c5bbe653f3b468799babbb68f97be1"
+    }
+  ]
+}

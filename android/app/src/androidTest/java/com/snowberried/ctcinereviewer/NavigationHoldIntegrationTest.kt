@@ -13,6 +13,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import com.snowberried.ctcinereviewer.gate.ReadOnlyFixtureProvider
+import com.snowberried.ctcinereviewer.media.FrameKey
 import com.snowberried.ctcinereviewer.validation.ValidationHarnessV2
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -220,6 +221,214 @@ class NavigationHoldIntegrationTest {
         outcome.getOrThrow()
     }
 
+    @Test
+    fun reverseHoldLifecycleInvalidationRestoresExactFrameOnS24Ultra() {
+        assumeTrue(
+            "reverse lifecycle Gate requires Samsung SM-S928*",
+            Build.MANUFACTURER.equals("samsung", true) && Build.MODEL.startsWith("SM-S928"),
+        )
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val identity = ValidationHarnessV2.requireIdentity(context, instrumentation.context)
+        val startedAtElapsedRealtimeNs = SystemClock.elapsedRealtimeNanos()
+        var codecComponent: String? = null
+        var forwardAnchor = -1
+        var requestedBeforeCreated = -1
+        var requestedInCreated = -1
+        var requestedAfterCreatedGrace = -1
+        var generationBeforeCreated: Long? = null
+        var generationInCreated: Long? = null
+        var generationAfterResume: Long? = null
+        var decodedInCreated = -1L
+        var decodedAfterCreatedGrace = -1L
+        var publicationsInCreated = -1L
+        var publicationsAfterCreatedGrace = -1L
+        var publicationEventsInCreated = -1
+        var publicationEventsAfterCreatedGrace = -1
+        var expectedFrame: FrameKey? = null
+        var restoredFrame: FrameKey? = null
+        ReadOnlyFixtureProvider.writeOpenCount.set(0)
+
+        val outcome = runCatching {
+            val viewer = ViewModelProvider(compose.activity)[ViewerViewModel::class.java]
+            openBurst(viewer)
+            codecComponent = viewer.uiState.metadata?.codecComponent
+            assertTrue("hardware decoder required", viewer.uiState.metadata?.hardwareAccelerated == true)
+
+            val forward = compose.onNodeWithText("+5")
+            repeat(4) {
+                forward.performTouchInput {
+                    down(center)
+                    up()
+                }
+                compose.waitForIdle()
+                val requested = viewer.uiState.requestedFrameIndex
+                compose.waitUntil(timeoutMillis = 20_000) {
+                    viewer.uiState.displayedFrameIndex == requested
+                }
+            }
+            forwardAnchor = viewer.uiState.displayedFrameIndex ?: -1
+            assertTrue("forward setup did not reach frame 20", forwardAnchor >= 20)
+
+            val reverse = compose.onNodeWithText("−1")
+            reverse.performTouchInput { down(center) }
+            advancePastLongPress(2)
+            compose.waitUntil(timeoutMillis = 20_000) {
+                viewer.uiState.requestedFrameIndex < forwardAnchor &&
+                    viewer.uiState.activeRequestGeneration != null
+            }
+            requestedBeforeCreated = viewer.uiState.requestedFrameIndex
+            generationBeforeCreated = viewer.uiState.activeRequestGeneration
+
+            compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+            assertTrue("actor did not settle in CREATED", viewer.awaitActorIdleForTest(20_000))
+            val createdState = viewer.uiState
+            requestedInCreated = createdState.requestedFrameIndex
+            generationInCreated = createdState.activeRequestGeneration
+            val ptsUs = createdState.framePtsUs[requestedInCreated]
+            expectedFrame = FrameKey(
+                displayFrameIndex = requestedInCreated,
+                ptsUs = ptsUs,
+                duplicateOrdinal = createdState.framePtsUs.take(requestedInCreated).count { it == ptsUs },
+            )
+            val createdDiagnostics = requireNotNull(viewer.diagnosticsSnapshotForTest(20_000))
+            decodedInCreated = createdDiagnostics.decodeOrdinal
+            publicationsInCreated = createdDiagnostics.publishedSwapCount
+            publicationEventsInCreated = createdDiagnostics.publicationEventHistory.size
+
+            SystemClock.sleep(HOLD_SETTLE_MS)
+            assertTrue("actor did not remain idle in CREATED", viewer.awaitActorIdleForTest(20_000))
+            val afterGraceState = viewer.uiState
+            val afterGraceDiagnostics = requireNotNull(viewer.diagnosticsSnapshotForTest(20_000))
+            requestedAfterCreatedGrace = afterGraceState.requestedFrameIndex
+            decodedAfterCreatedGrace = afterGraceDiagnostics.decodeOrdinal
+            publicationsAfterCreatedGrace = afterGraceDiagnostics.publishedSwapCount
+            publicationEventsAfterCreatedGrace = afterGraceDiagnostics.publicationEventHistory.size
+
+            assertNull("CREATED retained the reverse request generation", generationInCreated)
+            assertNull("CREATED retained a decode target", afterGraceState.currentDecodeTarget)
+            assertNull("CREATED retained a pending target", afterGraceState.latestPendingRequest)
+            assertEquals("CREATED allowed a stale reverse repeat", requestedInCreated, requestedAfterCreatedGrace)
+            assertEquals("CREATED accepted more decode work", decodedInCreated, decodedAfterCreatedGrace)
+            assertEquals("CREATED published another frame", publicationsInCreated, publicationsAfterCreatedGrace)
+            assertEquals(
+                "CREATED recorded another publication event",
+                publicationEventsInCreated,
+                publicationEventsAfterCreatedGrace,
+            )
+
+            compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+            compose.waitUntil(timeoutMillis = 30_000) {
+                viewer.uiState.surfaceAvailable &&
+                    viewer.uiState.requestedFrameIndex == requestedInCreated &&
+                    viewer.uiState.displayedFrame == expectedFrame &&
+                    viewer.uiState.restoreState == ViewerRestoreState.COMPLETE
+            }
+            assertTrue("actor did not settle after RESUMED", viewer.awaitActorIdleForTest(20_000))
+            val restoredState = viewer.uiState
+            val finalDiagnostics = requireNotNull(viewer.diagnosticsSnapshotForTest(20_000))
+            restoredFrame = restoredState.displayedFrame
+            generationAfterResume = restoredState.activeRequestGeneration
+
+            assertTrue("reverse hold did not move before CREATED", requestedBeforeCreated < forwardAnchor)
+            assertTrue("reverse generation was not active before CREATED", generationBeforeCreated != null)
+            assertTrue(
+                "RESUMED reused the invalidated request generation",
+                generationAfterResume != null && generationAfterResume != generationBeforeCreated,
+            )
+            assertEquals("requested/displayed diverged after restore", requestedInCreated, restoredState.displayedFrameIndex)
+            assertEquals("RESUMED did not restore the exact FrameKey", expectedFrame, restoredFrame)
+            assertEquals("stale decode result", 0L, finalDiagnostics.staleDiscardCount)
+            assertEquals("stale before swap", 0L, finalDiagnostics.staleBeforeSwapCount)
+            assertEquals("swap failure", 0L, finalDiagnostics.swapFailureCount)
+            assertEquals("surface invalid publication", 0L, finalDiagnostics.surfaceInvalidCount)
+            assertEquals(
+                "publication invariant violation",
+                0L,
+                finalDiagnostics.publicationInvariantViolationCount,
+            )
+            assertTrue("cache peak exceeded cap", finalDiagnostics.peakCacheBytes <= finalDiagnostics.cacheBudgetBytes)
+            assertEquals("texture double release", 0L, finalDiagnostics.textureDoubleReleaseCount)
+            assertEquals("source opened for write", 0, ReadOnlyFixtureProvider.writeOpenCount.get())
+        }
+
+        val finalDiagnostics = runCatching {
+            ViewModelProvider(compose.activity)[ViewerViewModel::class.java].diagnosticsSnapshotForTest(20_000)
+        }.getOrNull()
+        val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+        val report = JSONObject()
+            .put("schemaVersion", 2)
+            .put("kind", "alpha5-reverse-lifecycle-exact")
+            .put("status", if (outcome.isSuccess) "PASS" else "FAIL")
+            .put("gate", "Samsung SM-S928* S24 Ultra")
+            .put(
+                "device",
+                JSONObject()
+                    .put("manufacturer", Build.MANUFACTURER)
+                    .put("model", Build.MODEL)
+                    .put("fingerprint", Build.FINGERPRINT)
+                    .put("securityPatch", Build.VERSION.SECURITY_PATCH)
+                    .put("sdk", Build.VERSION.SDK_INT),
+            )
+            .put("appVersionName", packageInfo.versionName)
+            .put("appVersionCode", packageInfo.longVersionCode)
+            .put("appCommitSha", BuildConfig.COMMIT_SHA)
+            .put("codecComponent", codecComponent ?: JSONObject.NULL)
+            .put("hardwareDecoderRequired", true)
+            .put("fixture", "burst")
+            .put("forwardAnchor", forwardAnchor)
+            .put("requestedBeforeCreated", requestedBeforeCreated)
+            .put("requestedInCreated", requestedInCreated)
+            .put("requestedAfterCreatedGrace", requestedAfterCreatedGrace)
+            .put("generationBeforeCreated", generationBeforeCreated ?: JSONObject.NULL)
+            .put("generationInCreated", generationInCreated ?: JSONObject.NULL)
+            .put("generationAfterResume", generationAfterResume ?: JSONObject.NULL)
+            .put("decodedInCreated", decodedInCreated)
+            .put("decodedAfterCreatedGrace", decodedAfterCreatedGrace)
+            .put("publicationsInCreated", publicationsInCreated)
+            .put("publicationsAfterCreatedGrace", publicationsAfterCreatedGrace)
+            .put("publicationEventsInCreated", publicationEventsInCreated)
+            .put("publicationEventsAfterCreatedGrace", publicationEventsAfterCreatedGrace)
+            .put("expectedFrame", expectedFrame?.let(::frameKeyJson) ?: JSONObject.NULL)
+            .put("restoredFrame", restoredFrame?.let(::frameKeyJson) ?: JSONObject.NULL)
+            .put(
+                "diagnostics",
+                finalDiagnostics?.let { diagnostics ->
+                    JSONObject()
+                        .put("staleDiscardCount", diagnostics.staleDiscardCount)
+                        .put("staleBeforeSwapCount", diagnostics.staleBeforeSwapCount)
+                        .put("swapFailureCount", diagnostics.swapFailureCount)
+                        .put("surfaceInvalidCount", diagnostics.surfaceInvalidCount)
+                        .put("publicationInvariantViolationCount", diagnostics.publicationInvariantViolationCount)
+                        .put("publishedSwapCount", diagnostics.publishedSwapCount)
+                        .put("cacheBudgetBytes", diagnostics.cacheBudgetBytes)
+                        .put("peakCacheBytes", diagnostics.peakCacheBytes)
+                        .put("textureDoubleReleaseCount", diagnostics.textureDoubleReleaseCount)
+                } ?: JSONObject.NULL,
+            )
+            .put("writeOpenCount", ReadOnlyFixtureProvider.writeOpenCount.get())
+            .put("syntheticOnly", true)
+            .put("containsRealMediaMetadata", false)
+        ValidationHarnessV2.putReportIdentity(
+            report = report,
+            identity = identity,
+            startedAtElapsedRealtimeNs = startedAtElapsedRealtimeNs,
+            finishedAtElapsedRealtimeNs = SystemClock.elapsedRealtimeNanos(),
+            testCount = 1,
+            instrumentationExpectedTestCount = 1,
+        )
+        outcome.exceptionOrNull()?.let { failure ->
+            report.put(
+                "failure",
+                JSONObject()
+                    .put("type", failure.javaClass.simpleName)
+                    .put("message", failure.message ?: "unknown"),
+            )
+        }
+        File(context.filesDir, REVERSE_LIFECYCLE_REPORT_FILE).writeText(report.toString(2))
+        outcome.getOrThrow()
+    }
+
     private fun openBurst(viewer: ViewerViewModel) {
         compose.waitUntil(timeoutMillis = 20_000) { viewer.uiState.surfaceAvailable }
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -238,9 +447,15 @@ class NavigationHoldIntegrationTest {
         )
     }
 
+    private fun frameKeyJson(value: FrameKey): JSONObject = JSONObject()
+        .put("displayFrameIndex", value.displayFrameIndex)
+        .put("ptsUs", value.ptsUs)
+        .put("duplicateOrdinal", value.duplicateOrdinal)
+
     private companion object {
         const val HOLD_SETTLE_MS = 150L
         const val RELEASE_CANCEL_GRACE_MS = 250L
         const val RELEASE_CANCEL_REPORT_FILE = "s24-release-cancel-grace-report.json"
+        const val REVERSE_LIFECYCLE_REPORT_FILE = "s24-alpha5-reverse-lifecycle-report.json"
     }
 }

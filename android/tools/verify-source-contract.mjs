@@ -23,6 +23,9 @@ const gitAttributes = readFileSync(resolve(repoRoot, ".gitattributes"), "utf8");
 const runtimeInputs = JSON.parse(
   readFileSync(resolve(androidRoot, "validation/runtime-inputs-v2.json"), "utf8"),
 );
+const runtimeInputsAlpha5 = JSON.parse(
+  readFileSync(resolve(androidRoot, "validation/runtime-inputs-alpha5-v1.json"), "utf8"),
+);
 const baselineDir = resolve(
   androidRoot,
   "validation/device-baselines/sm-s928n-android16-2026-07-15",
@@ -75,6 +78,26 @@ const s24PinnedTests = readFileSync(
   resolve(androidRoot, "scripts/test-s24-pinned-artifacts.ps1"),
   "utf8",
 );
+const alpha5RunnerNames = [
+  "run-s24-alpha5-instrumentation.ps1",
+  "run-s24-alpha5-navigation-perf.ps1",
+  "run-s24-alpha5-random.ps1",
+  "run-s24-alpha5-validation.ps1",
+];
+const alpha5Runners = new Map(
+  alpha5RunnerNames.map((name) => [
+    name,
+    readFileSync(resolve(androidRoot, "scripts", name), "utf8"),
+  ]),
+);
+const s24Alpha5Pinned = readFileSync(
+  resolve(androidRoot, "scripts/s24-alpha5-pinned-artifacts.ps1"),
+  "utf8",
+);
+const s24Alpha5PinnedTests = readFileSync(
+  resolve(androidRoot, "scripts/test-s24-alpha5-pinned-artifacts.ps1"),
+  "utf8",
+);
 const s24FrameAccuracyTest = readFileSync(
   resolve(androidRoot, "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/S24FrameAccuracyTest.kt"),
   "utf8",
@@ -115,8 +138,8 @@ requireContract(session.includes('openFileDescriptor(uri, "r")'), "source URI is
 requireContract(!/openFileDescriptor\([^\n]+,\s*"(?:w|rw|rwt|wa)"/.test(session), "write-capable source open mode");
 requireContract(provider.includes("ParcelFileDescriptor.MODE_READ_ONLY"), "fixture provider is not read-only");
 requireContract(provider.includes('if (mode != "r")'), "fixture provider does not reject write modes");
-requireContract(/versionCode\s*=\s*5\b/.test(build), "versionCode is not 5");
-requireContract(/versionName\s*=\s*"0\.2\.0-alpha\.4"/.test(build), "versionName is not 0.2.0-alpha.4");
+requireContract(/versionCode\s*=\s*6\b/.test(build), "versionCode is not 6");
+requireContract(/versionName\s*=\s*"0\.2\.0-alpha\.5"/.test(build), "versionName is not 0.2.0-alpha.5");
 requireContract(build.includes('applicationIdSuffix = ".internal"'), "internal application ID suffix is missing");
 requireContract(
   build.includes('androidx.compose.material3.adaptive:adaptive:1.2.0'),
@@ -138,11 +161,11 @@ requireContract(gitignore.split(/\r?\n/).includes("*.keystore"), "recursive keys
 requireContract(gitignore.split(/\r?\n/).includes("signing.properties"), "recursive signing properties ignore is missing");
 requireContract(workflow.includes('      - "codex/android-*"'), "Android CI codex/android-* push filter is missing");
 requireContract(
-  workflow.includes("name: ccr-android-0.2.0-alpha.4-internal"),
+  workflow.includes("name: ccr-android-0.2.0-alpha.5-internal"),
   "Android CI artifact identity is stale",
 );
 requireContract(
-  workflow.includes("name: ccr-android-0.2.0-alpha.4-test-tools"),
+  workflow.includes("name: ccr-android-0.2.0-alpha.5-test-tools"),
   "Android CI test-tool artifact identity is stale",
 );
 requireContract(
@@ -151,12 +174,24 @@ requireContract(
 );
 requireContract(workflow.includes("verify-runtime-inputs.mjs"), "runtime-input verifier is missing from CI");
 requireContract(
+  workflow.includes("verify-runtime-inputs-alpha5.mjs"),
+  "Alpha 5 runtime-input verifier is missing from CI",
+);
+requireContract(
   workflow.includes("test-s24-pinned-artifacts.ps1"),
   "pinned S24 negative tests are missing from CI",
 );
 requireContract(
-  workflow.includes("CCR_ANDROID_COMMIT_SHA: 189e6e1edb8419f0c2be449e6ab9fd9b54bf5b1e"),
+  workflow.includes("test-s24-alpha5-pinned-artifacts.ps1"),
+  "Alpha 5 pinned S24 negative tests are missing from CI",
+);
+requireContract(
+  workflow.includes(`CCR_ANDROID_COMMIT_SHA: ${runtimeInputsAlpha5.runtimeSourceSha}`),
   "Android CI does not separate the runtime source SHA from the harness SHA",
+);
+requireContract(
+  (workflow.match(/if: github\.ref == 'refs\/heads\/main'/g) ?? []).length === 2,
+  "binary CI artifacts are not restricted to main",
 );
 for (const line of [
   "/android/tools/generate-representative-resolution-fixtures.mjs text eol=lf",
@@ -175,6 +210,16 @@ requireContract(
   "runtime-input manifest tree SHA",
 );
 requireContract(runtimeInputs.files?.length === 32, "runtime-input manifest file count");
+requireContract(runtimeInputsAlpha5.schemaVersion === 1, "Alpha 5 runtime-input manifest schema");
+requireContract(
+  /^[a-f0-9]{40}$/.test(runtimeInputsAlpha5.runtimeSourceSha),
+  "Alpha 5 runtime-input manifest source SHA",
+);
+requireContract(
+  /^[a-f0-9]{64}$/.test(runtimeInputsAlpha5.runtimeInputsTreeSha256),
+  "Alpha 5 runtime-input manifest tree SHA",
+);
+requireContract(runtimeInputsAlpha5.files?.length >= 32, "Alpha 5 runtime-input manifest file count");
 requireContract(
   build.includes('add("benchmarkImplementation", "androidx.metrics:metrics-performance:1.0.0")'),
   "JankStats is not isolated to the benchmark variant",
@@ -244,6 +289,43 @@ requireContract(
   s24PinnedTests.includes("S24 pinned artifact host tests passed") &&
     s24PinnedTests.includes("device mutation was attempted"),
   "pinned S24 negative-test contract is incomplete",
+);
+for (const [name, source] of alpha5Runners) {
+  for (const marker of [
+    "ArtifactManifest",
+    "ArtifactManifestSha256",
+    "MaxMinutes",
+    "Resume",
+    "PreflightOnly",
+  ]) {
+    requireContract(source.includes(marker), `${name} missing Alpha 5 safety marker ${marker}`);
+  }
+  for (const forbidden of [/gradlew/i, /assemble/i, /connectedAndroidTest/i, /build[\\/]outputs/i]) {
+    requireContract(!forbidden.test(source), `${name} contains build-time execution path ${forbidden}`);
+  }
+}
+for (const marker of [
+  "$script:CcrPinnedArtifactSetRevision = 3",
+  `$script:CcrPinnedRuntimeSourceSha = "${runtimeInputsAlpha5.runtimeSourceSha}"`,
+  `$script:CcrPinnedRuntimeInputsTreeSha256 = "${runtimeInputsAlpha5.runtimeInputsTreeSha256}"`,
+  '$script:CcrPinnedVersionName = "0.2.0-alpha.5"',
+  "$script:CcrPinnedVersionCode = 6",
+  "Assert-CcrAlpha5ManifestSha256",
+  "Invoke-CcrAlpha5PinnedPreflight",
+  "ALPHA5_PREFLIGHT_MANIFEST_SHA_MISMATCH",
+]) {
+  requireContract(s24Alpha5Pinned.includes(marker), `Alpha 5 pinned contract missing ${marker}`);
+}
+requireContract(
+  s24Alpha5Pinned.indexOf("Assert-CcrAlpha5ManifestSha256 $ArtifactManifest") <
+    s24Alpha5Pinned.indexOf("$script:CcrAlpha5BasePinnedPreflight @parameters"),
+  "Alpha 5 manifest hash is not checked before pinned preflight/ADB",
+);
+requireContract(
+  s24Alpha5PinnedTests.includes("Alpha5 pinned-artifact script tests passed") &&
+    s24Alpha5PinnedTests.includes("ALPHA5_TEST_MANIFEST_SHA_FAILURE_TOUCHED_ADB") &&
+    s24Alpha5PinnedTests.includes("ALPHA5_TEST_BUILD_COMMAND_FORBIDDEN"),
+  "Alpha 5 pinned negative-test contract is incomplete",
 );
 for (const marker of [
   'put("appVersionName"',
@@ -392,4 +474,4 @@ requireContract(
   "local sample reference frame index/PTS contract",
 );
 
-console.log("verified Android 0.2.0-alpha.4 identity, frozen evidence privacy, CI, local sample, and signing contracts");
+console.log("verified Android 0.2.0-alpha.5 identity, Alpha 4/5 runtime freezes, evidence privacy, CI, local sample, and signing contracts");

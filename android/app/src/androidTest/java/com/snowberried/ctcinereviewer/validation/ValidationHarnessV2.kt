@@ -19,8 +19,10 @@ internal data class ValidationHarnessIdentity(
 )
 
 internal object ValidationHarnessV2 {
-    private const val EXPECTED_RUNTIME_SOURCE_SHA = "189e6e1edb8419f0c2be449e6ab9fd9b54bf5b1e"
-    private const val EXPECTED_ARTIFACT_SET_REVISION = 2
+    private const val EXPECTED_RUNTIME_SOURCE_SHA = "bd3a803a1f13584f578357fcc60dce8abf2c2200"
+    private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
+        "1d1f46d89c73f537d2dd496d8717b23323d3ce59b36ebdc39f618aa8107239fd"
+    private const val EXPECTED_ARTIFACT_SET_REVISION = 3
     private const val RUN_ID_LEDGER = "validation-harness-v2-run-ids.txt"
     private val shaPattern = Regex("[0-9a-f]{64}")
     private val sourceShaPattern = Regex("[0-9a-f]{40}")
@@ -52,6 +54,9 @@ internal object ValidationHarnessV2 {
         require(sourceShaPattern.matches(harnessSourceSha)) { "invalid harnessSourceSha" }
         val runtimeInputsTreeSha256 = required("runtimeInputsTreeSha256").lowercase()
         require(shaPattern.matches(runtimeInputsTreeSha256)) { "invalid runtimeInputsTreeSha256" }
+        require(runtimeInputsTreeSha256 == EXPECTED_RUNTIME_INPUTS_TREE_SHA256) {
+            "runtimeInputsTreeSha256 mismatch"
+        }
         val artifactSetRevision = required("artifactSetRevision").toIntOrNull()
         require(artifactSetRevision == EXPECTED_ARTIFACT_SET_REVISION) { "artifactSetRevision mismatch" }
 
