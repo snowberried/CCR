@@ -691,7 +691,7 @@ try {
       throw "PINNED_BENCHMARK_TRACE_VALIDATION_STATE_MISMATCH:$($scenario.Method)"
     }
     Assert-CcrPinnedBenchmarkEvidence $evidence $context.ArtifactSet $runId $scenario.EvidenceScenario $traces.Count | Out-Null
-    if ($scenario.RequireAlpha4BaselineCounters) { Assert-CcrAlpha4ReverseBaselineEvidence $evidence }
+    if ($scenario.RequireAlpha4BaselineCounters) { Assert-CcrAlpha4ReverseBaselineEvidence $evidence | Out-Null }
     Assert-CcrPerformanceGate $evidence $scenario
     $evidence.traceArtifactValidation = "PASS"
     $traceValidationMethod = if ($scenario.RequireAlpha4BaselineCounters) {

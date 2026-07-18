@@ -599,6 +599,8 @@ try {
   $artifactSet = Import-CcrPinnedArtifactManifest $validPath $repoRoot $harnessSourceSha $fakeTools $identityReader $testDebugAppSha256
   . (Import-TestScriptFunction (Join-Path $PSScriptRoot "run-s24-alpha4-navigation-baseline.ps1") `
     "Assert-CcrAlpha4NavigationCheckpointIdentity")
+  . (Import-TestScriptFunction (Join-Path $PSScriptRoot "run-s24-alpha4-navigation-baseline.ps1") `
+    "ConvertFrom-CcrAlpha4ScriptOutput")
   . (Import-TestScriptFunction (Join-Path $PSScriptRoot "run-s24-navigation-perf.ps1") `
     "Assert-CcrPerfCheckpointIdentity")
   . (Import-TestScriptFunction (Join-Path $PSScriptRoot "run-s24-navigation-perf.ps1") `
@@ -664,6 +666,24 @@ try {
     $perfCheckpoint.kind = "s24-navigation-perf-session-checkpoint"
     Assert-CcrPerfCheckpointIdentity $perfCheckpoint $resumeContext `
       "s24-navigation-perf-session-checkpoint" "Alpha4Reverse" 25
+  }
+
+  Invoke-HostTest "alpha4-stage-output-remains-json-only" {
+    $parsed = ConvertFrom-CcrAlpha4ScriptOutput @('{"status":"PASS"}') "json-only"
+    if ([string]$parsed.status -cne "PASS") { throw "single JSON output was not parsed" }
+
+    $caught = $null
+    try {
+      ConvertFrom-CcrAlpha4ScriptOutput @(
+        [PSCustomObject]@{ leakedValidationResult = $true },
+        '{"status":"PASS"}'
+      ) "validation-object-leak" | Out-Null
+    } catch {
+      $caught = $_.Exception.Message
+    }
+    if ($caught -cne "ALPHA4_BASELINE_STAGE_OUTPUT_INVALID:validation-object-leak") {
+      throw "mixed child output did not fail closed: $caught"
+    }
   }
 
   Invoke-HostTest "alpha4-random-resume-session-valid" {
@@ -1140,6 +1160,16 @@ try {
       'RunPrefix = "a4-r1"', 'RunPrefix = "a4-r5"'
     )) {
       if (-not $perfSource.Contains($contract)) { throw "reverse baseline contract missing: $contract" }
+    }
+    $alpha4EvidenceCalls = [regex]::Matches(
+      $perfSource,
+      'Assert-CcrAlpha4ReverseBaselineEvidence\s+\$evidence(?:\s*\|\s*Out-Null)?'
+    )
+    $suppressedAlpha4EvidenceCalls = @($alpha4EvidenceCalls | Where-Object {
+      $_.Value -match '\|\s*Out-Null$'
+    })
+    if ($alpha4EvidenceCalls.Count -ne 2 -or $suppressedAlpha4EvidenceCalls.Count -ne 2) {
+      throw "reverse baseline validation result must never leak into child script output"
     }
     foreach ($forbiddenPrefix in @('RunPrefix = "alpha4-reverse-minus1"', 'RunPrefix = "alpha4-reverse-minus5"')) {
       if ($perfSource.Contains($forbiddenPrefix)) { throw "reverse runId prefix exceeds macrobenchmark limit" }
