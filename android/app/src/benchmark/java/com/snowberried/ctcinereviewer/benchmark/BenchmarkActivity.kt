@@ -3,6 +3,7 @@ package com.snowberried.ctcinereviewer.benchmark
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Debug
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -126,6 +127,7 @@ class BenchmarkActivity : ComponentActivity() {
     private var swapFailureCount = 0L
     private var holdDelta = 0
     private var holdActiveTargetNs = 0L
+    private var holdPublicationTarget = 0L
     private var holdAccumulatedNs = 0L
     private var holdGestureGeneration: Long? = null
     private var representativeResetAction: (() -> Unit)? = null
@@ -355,6 +357,8 @@ class BenchmarkActivity : ComponentActivity() {
                     SCENARIO_HOLD_720_PLUS_FIVE,
                     SCENARIO_HOLD_1080_PLUS_ONE,
                     SCENARIO_HOLD_1080_PLUS_FIVE -> startRepresentativeHold()
+                    SCENARIO_HOLD_1080_MINUS_ONE -> preparePureReverseHold(state, -1)
+                    SCENARIO_HOLD_1080_MINUS_FIVE -> preparePureReverseHold(state, -5)
                     SCENARIO_REVERSE_1080 -> prepareRepresentativeReverse(state)
                     SCENARIO_SEEK_1080 -> startRepresentativeSeek(state)
                     SCENARIO_SWITCH_1080_H264_HEVC,
@@ -403,9 +407,25 @@ class BenchmarkActivity : ComponentActivity() {
     private fun startRepresentativeHold() {
         holdDelta = if (scenario.endsWith("plus-five")) 5 else 1
         holdActiveTargetNs = REPRESENTATIVE_HOLD_ACTIVE_NS
+        holdPublicationTarget = 0L
         holdAccumulatedNs = 0L
         beginRepresentativeSegment(resetMetrics = true)
         scheduleHoldTick()
+    }
+
+    private fun preparePureReverseHold(state: ViewerUiState, delta: Int) {
+        val lastIndex = (state.metadata?.frameCount ?: return) - 1
+        phase = Phase.REPRESENTATIVE_RESET
+        expectedTargetIndex = lastIndex
+        representativeResetAction = {
+            holdDelta = delta
+            holdActiveTargetNs = BASELINE_REVERSE_ACTIVE_NS
+            holdAccumulatedNs = 0L
+            beginRepresentativeSegment(resetMetrics = true)
+            holdPublicationTarget = BASELINE_REVERSE_PUBLICATION_TARGET
+            scheduleHoldTick()
+        }
+        viewer.requestFrame(lastIndex)
     }
 
     private fun prepareRepresentativeReverse(state: ViewerUiState) {
@@ -415,6 +435,7 @@ class BenchmarkActivity : ComponentActivity() {
         representativeResetAction = {
             holdDelta = 1
             holdActiveTargetNs = REPRESENTATIVE_REVERSE_ACTIVE_NS
+            holdPublicationTarget = 0L
             holdAccumulatedNs = 0L
             representativeDeadlineMs = SystemClock.elapsedRealtime() + REVERSE_DIRECTION_INTERVAL_MS
             beginRepresentativeSegment(resetMetrics = true)
@@ -467,7 +488,9 @@ class BenchmarkActivity : ComponentActivity() {
         if (phase != Phase.REPRESENTATIVE_ACTIVE) return
         val nowNs = SystemClock.elapsedRealtimeNanos()
         val activeNs = holdAccumulatedNs + (nowNs - metricSegmentStartedNs).coerceAtLeast(0)
-        if (activeNs >= holdActiveTargetNs) {
+        if (activeNs >= holdActiveTargetNs ||
+            holdPublicationTarget > 0L && publicationCount >= holdPublicationTarget
+        ) {
             finishRepresentativeAfterSettled()
             return
         }
@@ -498,7 +521,6 @@ class BenchmarkActivity : ComponentActivity() {
             latestRequestedFrameIndex = state.requestedFrameIndex
             Trace.setCounter("ccr.requested_frame", state.requestedFrameIndex.toLong())
         }
-        recordLag(viewer.uiState)
         scheduleHoldTick()
     }
 
@@ -507,23 +529,38 @@ class BenchmarkActivity : ComponentActivity() {
     }
 
     private fun finishRepresentativeAfterSettled() {
-        stopActiveMeasurementSegment(verifyRelease = true)
         phase = Phase.REPRESENTATIVE_SETTLING
+        holdGestureGeneration?.let(viewer::endNavigationGesture)
+        holdGestureGeneration = null
+        releaseRequestGeneration = viewer.uiState.activeRequestGeneration
+        releaseVerificationActive = true
+        observeReleaseAcceptance(viewer.uiState)
         val settleDeadline = SystemClock.elapsedRealtime() + REPRESENTATIVE_SETTLE_TIMEOUT_MS
-        val releaseGraceDeadline = SystemClock.elapsedRealtime() + RELEASE_ACCEPTANCE_GRACE_MS
+        var settledObservedAtMs: Long? = null
         fun poll() {
             val state = viewer.uiState
             observeReleaseAcceptance(state)
             val settled = state.currentDecodeTarget == null &&
                 state.latestPendingRequest == null &&
                 state.displayedFrameIndex == state.requestedFrameIndex
+            val publicationObserved = handledPublication?.third == state.diagnostics.publishedSwapCount
             val now = SystemClock.elapsedRealtime()
-            if (settled && now >= releaseGraceDeadline) {
+            if (settled && publicationObserved) {
+                if (measurementActive) stopActiveMeasurementSegment()
+                if (settledObservedAtMs == null) settledObservedAtMs = now
+            } else {
+                settledObservedAtMs = null
+            }
+            if (
+                settledObservedAtMs?.let { now - it >= RELEASE_ACCEPTANCE_GRACE_MS } == true &&
+                !measurementActive
+            ) {
                 releaseGraceComplete = true
                 releaseVerificationActive = false
                 finishRepresentativeNow()
             } else if (now >= settleDeadline) {
                 releaseVerificationActive = false
+                stopActiveMeasurementSegment()
                 fail("REPRESENTATIVE_SETTLE_TIMEOUT")
             } else {
                 mainHandler.postDelayed(::poll, REPRESENTATIVE_SETTLE_POLL_MS)
@@ -542,7 +579,7 @@ class BenchmarkActivity : ComponentActivity() {
         complete()
     }
 
-    private fun stopActiveMeasurementSegment(verifyRelease: Boolean = false) {
+    private fun stopActiveMeasurementSegment() {
         if (!measurementActive) return
         val endedAtNs = SystemClock.elapsedRealtimeNanos()
         observeForegroundTargetMetrics(viewer.uiState)
@@ -557,11 +594,6 @@ class BenchmarkActivity : ComponentActivity() {
         lastPublicationNs = null
         holdGestureGeneration?.let(viewer::endNavigationGesture)
         holdGestureGeneration = null
-        if (verifyRelease && isSegmentedHoldScenario()) {
-            releaseRequestGeneration = viewer.uiState.activeRequestGeneration
-            releaseVerificationActive = true
-            observeReleaseAcceptance(viewer.uiState)
-        }
         requestTraceCookie?.let { endAsync(TRACE_REPRESENTATIVE_SMOOTHNESS, it) }
         requestTraceCookie = null
     }
@@ -575,6 +607,7 @@ class BenchmarkActivity : ComponentActivity() {
         measurementStarted = false
         activeMetricDurationNs = 0L
         holdAccumulatedNs = 0L
+        holdPublicationTarget = 0L
         publicationCount = 0L
         publicationIntervalsNs.clear()
         publicationGapMaxNs = 0L
@@ -656,6 +689,7 @@ class BenchmarkActivity : ComponentActivity() {
                 counterObservationComplete = false
             } else {
                 acceptedTargetCount += currentGeneration - previousGeneration
+                if (currentGeneration > previousGeneration) recordLag(state)
             }
         }
         lastAcceptedRequestGeneration = currentGeneration
@@ -797,6 +831,10 @@ class BenchmarkActivity : ComponentActivity() {
         val activeSeconds = activeNs / 1_000_000_000.0
         val fps = if (activeSeconds > 0.0) publicationCount / activeSeconds else 0.0
         val ratio = if (jankFrameCount > 0) jankCount.toDouble() / jankFrameCount else 0.0
+        val metadata = viewer.uiState.metadata
+        val diagnostics = viewer.uiState.diagnostics
+        val runtime = Runtime.getRuntime()
+        val memory = Debug.MemoryInfo().also(Debug::getMemoryInfo)
         return identity + buildString {
             append("|segmented=").append(isSegmentedHoldScenario())
             append("|activeMs=").append(activeNs / 1_000_000L)
@@ -832,9 +870,35 @@ class BenchmarkActivity : ComponentActivity() {
             append("|releaseAfterAcceptedTargetCount=").append(releaseAfterAcceptedTargetCount)
             append("|holdPrefetchStarted=").append(prefetchStartedCount)
             append("|holdPrefetchCompleted=").append(prefetchCompletedCount)
+            append("|codecComponent=").append(safeMetricToken(metadata?.codecComponent))
+            append("|hardwareAccelerated=").append(metadata?.hardwareAccelerated == true)
+            append("|canonicalFrameBytes=").append(diagnostics.canonicalFrameBytes)
+            append("|cacheBudgetBytes=").append(diagnostics.cacheBudgetBytes)
+            append("|cacheBytes=").append(diagnostics.cacheBytes)
+            append("|cacheEntryCount=").append(diagnostics.cacheEntryCount)
+            append("|peakCacheEntryCount=").append(diagnostics.peakCacheEntryCount)
+            append("|cacheRejectionCount=").append(diagnostics.cacheRejectionCount)
+            append("|cacheThrashCount=").append(diagnostics.cacheThrashCount)
+            append("|liveTextureCount=").append(diagnostics.liveTextureCount)
+            append("|peakLiveTextureCount=").append(diagnostics.peakLiveTextureCount)
+            append("|textureDoubleReleaseCount=").append(diagnostics.textureDoubleReleaseCount)
+            append("|staleDiscardCount=").append(diagnostics.staleDiscardCount)
+            append("|staleBeforeSwapCount=").append(diagnostics.staleBeforeSwapCount)
+            append("|surfaceInvalidCount=").append(diagnostics.surfaceInvalidCount)
+            append("|publicationInvariantViolationCount=")
+                .append(diagnostics.publicationInvariantViolationCount)
+            append("|decoderRecreateCount=").append(diagnostics.decoderRecreateCount)
+            append("|javaUsedBytes=").append(runtime.totalMemory() - runtime.freeMemory())
+            append("|nativeAllocatedBytes=").append(Debug.getNativeHeapAllocatedSize())
+            append("|totalPssBytes=").append(memory.totalPss.toLong() * 1_024L)
+            append("|gpuMetricAvailability=UNKNOWN")
             append("|counterComplete=").append(counterCompleteness)
         }
     }
+
+    private fun safeMetricToken(value: String?): String = value
+        ?.takeIf { it.matches(SAFE_METRIC_TOKEN_PATTERN) }
+        ?: "UNKNOWN"
 
     private fun readHarnessIdentity(source: Intent): Boolean {
         runId = source.getStringExtra(EXTRA_RUN_ID).orEmpty()
@@ -1071,6 +1135,8 @@ class BenchmarkActivity : ComponentActivity() {
         SCENARIO_HOLD_720_PLUS_FIVE -> REPRESENTATIVE_720_H264_BFRAMES
         SCENARIO_HOLD_1080_PLUS_ONE,
         SCENARIO_HOLD_1080_PLUS_FIVE,
+        SCENARIO_HOLD_1080_MINUS_ONE,
+        SCENARIO_HOLD_1080_MINUS_FIVE,
         SCENARIO_REVERSE_1080,
         SCENARIO_SEEK_1080 -> REPRESENTATIVE_1080_H264_BFRAMES
         SCENARIO_SWITCH_1080_HEVC_H264 -> REPRESENTATIVE_1080_SWITCH_HEVC
@@ -1135,6 +1201,8 @@ class BenchmarkActivity : ComponentActivity() {
         const val SCENARIO_HOLD_720_PLUS_FIVE = "720p-hold-plus-five"
         const val SCENARIO_HOLD_1080_PLUS_ONE = "1080p-hold-plus-one"
         const val SCENARIO_HOLD_1080_PLUS_FIVE = "1080p-hold-plus-five"
+        const val SCENARIO_HOLD_1080_MINUS_ONE = "1080p-hold-minus-one"
+        const val SCENARIO_HOLD_1080_MINUS_FIVE = "1080p-hold-minus-five"
         const val SCENARIO_REVERSE_1080 = "1080p-direction-reverse"
         const val SCENARIO_SEEK_1080 = "1080p-distant-seek"
         const val SCENARIO_SWITCH_1080_H264_HEVC = "1080p-switch-h264-hevc"
@@ -1163,6 +1231,8 @@ class BenchmarkActivity : ComponentActivity() {
         private const val DISTANT_FRAME = 36
         private const val REPEAT_INTERVAL_MS = 50L
         private const val REPRESENTATIVE_HOLD_ACTIVE_NS = 60_000_000_000L
+        private const val BASELINE_REVERSE_ACTIVE_NS = 10_000_000_000L
+        private const val BASELINE_REVERSE_PUBLICATION_TARGET = 100L
         private const val REPRESENTATIVE_REVERSE_ACTIVE_NS = 30_000_000_000L
         private const val REVERSE_DIRECTION_INTERVAL_MS = 5_000L
         private const val REPRESENTATIVE_SETTLE_TIMEOUT_MS = 10_000L
@@ -1174,12 +1244,15 @@ class BenchmarkActivity : ComponentActivity() {
         private val RUN_ID_PATTERN = Regex("[A-Za-z0-9._:-]{1,80}")
         private val TRACE_IDENTITY_PATTERN = Regex("[A-Za-z0-9._:-]{1,120}")
         private val GIT_SHA_PATTERN = Regex("[0-9a-f]{40}")
+        private val SAFE_METRIC_TOKEN_PATTERN = Regex("[A-Za-z0-9._-]{1,96}")
         private val SHA256_PATTERN = Regex("[0-9a-f]{64}")
         private val REPRESENTATIVE_HOLD_SCENARIOS = setOf(
             SCENARIO_HOLD_720_PLUS_ONE,
             SCENARIO_HOLD_720_PLUS_FIVE,
             SCENARIO_HOLD_1080_PLUS_ONE,
             SCENARIO_HOLD_1080_PLUS_FIVE,
+            SCENARIO_HOLD_1080_MINUS_ONE,
+            SCENARIO_HOLD_1080_MINUS_FIVE,
             SCENARIO_REVERSE_1080,
         )
         private val REPRESENTATIVE_SCENARIOS = REPRESENTATIVE_HOLD_SCENARIOS + setOf(

@@ -27,6 +27,7 @@ import org.json.JSONObject
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlin.math.ceil
 
 @LargeTest
 @RunWith(AndroidJUnit4::class)
@@ -36,6 +37,183 @@ import org.junit.runner.RunWith
     ExperimentalTraceProcessorApi::class,
 )
 class CcrProductMacrobenchmark {
+    private data class RequestStageTimestamps(
+        val acceptedNs: Long,
+        val firstOutputNs: Long?,
+        val targetOutputNs: Long?,
+        val publishedNs: Long,
+    )
+
+    private class CcrRequestStageMetric : TraceMetric() {
+        override fun getMeasurements(
+            captureInfo: Metric.CaptureInfo,
+            traceSession: TraceProcessor.Session,
+        ): List<Metric.Measurement> {
+            val rows = traceSession.query(
+                """
+                WITH measurement_window AS (
+                    SELECT ts AS start_ns, ts + dur AS end_ns
+                    FROM slice
+                    WHERE name = '$TRACE_REPRESENTATIVE_SMOOTHNESS' AND dur >= 0
+                ),
+                accepted AS (
+                    SELECT substr(name, length('$REQUEST_ACCEPT_STAGE') + 2) AS request_key,
+                           MIN(ts) AS accepted_ns
+                    FROM slice
+                    WHERE name GLOB '$REQUEST_ACCEPT_STAGE f=* r=* i=* p=*'
+                    GROUP BY request_key
+                ),
+                first_output AS (
+                    SELECT substr(name, length('$OUTPUT_FIRST_STAGE') + 2) AS request_key,
+                           MIN(ts) AS first_output_ns
+                    FROM slice
+                    WHERE name GLOB '$OUTPUT_FIRST_STAGE f=* r=* i=* p=*'
+                    GROUP BY request_key
+                ),
+                target_output AS (
+                    SELECT substr(name, length('$OUTPUT_TARGET_STAGE') + 2) AS request_key,
+                           MIN(ts) AS target_output_ns
+                    FROM slice
+                    WHERE name GLOB '$OUTPUT_TARGET_STAGE f=* r=* i=* p=*'
+                    GROUP BY request_key
+                ),
+                published AS (
+                    SELECT substr(publication.name, length('$PUBLISH_STAGE') + 2) AS request_key,
+                           MIN(publication.ts + publication.dur) AS published_ns
+                    FROM slice AS publication
+                    WHERE publication.name GLOB '$PUBLISH_STAGE f=* r=* i=* p=*'
+                      AND publication.dur >= 0
+                      AND EXISTS (
+                          SELECT 1
+                          FROM measurement_window
+                          WHERE publication.ts + publication.dur
+                              BETWEEN measurement_window.start_ns AND measurement_window.end_ns
+                      )
+                    GROUP BY request_key
+                )
+                SELECT accepted.accepted_ns AS accepted_ns,
+                       first_output.first_output_ns AS first_output_ns,
+                       target_output.target_output_ns AS target_output_ns,
+                       published.published_ns AS published_ns
+                FROM published
+                JOIN accepted USING (request_key)
+                LEFT JOIN first_output USING (request_key)
+                LEFT JOIN target_output USING (request_key)
+                ORDER BY published.published_ns
+                """.trimIndent(),
+            ).map { row ->
+                RequestStageTimestamps(
+                    acceptedNs = row.long("accepted_ns"),
+                    firstOutputNs = row.nullableLong("first_output_ns"),
+                    targetOutputNs = row.nullableLong("target_output_ns"),
+                    publishedNs = row.long("published_ns"),
+                )
+            }.toList()
+
+            val counters = traceSession.query(
+                """
+                WITH ranked AS (
+                    SELECT counter_track.name AS name,
+                           CAST(counter.value AS INT) AS value,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY counter_track.name ORDER BY counter.ts DESC
+                           ) AS rank
+                    FROM counter
+                    JOIN counter_track ON counter.track_id = counter_track.id
+                    WHERE counter_track.name IN (
+                        'ccr.publication_count',
+                        'ccr.measurement_swap_failure'
+                    )
+                )
+                SELECT name, value FROM ranked WHERE rank = 1
+                """.trimIndent(),
+            ).associate { row -> row.string("name") to row.long("value") }
+            check(counters.keys == EXPECTED_COUNTERS) {
+                "Missing CCR request-stage counters: ${(EXPECTED_COUNTERS - counters.keys).sorted()}"
+            }
+            val publishedCount = counters.getValue("ccr.publication_count")
+            check(publishedCount > 0L) { "CCR request-stage trace has no successful publications" }
+            check(counters.getValue("ccr.measurement_swap_failure") == 0L) {
+                "CCR request-stage trace includes a swap failure"
+            }
+            check(rows.size.toLong() == publishedCount) {
+                "CCR publication trace/count mismatch: trace=${rows.size}, counter=$publishedCount"
+            }
+
+            rows.forEach { row ->
+                check(row.acceptedNs <= row.publishedNs) { "CCR publication precedes request acceptance" }
+                check((row.firstOutputNs == null) == (row.targetOutputNs == null)) {
+                    "CCR request has only one decoder-output stage"
+                }
+                row.firstOutputNs?.let { first ->
+                    check(first in row.acceptedNs..row.publishedNs) {
+                        "CCR first decoder output is outside the request/publication interval"
+                    }
+                }
+                row.targetOutputNs?.let { target ->
+                    check(target in row.acceptedNs..row.publishedNs) {
+                        "CCR target decoder output is outside the request/publication interval"
+                    }
+                    check(target >= requireNotNull(row.firstOutputNs)) {
+                        "CCR target decoder output precedes first decoder output"
+                    }
+                }
+            }
+
+            val decodedRows = rows.filter { it.firstOutputNs != null }
+            check(decodedRows.isNotEmpty()) {
+                "CCR request-stage trace contains no decoded request; latency remains unavailable"
+            }
+            val acceptedToFirstOutputUs = decodedRows.map {
+                (requireNotNull(it.firstOutputNs) - it.acceptedNs) / 1_000L
+            }.sorted()
+            val acceptedToTargetOutputUs = decodedRows.map {
+                (requireNotNull(it.targetOutputNs) - it.acceptedNs) / 1_000L
+            }.sorted()
+            val acceptedToPublicationUs = rows.map {
+                (it.publishedNs - it.acceptedNs) / 1_000L
+            }.sorted()
+
+            return buildList {
+                addSeries("ccrAcceptedToFirstOutput", acceptedToFirstOutputUs)
+                addSeries("ccrAcceptedToTargetOutput", acceptedToTargetOutputUs)
+                addSeries("ccrAcceptedToSuccessfulPublication", acceptedToPublicationUs)
+                add(Metric.Measurement("ccrSuccessfulPublicationTraceCount", rows.size.toDouble()))
+                add(Metric.Measurement("ccrDecoderOutputTraceCount", decodedRows.size.toDouble()))
+                add(
+                    Metric.Measurement(
+                        "ccrMissingDecoderOutputTraceCount",
+                        (rows.size - decodedRows.size).toDouble(),
+                    ),
+                )
+            }
+        }
+
+        private fun MutableList<Metric.Measurement>.addSeries(
+            name: String,
+            sortedValuesUs: List<Long>,
+        ) {
+            check(sortedValuesUs.isNotEmpty()) { "CCR request-stage latency series is empty: $name" }
+            add(Metric.Measurement("${name}P50Us", sortedValuesUs.percentile(0.50).toDouble()))
+            add(Metric.Measurement("${name}P95Us", sortedValuesUs.percentile(0.95).toDouble()))
+            add(Metric.Measurement("${name}MaxUs", sortedValuesUs.last().toDouble()))
+        }
+
+        private fun List<Long>.percentile(fraction: Double): Long =
+            this[(ceil(size * fraction).toInt() - 1).coerceIn(0, lastIndex)]
+
+        private companion object {
+            const val REQUEST_ACCEPT_STAGE = "CCR.request.accept"
+            const val OUTPUT_FIRST_STAGE = "CCR.output.first"
+            const val OUTPUT_TARGET_STAGE = "CCR.output.target"
+            const val PUBLISH_STAGE = "CCR.publish"
+            val EXPECTED_COUNTERS = setOf(
+                "ccr.publication_count",
+                "ccr.measurement_swap_failure",
+            )
+        }
+    }
+
     private class CcrCounterMetric : TraceMetric() {
         override fun getMeasurements(
             captureInfo: Metric.CaptureInfo,
@@ -214,6 +392,12 @@ class CcrProductMacrobenchmark {
     fun hold1080PlusFive() = representativeFixture(SCENARIO_HOLD_1080_PLUS_FIVE)
 
     @Test
+    fun hold1080MinusOneAlpha4Baseline() = representativeFixture(SCENARIO_HOLD_1080_MINUS_ONE)
+
+    @Test
+    fun hold1080MinusFiveAlpha4Baseline() = representativeFixture(SCENARIO_HOLD_1080_MINUS_FIVE)
+
+    @Test
     fun reverse1080() = representativeFixture(SCENARIO_REVERSE_1080)
 
     @Test
@@ -263,9 +447,15 @@ class CcrProductMacrobenchmark {
         lateinit var traceIdentity: String
         val traceIdentities = mutableSetOf<String>()
         val iterationEvidence = mutableListOf<IterationEvidence>()
+        val requestStageMetrics = if (scenario in ALPHA4_REVERSE_BASELINE_SCENARIOS) {
+            listOf(CcrRequestStageMetric())
+        } else {
+            emptyList()
+        }
         benchmarkRule.measureRepeated(
             packageName = TARGET_PACKAGE,
-            metrics = interactionMetrics(TRACE_REPRESENTATIVE_SMOOTHNESS) + CcrCounterMetric(),
+            metrics = interactionMetrics(TRACE_REPRESENTATIVE_SMOOTHNESS) +
+                CcrCounterMetric() + requestStageMetrics,
             iterations = REPRESENTATIVE_ITERATIONS,
             compilationMode = CompilationMode.Ignore(),
             startupMode = null,
@@ -373,6 +563,16 @@ class CcrProductMacrobenchmark {
                 "|releaseAfterAcceptedTargetCount=",
                 "|holdPrefetchStarted=",
                 "|holdPrefetchCompleted=",
+                "|codecComponent=",
+                "|cacheBudgetBytes=",
+                "|cacheBytes=",
+                "|textureDoubleReleaseCount=",
+                "|staleBeforeSwapCount=",
+                "|surfaceInvalidCount=",
+                "|publicationInvariantViolationCount=",
+                "|javaUsedBytes=",
+                "|nativeAllocatedBytes=",
+                "|totalPssBytes=",
                 "|counterComplete=true",
             )
             check(requiredCounters.all(status::contains)) {
@@ -413,6 +613,36 @@ class CcrProductMacrobenchmark {
             check(required("traceIdentity") == item.traceIdentity) { "Report trace identity mismatch" }
             check(required("runIteration").toInt() == item.runIteration) { "Report iteration mismatch" }
             check(required("counterComplete").toBooleanStrict()) { "Report counters incomplete" }
+            check(required("codecComponent") != "UNKNOWN") { "Decoder component unavailable" }
+            check(required("hardwareAccelerated").toBooleanStrict()) { "Software decoder forbidden" }
+            val canonicalFrameBytes = required("canonicalFrameBytes").toLong()
+            val cacheBudgetBytes = required("cacheBudgetBytes").toLong()
+            val cacheBytes = required("cacheBytes").toLong()
+            check(canonicalFrameBytes > 0L && cacheBudgetBytes > 0L) {
+                "Cache byte contract unavailable"
+            }
+            check(cacheBytes in 0L..cacheBudgetBytes) {
+                "Cache budget exceeded"
+            }
+            check(required("staleDiscardCount").toLong() == 0L) { "Stale decode result observed" }
+            check(required("outstandingForegroundTargetDepthMax").toInt() <= 1) {
+                "More than one foreground target was outstanding"
+            }
+            check(required("releaseAfterAcceptedTargetCount").toLong() == 0L) {
+                "A target was accepted after hold release"
+            }
+            listOf(
+                "swapFailure" to "Swap failure",
+                "textureDoubleReleaseCount" to "Texture double release",
+                "staleBeforeSwapCount" to "Stale swap",
+                "surfaceInvalidCount" to "Invalid Surface publication",
+                "publicationInvariantViolationCount" to "Publication invariant violation",
+            ).forEach { (field, description) ->
+                check(required(field).toLong() == 0L) { "$description observed" }
+            }
+            check(required("gpuMetricAvailability") == "UNKNOWN") {
+                "Unexpected GPU metric availability value"
+            }
             iterations.put(
                 JSONObject()
                     .put("runIteration", item.runIteration)
@@ -424,6 +654,7 @@ class CcrProductMacrobenchmark {
                     .put("publicationIntervalP50Us", required("intervalP50Us").toLong())
                     .put("publicationIntervalP95Us", required("intervalP95Us").toLong())
                     .put("publicationIntervalMaxUs", required("intervalMaxUs").toLong())
+                    .put("publicationGapMaxUs", required("gapMaxUs").toLong())
                     .put("rawLagP50", required("lagP50").toLong())
                     .put("rawLagP95", required("lagP95").toLong())
                     .put("rawLagMax", required("lagMax").toLong())
@@ -437,7 +668,42 @@ class CcrProductMacrobenchmark {
                         required("releaseAfterAcceptedTargetCount").toLong(),
                     )
                     .put("holdPrefetchStarted", required("holdPrefetchStarted").toLong())
-                    .put("holdPrefetchCompleted", required("holdPrefetchCompleted").toLong()),
+                    .put("holdPrefetchCompleted", required("holdPrefetchCompleted").toLong())
+                    .put("foregroundDecoded", required("foregroundDecoded").toLong())
+                    .put("issuedRequestCount", required("issued").toLong())
+                    .put("coalescedRequestCount", required("coalesced").toLong())
+                    .put("prefetchHitCount", required("prefetchHit").toLong())
+                    .put("cacheEvictionCount", required("cacheEviction").toLong())
+                    .put("seekCount", required("seek").toLong())
+                    .put("flushCount", required("flush").toLong())
+                    .put("sequentialEntryCount", required("sequentialEntry").toLong())
+                    .put("sequentialFallbackCount", required("sequentialFallback").toLong())
+                    .put("sequentialOutputCount", required("sequentialOutput").toLong())
+                    .put("swapFailureCount", required("swapFailure").toLong())
+                    .put("codecComponent", required("codecComponent"))
+                    .put("hardwareAccelerated", required("hardwareAccelerated").toBooleanStrict())
+                    .put("canonicalFrameBytes", required("canonicalFrameBytes").toLong())
+                    .put("cacheBudgetBytes", required("cacheBudgetBytes").toLong())
+                    .put("cacheBytes", required("cacheBytes").toLong())
+                    .put("cacheEntryCount", required("cacheEntryCount").toLong())
+                    .put("peakCacheEntryCount", required("peakCacheEntryCount").toLong())
+                    .put("cacheRejectionCount", required("cacheRejectionCount").toLong())
+                    .put("cacheThrashCount", required("cacheThrashCount").toLong())
+                    .put("liveTextureCount", required("liveTextureCount").toLong())
+                    .put("peakLiveTextureCount", required("peakLiveTextureCount").toLong())
+                    .put("textureDoubleReleaseCount", required("textureDoubleReleaseCount").toLong())
+                    .put("staleDiscardCount", required("staleDiscardCount").toLong())
+                    .put("staleBeforeSwapCount", required("staleBeforeSwapCount").toLong())
+                    .put("surfaceInvalidCount", required("surfaceInvalidCount").toLong())
+                    .put(
+                        "publicationInvariantViolationCount",
+                        required("publicationInvariantViolationCount").toLong(),
+                    )
+                    .put("decoderRecreateCount", required("decoderRecreateCount").toLong())
+                    .put("javaUsedBytes", required("javaUsedBytes").toLong())
+                    .put("nativeAllocatedBytes", required("nativeAllocatedBytes").toLong())
+                    .put("totalPssBytes", required("totalPssBytes").toLong())
+                    .put("gpuMetricAvailability", required("gpuMetricAvailability")),
             )
         }
         val report = JSONObject()
@@ -527,6 +793,8 @@ class CcrProductMacrobenchmark {
         private const val SCENARIO_HOLD_720_PLUS_FIVE = "720p-hold-plus-five"
         private const val SCENARIO_HOLD_1080_PLUS_ONE = "1080p-hold-plus-one"
         private const val SCENARIO_HOLD_1080_PLUS_FIVE = "1080p-hold-plus-five"
+        private const val SCENARIO_HOLD_1080_MINUS_ONE = "1080p-hold-minus-one"
+        private const val SCENARIO_HOLD_1080_MINUS_FIVE = "1080p-hold-minus-five"
         private const val SCENARIO_REVERSE_1080 = "1080p-direction-reverse"
         private const val SCENARIO_SEEK_1080 = "1080p-distant-seek"
         private const val SCENARIO_SWITCH_1080_H264_HEVC = "1080p-switch-h264-hevc"
@@ -546,5 +814,9 @@ class CcrProductMacrobenchmark {
         private val RUN_ID_PATTERN = Regex("[A-Za-z0-9._:-]{1,48}")
         private val GIT_SHA_PATTERN = Regex("[0-9a-f]{40}")
         private val SHA256_PATTERN = Regex("[0-9a-f]{64}")
+        private val ALPHA4_REVERSE_BASELINE_SCENARIOS = setOf(
+            SCENARIO_HOLD_1080_MINUS_ONE,
+            SCENARIO_HOLD_1080_MINUS_FIVE,
+        )
     }
 }
