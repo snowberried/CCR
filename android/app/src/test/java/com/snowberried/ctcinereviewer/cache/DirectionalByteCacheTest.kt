@@ -19,6 +19,7 @@ class DirectionalByteCacheTest {
         cache.put(4, "four", 4)
 
         assertEquals(12, cache.byteSize)
+        assertEquals(12, cache.peakByteSize)
         assertNull(cache.get(1))
         assertEquals(listOf("one"), evicted)
         assertEquals(3, cache.peakSize)
@@ -50,6 +51,7 @@ class DirectionalByteCacheTest {
         assertEquals(2, evicted.size)
         cache.trimToBytes(0)
         assertEquals(0L, cache.byteSize)
+        assertEquals(12L, cache.peakByteSize)
     }
 
     @Test

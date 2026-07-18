@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.view.SurfaceHolder
 import android.view.WindowManager
 import android.widget.FrameLayout
+import com.snowberried.ctcinereviewer.NavigationMode
 import com.snowberried.ctcinereviewer.media.DecoderDiagnostics
 import com.snowberried.ctcinereviewer.media.ContainerMetadata
 import com.snowberried.ctcinereviewer.media.DirectionalPrefetchDirection
@@ -15,6 +16,7 @@ import com.snowberried.ctcinereviewer.media.IndexedVideo
 import com.snowberried.ctcinereviewer.media.PublicationEvent
 import com.snowberried.ctcinereviewer.media.RequestAcceptance
 import com.snowberried.ctcinereviewer.render.FrameRenderMode
+import com.snowberried.ctcinereviewer.render.VideoViewport
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -23,6 +25,7 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
     data class ObservedResult(val result: FrameResult, val diagnostics: DecoderDiagnostics)
 
     private lateinit var session: ExactFrameSession
+    private lateinit var root: FrameLayout
     private val holderSurfaceReady = CountDownLatch(1)
     private val decoderSurfaceReady = CountDownLatch(1)
     private val metadata = LinkedBlockingQueue<ContainerMetadata>()
@@ -30,8 +33,10 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
     private val results = LinkedBlockingQueue<ObservedResult>()
     private val statuses = LinkedBlockingQueue<Pair<String, String?>>()
     private val publicationEvents = LinkedBlockingQueue<PublicationEvent>()
+    @Volatile private var replacementSurfaceReady: CountDownLatch? = null
     @Volatile private var latestDiagnostics = DecoderDiagnostics()
     private var lastRequestedIndex = 0
+    private var nextHoldGestureGeneration = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,13 +46,20 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
             FrameRenderMode.EXACTNESS
         }
         session = ExactFrameSession(this, this, renderMode)
-        val viewport = session.createViewport(this)
+        root = FrameLayout(this)
+        setContentView(root)
+        installViewport(holderSurfaceReady)
+    }
+
+    private fun installViewport(holderReady: CountDownLatch) {
+        val viewport: VideoViewport = session.createViewport(this)
         viewport.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) = holderSurfaceReady.countDown()
+            override fun surfaceCreated(holder: SurfaceHolder) = holderReady.countDown()
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
             override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
         })
-        setContentView(FrameLayout(this).apply { addView(viewport, FrameLayout.LayoutParams(-1, -1)) })
+        root.removeAllViews()
+        root.addView(viewport, FrameLayout.LayoutParams(-1, -1))
     }
 
     fun awaitSurface(timeoutSeconds: Long = 5): Boolean {
@@ -68,7 +80,7 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
 
     fun requestFrame(index: Int): RequestAcceptance? {
         lastRequestedIndex = index
-        return session.requestFrame(index)
+        return session.requestNavigationFrame(index, NavigationMode.DIRECT_FRAME_SEEK)
     }
 
     fun requestDirectionalFrame(index: Int): RequestAcceptance? {
@@ -87,8 +99,37 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
         return session.tryRequestFrame(
             frameIndex = index,
             prefetchPermit = null,
-            forwardTraversalStride = stride,
+            holdTraversalStride = stride,
+            holdGestureGeneration = 0,
+            navigationMode = NavigationMode.HOLD_FORWARD,
         )
+    }
+
+    fun beginHoldGesture(): Long {
+        nextHoldGestureGeneration += 1
+        return nextHoldGestureGeneration
+    }
+
+    fun requestReverseSequentialFrame(
+        index: Int,
+        stride: Int,
+        gestureGeneration: Long,
+    ): RequestAcceptance? {
+        require(stride == -1 || stride == -5)
+        lastRequestedIndex = index
+        return session.requestNavigationFrame(
+            frameIndex = index,
+            navigationMode = NavigationMode.HOLD_REVERSE,
+            holdTraversalStride = stride,
+            holdGestureGeneration = gestureGeneration,
+        )
+    }
+
+    fun endHoldGesture(gestureGeneration: Long) = session.endHoldTraversal(gestureGeneration)
+
+    fun replaceSurfaceForTest(): CountDownLatch = CountDownLatch(2).also { ready ->
+        replacementSurfaceReady = ready
+        installViewport(ready)
     }
 
     fun awaitActorIdle(timeoutMs: Long = 5_000): Boolean = session.awaitActorIdleForTest(timeoutMs)
@@ -131,7 +172,10 @@ class GateActivity : Activity(), ExactFrameSession.Listener {
     }
 
     override fun onSurfaceAvailabilityChanged(available: Boolean) {
-        if (available) decoderSurfaceReady.countDown()
+        if (available) {
+            decoderSurfaceReady.countDown()
+            replacementSurfaceReady?.countDown()
+        }
     }
 
     override fun onDestroy() {

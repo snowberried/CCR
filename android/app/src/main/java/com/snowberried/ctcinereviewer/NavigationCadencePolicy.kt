@@ -13,6 +13,9 @@ internal enum class NavigationMode {
 internal val NavigationMode.isHold: Boolean
     get() = this == NavigationMode.HOLD_FORWARD || this == NavigationMode.HOLD_REVERSE
 
+internal val NavigationMode.isSupersedingSeek: Boolean
+    get() = this == NavigationMode.TIMELINE_SEEK || this == NavigationMode.DIRECT_FRAME_SEEK
+
 /** Caps held-navigation request cadence without creating a target backlog. */
 internal class NavigationCadencePolicy(
     private val strideOnePublicationsPerSecond: Int = STRIDE_ONE_PUBLICATIONS_PER_SECOND,

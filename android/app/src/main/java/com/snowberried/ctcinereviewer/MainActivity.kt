@@ -483,6 +483,13 @@ private fun DiagnosticPanel(
                 "${diagnostics.backwardHistoryDepth}/${diagnostics.backwardHistoryCapacity} · " +
                 "hit ${diagnostics.backwardHistoryHitCount}",
         )
+        Text(
+            "reverse window: ready ${diagnostics.reverseWindowReadyCount} · " +
+                "hit ${diagnostics.reverseWindowHitCount} · build ${diagnostics.reverseWindowBuildCount} · " +
+                "fallback ${diagnostics.reverseWindowFallbackCount} · " +
+                "stall ${diagnostics.reverseWindowRefillStallCount}/" +
+                "${diagnostics.reverseWindowRefillStallMaxUs}us",
+        )
         Text("복구: ${state.restoreState} · surface=${state.surfaceAvailable}")
         Text("세대: ${state.activeFileGeneration ?: "-"}/${state.activeRequestGeneration ?: "-"}")
         if (BuildConfig.DEBUG) {

@@ -249,6 +249,7 @@ class ViewerViewModel(
     fun endNavigationGesture(gestureGeneration: Long) {
         navigationGestureGate.end(gestureGeneration)
         holdController.end(gestureGeneration)
+        session.endHoldTraversal(gestureGeneration)
         cancelScheduledHoldDrive()
     }
 
@@ -305,9 +306,14 @@ class ViewerViewModel(
         )
         if (!foreground || !uiState.surfaceAvailable) return
         if (decodeInFlight) {
-            if (pendingRequestedFrame != null) session.recordViewerRequestCoalesced()
-            pendingRequestedFrame = PendingFrameRequest(target, prefetchPermit, mode)
-            uiState = uiState.copy(latestPendingRequest = target)
+            if (mode.isSupersedingSeek) {
+                pendingRequestedFrame = null
+                submitFrameRequest(target, prefetchPermit, mode, gateGeneration = gateGeneration)
+            } else {
+                if (pendingRequestedFrame != null) session.recordViewerRequestCoalesced()
+                pendingRequestedFrame = PendingFrameRequest(target, prefetchPermit, mode)
+                uiState = uiState.copy(latestPendingRequest = target)
+            }
         } else {
             submitFrameRequest(target, prefetchPermit, mode, gateGeneration = gateGeneration)
         }
@@ -574,11 +580,13 @@ class ViewerViewModel(
         holdTarget: HoldTraversalTarget? = null,
         gateGeneration: Long = gateActionGeneration,
     ) {
-        val forwardTraversalStride = holdTarget?.stride?.takeIf { it > 0 }
+        val holdTraversalStride = holdTarget?.stride
         val acceptance = session.tryRequestFrame(
             frameIndex = frameIndex,
             prefetchPermit = prefetchPermit,
-            forwardTraversalStride = forwardTraversalStride,
+            holdTraversalStride = holdTraversalStride,
+            holdGestureGeneration = holdTarget?.gestureGeneration,
+            navigationMode = mode,
         )
         if (acceptance == null) {
             retryGateAction(gateGeneration) {
@@ -588,7 +596,7 @@ class ViewerViewModel(
                     uiState.requestedFrameIndex == frameIndex
                 }
                 if (
-                    !decodeInFlight &&
+                    (!decodeInFlight || mode.isSupersedingSeek) &&
                     foreground &&
                     uiState.surfaceAvailable &&
                     requestStillCurrent

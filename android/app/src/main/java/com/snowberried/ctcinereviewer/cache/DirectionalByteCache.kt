@@ -25,6 +25,9 @@ class DirectionalByteCache<K, V>(
     var peakSize: Int = 0
         private set
 
+    var peakByteSize: Long = 0
+        private set
+
     var evictionCount: Long = 0
         private set
 
@@ -86,6 +89,7 @@ class DirectionalByteCache<K, V>(
         entries[key] = Entry(value, bytes)
         byteSize += bytes
         peakSize = maxOf(peakSize, entries.size)
+        peakByteSize = maxOf(peakByteSize, byteSize)
         return true
     }
 
