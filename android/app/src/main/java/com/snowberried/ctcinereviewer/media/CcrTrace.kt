@@ -3,6 +3,8 @@ package com.snowberried.ctcinereviewer.media
 import android.os.Trace
 
 internal object CcrTrace {
+    const val NAVIGATION_INPUT = "CCR.navigation.input"
+    const val NAVIGATION_PACING = "CCR.navigation.pacing"
     const val REQUEST_ACCEPT = "CCR.request.accept"
     const val ACTOR_START = "CCR.actor.start"
     const val SEEK = "CCR.seek"
