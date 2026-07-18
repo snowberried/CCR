@@ -14,8 +14,9 @@ import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
 import com.snowberried.ctcinereviewer.cache.DirectionalByteCache
-import com.snowberried.ctcinereviewer.media.ContainerMetadata
+import com.snowberried.ctcinereviewer.media.BackwardHistoryRing
 import com.snowberried.ctcinereviewer.media.CcrTrace
+import com.snowberried.ctcinereviewer.media.ContainerMetadata
 import com.snowberried.ctcinereviewer.media.DecodedOutputMetadata
 import com.snowberried.ctcinereviewer.media.DirectionalPrefetchDirection
 import com.snowberried.ctcinereviewer.media.FrameImageProbe
@@ -26,6 +27,7 @@ import com.snowberried.ctcinereviewer.media.PublicationEvent
 import com.snowberried.ctcinereviewer.media.PublicationGate
 import com.snowberried.ctcinereviewer.media.PublicationResult
 import com.snowberried.ctcinereviewer.media.PrefetchBudgetDecision
+import com.snowberried.ctcinereviewer.media.canonicalFrameBytes
 import com.snowberried.ctcinereviewer.media.prefetchBudgetDecision
 import com.snowberried.ctcinereviewer.media.rendererCacheByteBudget
 import java.nio.ByteBuffer
@@ -101,6 +103,10 @@ class EglFrameRenderer(
         val peakLiveTextureCount: Int,
         val textureDoubleReleaseCount: Long,
         val fullFrameReadbackCount: Long,
+        val protectedTextureCount: Int,
+        val backwardHistoryCapacity: Int,
+        val backwardHistoryDepth: Int,
+        val backwardHistoryHitCount: Long,
     )
 
     class TargetHandle internal constructor(val request: FrameRequest) {
@@ -193,12 +199,14 @@ class EglFrameRenderer(
     private var prefetchEvictedBeforeUseCount = 0L
     private var prefetchWastedCount = 0L
     private var prefetchRejectedCount = 0L
+    private var backwardHistoryHitCount = 0L
     private var nextTextureAllocationId = 0L
     private val textureLifetimeTracker = TextureLifetimeTracker()
     private val probePolicy = FrameProbePolicy(renderMode)
     private val surfaceLeases = SurfaceLeaseTracker()
 
     private val byteBudget = rendererCacheByteBudget(Runtime.getRuntime().maxMemory())
+    private val backwardHistory = BackwardHistoryRing(byteBudget)
     private val cache = DirectionalByteCache<FrameKey, CachedTexture>(
         byteBudget = byteBudget,
         frameIndex = { it.displayFrameIndex },
@@ -210,6 +218,7 @@ class EglFrameRenderer(
                 prefetchEvictedBeforeUseCount += 1
                 prefetchWastedCount += 1
             }
+            backwardHistory.remove(key)
             if (lastPublishedKey == key) lastPublishedKey = null
         },
     )
@@ -269,6 +278,7 @@ class EglFrameRenderer(
             pendingTarget?.complete?.invoke(RenderAck(AckStatus.STALE, 0, "FILE_CHANGED"))
             pendingTarget = null
             cache.clear()
+            backwardHistory.reset()
             rebindDecoderInputSurface()
             lastPublishedKey = null
             prefetchedKeys.clear()
@@ -276,6 +286,7 @@ class EglFrameRenderer(
             prefetchEvictedBeforeUseCount = 0
             prefetchWastedCount = 0
             prefetchRejectedCount = 0
+            backwardHistoryHitCount = 0
             true
         }
     }
@@ -304,6 +315,7 @@ class EglFrameRenderer(
             )
             if (nextSourceWidth != sourceWidth || nextSourceHeight != sourceHeight || nextGeometry != canonicalGeometry) {
                 if (display != EGL14.EGL_NO_DISPLAY) cache.clear()
+                backwardHistory.reset()
                 lastPublishedKey = null
                 sourceWidth = nextSourceWidth
                 sourceHeight = nextSourceHeight
@@ -326,13 +338,15 @@ class EglFrameRenderer(
                 return@callOnRenderer RenderAck(AckStatus.STALE, 0, "CACHE_GENERATION_STALE")
             }
             cache.recordRequest(request.requestedFrameIndex)
+            val backwardHistoryHit = backwardHistory.contains(request.expectedKey)
             val cached = cache.get(request.expectedKey) ?: return@callOnRenderer null
+            if (backwardHistoryHit) backwardHistoryHitCount += 1
             if (prefetchedKeys.remove(request.expectedKey)) prefetchCacheHitCount += 1
             CcrTrace.section(CcrTrace.requestLabel(CcrTrace.DRAW, request)) {
                 drawTextureToWindow(cached)
             }
             val event = publish(request, cached.timestampNs)
-            if (event.result == PublicationResult.PUBLISHED) lastPublishedKey = request.expectedKey
+            if (event.result == PublicationResult.PUBLISHED) recordPublished(request.expectedKey)
             renderAckFor(
                 event,
                 cacheHit = true,
@@ -464,32 +478,38 @@ class EglFrameRenderer(
                 return@post
             }
             result.set(
-                PrefetchSnapshot(
-                    budget = prefetchBudgetDecision(
-                        width = canonicalGeometry.width,
-                        height = canonicalGeometry.height,
-                        cacheBudgetBytes = byteBudget,
-                    ),
-                    cachedFrameKeys = frameKeys.filterTo(mutableSetOf(), cache::containsKey),
-                    cacheHitCount = prefetchCacheHitCount,
-                    evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
-                    wastedCount = prefetchWastedCount,
-                    currentDepth = prefetchedKeys.size,
-                    cacheEntryCount = cache.size,
-                    peakCacheEntryCount = cache.peakSize,
-                    cacheEvictionCount = cache.evictionCount,
-                    cacheRejectionCount = cache.rejectionCount,
-                    cacheThrashCount = prefetchEvictedBeforeUseCount + prefetchRejectedCount,
-                    cacheBytes = cache.byteSize,
-                    cacheRequestHitCount = cache.hitCount,
-                    cacheRequestMissCount = cache.missCount,
-                    textureCreatedCount = textureLifetimeTracker.createdCount,
-                    textureReleasedCount = textureLifetimeTracker.releasedCount,
-                    liveTextureCount = textureLifetimeTracker.liveCount,
-                    peakLiveTextureCount = textureLifetimeTracker.peakLiveCount,
-                    textureDoubleReleaseCount = textureLifetimeTracker.doubleReleaseCount,
-                    fullFrameReadbackCount = probePolicy.readbackCount(),
-                ),
+                backwardHistory.snapshot().let { history ->
+                    PrefetchSnapshot(
+                        budget = prefetchBudgetDecision(
+                            width = canonicalGeometry.width,
+                            height = canonicalGeometry.height,
+                            cacheBudgetBytes = byteBudget,
+                        ),
+                        cachedFrameKeys = frameKeys.filterTo(mutableSetOf(), cache::containsKey),
+                        cacheHitCount = prefetchCacheHitCount,
+                        evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
+                        wastedCount = prefetchWastedCount,
+                        currentDepth = prefetchedKeys.size,
+                        cacheEntryCount = cache.size,
+                        peakCacheEntryCount = cache.peakSize,
+                        cacheEvictionCount = cache.evictionCount,
+                        cacheRejectionCount = cache.rejectionCount,
+                        cacheThrashCount = prefetchEvictedBeforeUseCount + prefetchRejectedCount,
+                        cacheBytes = cache.byteSize,
+                        cacheRequestHitCount = cache.hitCount,
+                        cacheRequestMissCount = cache.missCount,
+                        textureCreatedCount = textureLifetimeTracker.createdCount,
+                        textureReleasedCount = textureLifetimeTracker.releasedCount,
+                        liveTextureCount = textureLifetimeTracker.liveCount,
+                        peakLiveTextureCount = textureLifetimeTracker.peakLiveCount,
+                        textureDoubleReleaseCount = textureLifetimeTracker.doubleReleaseCount,
+                        fullFrameReadbackCount = probePolicy.readbackCount(),
+                        protectedTextureCount = protectedCacheKeys().count(cache::containsKey),
+                        backwardHistoryCapacity = history.capacity,
+                        backwardHistoryDepth = history.depth,
+                        backwardHistoryHitCount = backwardHistoryHitCount,
+                    )
+                },
             )
             latch.countDown()
         }
@@ -505,7 +525,11 @@ class EglFrameRenderer(
         handler.post {
             if (unavailable()) return@post
             val targetBytes = cacheTargetBytes(level, byteBudget)
-            if (targetBytes == 0L) cache.clear() else cache.trimToBytes(targetBytes)
+            cache.trimToBytes(targetBytes, protectedCacheKeys())
+            backwardHistory.configure(
+                canonicalFrameBytes = backwardHistory.snapshot().frameBytes,
+                availableBudgetBytes = targetBytes,
+            )
         }
     }
 
@@ -602,6 +626,17 @@ class EglFrameRenderer(
             return
         }
 
+        val expectedFrameBytes = canonicalFrameBytes(canonicalGeometry.width, canonicalGeometry.height)
+        val residentTargetBytes = residentCacheTargetBytes(byteBudget, expectedFrameBytes)
+        if (
+            expectedFrameBytes <= 0 ||
+            !cache.trimToBytes(residentTargetBytes, protectedCacheKeys())
+        ) {
+            handle.complete(RenderAck(AckStatus.ERROR, timestampNs, "IN_FLIGHT_CACHE_BUDGET_EXCEEDED"))
+            return
+        }
+        backwardHistory.configure(expectedFrameBytes)
+
         val textureMatrix = FloatArray(16)
         source.getTransformMatrix(textureMatrix)
         val cached = try {
@@ -619,6 +654,7 @@ class EglFrameRenderer(
         }
         val prefetchBudget = prefetchBudgetDecision(cached.width, cached.height, byteBudget)
         val frameBytes = prefetchBudget.canonicalFrameBytes
+        check(frameBytes == expectedFrameBytes)
         val retentionAllowed = handle.publicationRequest != null || handle.cacheRetentionAllowed?.invoke() == true
         var cacheAdmissionAttempted = false
         val retained = retentionAllowed && frameBytes > 0 && CcrTrace.section(
@@ -630,7 +666,7 @@ class EglFrameRenderer(
                     key = handle.expectedKey,
                     value = cached,
                     bytes = frameBytes,
-                    protectedKeys = setOfNotNull(lastPublishedKey),
+                    protectedKeys = protectedCacheKeys(),
                     maximumByteSize = if (handle.publicationRequest == null) {
                         prefetchBudget.availablePrefetchBytes + frameBytes
                     } else {
@@ -662,7 +698,7 @@ class EglFrameRenderer(
                     drawTextureToWindow(cached)
                 }
                 val event = publish(publicationRequest, timestampNs)
-                if (event.result == PublicationResult.PUBLISHED) lastPublishedKey = handle.expectedKey
+                if (event.result == PublicationResult.PUBLISHED) recordPublished(handle.expectedKey)
                 handle.complete(renderAckFor(event, imageProbe = cached.imageProbe))
                 if (!retained) releaseCachedTexture(cached)
             },
@@ -960,6 +996,7 @@ class EglFrameRenderer(
         if (display != EGL14.EGL_NO_DISPLAY) {
             runCatching { EGL14.eglMakeCurrent(display, eglWindowSurface, eglWindowSurface, context) }
             cache.clear()
+            backwardHistory.reset()
             lastPublishedKey = null
             if (oesProgram != 0) GLES30.glDeleteProgram(oesProgram)
             if (textureProgram != 0) GLES30.glDeleteProgram(textureProgram)
@@ -1017,28 +1054,45 @@ class EglFrameRenderer(
 
     private fun unavailable(): Boolean = closed || terminalFailure
 
-    private fun emptyPrefetchSnapshot(): PrefetchSnapshot = PrefetchSnapshot(
-        budget = prefetchBudgetDecision(0, 0, byteBudget),
-        cachedFrameKeys = emptySet(),
-        cacheHitCount = prefetchCacheHitCount,
-        evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
-        wastedCount = prefetchWastedCount,
-        currentDepth = prefetchedKeys.size,
-        cacheEntryCount = cache.size,
-        peakCacheEntryCount = cache.peakSize,
-        cacheEvictionCount = cache.evictionCount,
-        cacheRejectionCount = cache.rejectionCount,
-        cacheThrashCount = prefetchEvictedBeforeUseCount + prefetchRejectedCount,
-        cacheBytes = cache.byteSize,
-        cacheRequestHitCount = cache.hitCount,
-        cacheRequestMissCount = cache.missCount,
-        textureCreatedCount = textureLifetimeTracker.createdCount,
-        textureReleasedCount = textureLifetimeTracker.releasedCount,
-        liveTextureCount = textureLifetimeTracker.liveCount,
-        peakLiveTextureCount = textureLifetimeTracker.peakLiveCount,
-        textureDoubleReleaseCount = textureLifetimeTracker.doubleReleaseCount,
-        fullFrameReadbackCount = probePolicy.readbackCount(),
+    private fun emptyPrefetchSnapshot(): PrefetchSnapshot = backwardHistory.snapshot().let { history ->
+        PrefetchSnapshot(
+            budget = prefetchBudgetDecision(0, 0, byteBudget),
+            cachedFrameKeys = emptySet(),
+            cacheHitCount = prefetchCacheHitCount,
+            evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
+            wastedCount = prefetchWastedCount,
+            currentDepth = prefetchedKeys.size,
+            cacheEntryCount = cache.size,
+            peakCacheEntryCount = cache.peakSize,
+            cacheEvictionCount = cache.evictionCount,
+            cacheRejectionCount = cache.rejectionCount,
+            cacheThrashCount = prefetchEvictedBeforeUseCount + prefetchRejectedCount,
+            cacheBytes = cache.byteSize,
+            cacheRequestHitCount = cache.hitCount,
+            cacheRequestMissCount = cache.missCount,
+            textureCreatedCount = textureLifetimeTracker.createdCount,
+            textureReleasedCount = textureLifetimeTracker.releasedCount,
+            liveTextureCount = textureLifetimeTracker.liveCount,
+            peakLiveTextureCount = textureLifetimeTracker.peakLiveCount,
+            textureDoubleReleaseCount = textureLifetimeTracker.doubleReleaseCount,
+            fullFrameReadbackCount = probePolicy.readbackCount(),
+            protectedTextureCount = protectedCacheKeys().count(cache::containsKey),
+            backwardHistoryCapacity = history.capacity,
+            backwardHistoryDepth = history.depth,
+            backwardHistoryHitCount = backwardHistoryHitCount,
+        )
+    }
+
+    private fun protectedCacheKeys(): Set<FrameKey> = setOfNotNull(
+        lastPublishedKey,
+        pendingTarget?.expectedKey,
     )
+
+    private fun recordPublished(key: FrameKey) {
+        val previous = lastPublishedKey?.takeIf(cache::containsKey)
+        backwardHistory.recordPublished(previous, key)
+        lastPublishedKey = key
+    }
 
     companion object {
         private const val COMMAND_PENDING = 0
@@ -1109,4 +1163,10 @@ internal fun cacheTargetBytes(level: Int, byteBudget: Long): Long = when {
     level >= 10 -> byteBudget / 2L
     level >= 5 -> byteBudget * 3L / 4L
     else -> byteBudget
+}
+
+internal fun residentCacheTargetBytes(byteBudget: Long, incomingFrameBytes: Long): Long {
+    require(byteBudget >= 0)
+    require(incomingFrameBytes >= 0)
+    return (byteBudget - incomingFrameBytes).coerceAtLeast(0)
 }

@@ -69,11 +69,20 @@ class DirectionalByteCache<K, V>(
     ): Boolean {
         require(bytes > 0)
         require(maximumByteSize in 0..byteBudget)
-        entries.remove(key)?.also { removeEntry(key, it) }
-        if (bytes > maximumByteSize || !makeRoomFor(bytes, protectedKeys, maximumByteSize)) {
+        val existing = entries[key]
+        if (
+            bytes > maximumByteSize ||
+            !makeRoomFor(
+                bytes = bytes,
+                protectedKeys = protectedKeys + key,
+                maximumByteSize = maximumByteSize,
+                replacedBytes = existing?.bytes ?: 0,
+            )
+        ) {
             rejectionCount += 1
             return false
         }
+        entries.remove(key)?.also { removeEntry(key, it) }
         entries[key] = Entry(value, bytes)
         byteSize += bytes
         peakSize = maxOf(peakSize, entries.size)
@@ -91,21 +100,29 @@ class DirectionalByteCache<K, V>(
         direction = 0
     }
 
-    fun trimToBytes(targetBytes: Long) {
-        require(targetBytes >= 0)
+    fun trimToBytes(targetBytes: Long, protectedKeys: Set<K> = emptySet()): Boolean {
+        require(targetBytes in 0..byteBudget)
         while (byteSize > targetBytes && entries.isNotEmpty()) {
+            val candidates = entries.keys.filterNot(protectedKeys::contains)
+            if (candidates.isEmpty()) return false
             val victim = when {
-                direction > 0 -> entries.keys.minBy(frameIndex)
-                direction < 0 -> entries.keys.maxBy(frameIndex)
-                else -> entries.keys.first()
+                direction > 0 -> candidates.minBy(frameIndex)
+                direction < 0 -> candidates.maxBy(frameIndex)
+                else -> candidates.first()
             }
             val removed = entries.remove(victim) ?: continue
             removeEntry(victim, removed)
         }
+        return byteSize <= targetBytes
     }
 
-    private fun makeRoomFor(bytes: Long, protectedKeys: Set<K>, maximumByteSize: Long): Boolean {
-        val targetBytes = maximumByteSize - bytes
+    private fun makeRoomFor(
+        bytes: Long,
+        protectedKeys: Set<K>,
+        maximumByteSize: Long,
+        replacedBytes: Long,
+    ): Boolean {
+        val targetBytes = maximumByteSize - bytes + replacedBytes
         val reclaimableBytes = entries
             .filterKeys { it !in protectedKeys }
             .values

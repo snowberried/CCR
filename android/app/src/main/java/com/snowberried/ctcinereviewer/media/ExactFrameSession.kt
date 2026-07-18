@@ -1249,6 +1249,10 @@ class ExactFrameSession(
             liveTextureCount = prefetch.liveTextureCount,
             peakLiveTextureCount = prefetch.peakLiveTextureCount,
             textureDoubleReleaseCount = prefetch.textureDoubleReleaseCount,
+            protectedTextureCount = prefetch.protectedTextureCount,
+            backwardHistoryCapacity = prefetch.backwardHistoryCapacity,
+            backwardHistoryDepth = prefetch.backwardHistoryDepth,
+            backwardHistoryHitCount = prefetch.backwardHistoryHitCount,
             requestCoalescedCount = requestCoalescedCount.get(),
         )
     }
