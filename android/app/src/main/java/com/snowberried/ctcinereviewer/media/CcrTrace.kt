@@ -41,6 +41,17 @@ internal object CcrTrace {
         ptsUs = request.expectedKey.ptsUs,
     )
 
+    fun navigationInputLabel(
+        request: FrameRequest,
+        navigationMode: String,
+        stride: Int?,
+        displayedFrameIndex: Int?,
+    ): String = (
+        "$NAVIGATION_INPUT f=${request.token.fileGeneration} r=${request.token.requestGeneration} " +
+            "m=$navigationMode s=${stride ?: 0} i=${request.requestedFrameIndex} " +
+            "d=${displayedFrameIndex ?: -1} p=${request.expectedKey.ptsUs}"
+        ).take(MAX_SECTION_NAME_LENGTH)
+
     fun frameLabel(
         stage: String,
         token: GenerationToken,

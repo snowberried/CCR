@@ -606,6 +606,14 @@ class ViewerViewModel(
             }
             return
         }
+        CcrTrace.section(
+            CcrTrace.navigationInputLabel(
+                request = acceptance.request,
+                navigationMode = mode.name,
+                stride = holdTraversalStride,
+                displayedFrameIndex = uiState.displayedFrameIndex,
+            ),
+        ) {}
         if (holdTarget != null) {
             check(
                 holdController.markAccepted(
