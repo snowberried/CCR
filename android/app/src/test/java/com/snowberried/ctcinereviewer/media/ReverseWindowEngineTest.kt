@@ -7,6 +7,22 @@ import org.junit.Test
 
 class ReverseWindowEngineTest {
     @Test
+    fun `same-semantic reverse hit preserves an in-flight refill cache target`() {
+        val video = video(12)
+        val plan = plan(video, anchorIndex = 10, targetCount = 3)
+        val engine = readyEngine(plan)
+
+        assertTrue(engine.isReadyNextTarget(plan.publicationTargets.first().key, -1))
+        assertFalse(engine.isReadyNextTarget(plan.publicationTargets[1].key, -1))
+        assertFalse(engine.isReadyNextTarget(plan.publicationTargets.first().key, -5))
+
+        engine.consume(plan.publicationTargets.first().key, IDENTITY)
+        assertTrue(engine.isReadyNextTarget(plan.publicationTargets[1].key, -1))
+        plan.publicationTargets.drop(1).forEach { engine.consume(it.key, IDENTITY) }
+        assertFalse(engine.isReadyNextTarget(plan.publicationTargets.last().key, -1))
+    }
+
+    @Test
     fun `foreground requests pause without changing the semantic refill epoch`() {
         val epochs = ReverseRefillEpochs()
         val semantic = epochs.semanticEpoch()

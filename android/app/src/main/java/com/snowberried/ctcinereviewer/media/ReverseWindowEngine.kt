@@ -186,6 +186,12 @@ internal class ReverseWindowEngine {
         )
     }
 
+    @Synchronized
+    fun isReadyNextTarget(key: FrameKey, signedStride: Int): Boolean {
+        val window = readyWindow ?: return false
+        return window.plan.signedStride == signedStride && window.remainingTargets.firstOrNull()?.key == key
+    }
+
     private fun refillFallback(reason: ReverseWindowFallbackReason): ReverseWindowRefillResult.Fallback {
         lastFallbackReason = reason
         return ReverseWindowRefillResult.Fallback(reason)

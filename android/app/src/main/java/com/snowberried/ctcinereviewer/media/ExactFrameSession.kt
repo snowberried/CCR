@@ -330,6 +330,9 @@ class ExactFrameSession(
                 },
             )
         }
+        val preserveInFlightReverseCacheTarget = navigationMode == NavigationMode.HOLD_REVERSE &&
+            holdTraversalStride != null &&
+            reverseWindowEngine.isReadyNextTarget(acceptance.request.expectedKey, holdTraversalStride)
         CcrTrace.section(CcrTrace.requestLabel(CcrTrace.REQUEST_ACCEPT, acceptance.request)) {
             if (latestRequest.offer(
                 DecodeWork(
@@ -342,9 +345,9 @@ class ExactFrameSession(
                     acceptedElapsedRealtimeNanos = acceptance.elapsedRealtimeNanos,
                 ),
             )) requestCoalescedCount.incrementAndGet()
-            // Publish the foreground intent before waking a cache-only Surface wait. The actor can
-            // then distinguish a resumable same-semantic pause from a real cache failure.
-            renderer.preemptReverseWindowCacheTarget()
+            // A READY reverse hit does not touch the shared codec. Let an in-flight rolling target
+            // finish so the refill cursor is not discarded and restarted from the previous sync.
+            if (!preserveInFlightReverseCacheTarget) renderer.preemptReverseWindowCacheTarget()
             actor.removeCallbacksAndMessages(requestMessageToken)
             actor.postAtTime(
                 {
