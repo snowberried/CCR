@@ -115,7 +115,7 @@ function Assert-CcrAlpha5StageReport {
       $runs = @((Get-CcrPinnedRequiredProperty $Report "forwardSequentialRuns"))
       if ($runs.Count -ne 6 -or [long](($runs | Measure-Object requestCount -Sum).Sum) -ne 77L) { throw "ALPHA5_SEQUENTIAL_RUN_COUNT_MISMATCH:$Stage" }
       $strides = if ($Stage -ceq "Forward") { @(1, 5) } else { @(-1, -5) }
-      foreach ($fixture in @("h264-bframes", "long-gop", "vfr")) {
+      foreach ($fixture in @("h264-bframes.mp4", "long-gop.mp4", "vfr.mp4")) {
         foreach ($stride in $strides) {
           $match = @($runs | Where-Object { [string]$_.fixture -ceq $fixture -and [int]$_.stride -eq $stride })
           if ($match.Count -ne 1 -or [long]$match[0].mismatchCount -ne 0 -or [long]$match[0].requestCount -le 0) {

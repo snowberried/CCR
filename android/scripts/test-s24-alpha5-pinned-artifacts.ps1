@@ -213,6 +213,7 @@ try {
   Assert-Alpha5Test ($performance -match 'PINNED_MANIFEST_SYNTHETIC_ONLY_AND_PULLED_FILE_WHITELIST') "ALPHA5_TEST_PERF_PRIVACY_WHITELIST_MISSING"
   Assert-Alpha5Test ($random -match 'maximumAllowedP95Us = 735597L' -and $random -match 'maximumAllowedMaxUs = 2236016L') "ALPHA5_TEST_RANDOM_HARD_GATES_MISSING"
   Assert-Alpha5Test ($instrumentation -match 'actualMeasurementDurationMs.*600000L' -and $instrumentation -match 'totalViolationCount') "ALPHA5_TEST_RESOURCE_REPORT_GATES_MISSING"
+  Assert-Alpha5Test ($instrumentation -match 'foreach \(\$fixture in @\("h264-bframes\.mp4", "long-gop\.mp4", "vfr\.mp4"\)\)') "ALPHA5_TEST_SEQUENTIAL_FIXTURE_CONTRACT_MISMATCH"
 } finally {
   if (Test-Path -LiteralPath $root) {
     Get-ChildItem -LiteralPath $root -Recurse -File | ForEach-Object { $_.IsReadOnly = $false }
