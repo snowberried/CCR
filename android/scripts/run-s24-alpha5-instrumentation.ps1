@@ -401,6 +401,7 @@ $result = $null
 try {
   Save-CcrPinnedDeviceSettings $context | Out-Null
   $runId = New-CcrPinnedRunId $context.OutputDirectory "a5-$($Stage.ToLowerInvariant())"
+  $failureReportPath = Join-Path $context.OutputDirectory "failure-$runId-instrumentation-v1.json"
   $mutationStarted = $true
   Install-CcrPinnedArtifactSet $context "Debug"
   Clear-CcrPinnedRemoteReport $context $script:CcrPinnedAppPackage $spec.reportName
@@ -408,7 +409,8 @@ try {
   if ($Stage -ceq "Resource") { $arguments["alpha5.resourceMinutes"] = "10" }
   $invocation = Invoke-CcrPinnedInstrumentation `
     -Context $context -TestRole "debugTest" -ClassName $spec.className `
-    -RunId $runId -ExpectedTestCount 1 -AdditionalArguments $arguments
+    -RunId $runId -ExpectedTestCount 1 -AdditionalArguments $arguments `
+    -FailureReportPath $failureReportPath
   Assert-CcrAlpha5Deadline $deadlineUtc "instrumentation-after-run-$Stage"
   $received = Receive-CcrPinnedReport `
     -Context $context -ReportName $spec.reportName -RunId $runId `

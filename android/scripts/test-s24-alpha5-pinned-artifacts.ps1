@@ -208,6 +208,8 @@ try {
   Assert-Alpha5Test ($script:CcrPinnedMainActivityComponent -ceq 'com.snowberried.ctcinereviewer.internal/com.snowberried.ctcinereviewer.MainActivity') "ALPHA5_TEST_H_COMPONENT_IDENTITY_MISMATCH"
   Assert-Alpha5Test ($orchestrator -match 'CcrPinnedMainActivityComponent' -and $orchestrator -match 'ALPHA5_H_MAIN_ACTIVITY_NOT_FOREGROUND' -and $orchestrator -match 'Assert-CcrPinnedInstalledArtifact') "ALPHA5_TEST_H_INSTALL_FOREGROUND_GUARD_MISSING"
   Assert-Alpha5Test ($orchestrator -match 'PRIMARY=.*CLEANUP=' -and $orchestrator -match 'Assert-CcrAlpha5SettingsRestored') "ALPHA5_TEST_ORCHESTRATOR_CLEANUP_FAILURE_GUARD_MISSING"
+  Assert-Alpha5Test ($orchestrator -match 'stay_on_while_plugged_in" "7"' -and $orchestrator -match 'screen_off_timeout" "1800000"' -and $orchestrator -match 'ALPHA5_ORCHESTRATOR_AWAKE_SETTING_MISMATCH' -and $orchestrator -match 'ALPHA5_PARTIAL_SETTING_RESTORE_FAILED') "ALPHA5_TEST_ORCHESTRATOR_AWAKE_GUARD_MISSING"
+  Assert-Alpha5Test ($instrumentation -match 'FailureReportPath') "ALPHA5_TEST_INSTRUMENTATION_FAILURE_REPORT_MISSING"
   Assert-Alpha5Test ($performance -match 'ALPHA5_PERF_TRACE_SHA_DUPLICATE' -and $performance -match 'minimumFps = 12\.0' -and $performance -match 'minimumFps = 10\.0' -and $performance -match 'maximumLagMax') "ALPHA5_TEST_PERF_HARD_GATES_MISSING"
   Assert-Alpha5Test ($performance.Contains('(@($benchmarks[0].metrics.ccrRunIteration.runs) | ForEach-Object { [int]$_ }) -join ","')) "ALPHA5_TEST_PERF_RUN_ITERATION_INTEGER_NORMALIZATION_MISSING"
   Assert-Alpha5Test ($performance -match 'Assert-CcrPinnedBenchmarkEvidence' -and $instrumentation -match 'Assert-CcrPinnedReport' -and $random -match 'Assert-CcrPinnedReport') "ALPHA5_TEST_RESUME_FULL_REPORT_IDENTITY_GUARD_MISSING"

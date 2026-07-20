@@ -257,8 +257,20 @@ $lastIndex = [Array]::IndexOf($stages, $StopAfter)
 if ($lastIndex -lt 0) { throw "ALPHA5_ORCHESTRATOR_STOP_AFTER_UNKNOWN:$StopAfter" }
 $completed = [System.Collections.Generic.List[object]]::new()
 try {
+  if (-not $PreflightOnly) {
+    Set-CcrPinnedDeviceSetting $context "global" "stay_on_while_plugged_in" "7"
+    Set-CcrPinnedDeviceSetting $context "system" "screen_off_timeout" "1800000"
+    if ((Get-CcrPinnedDeviceSetting $context "global" "stay_on_while_plugged_in") -cne "7" -or
+        (Get-CcrPinnedDeviceSetting $context "system" "screen_off_timeout") -cne "1800000") {
+      throw "ALPHA5_ORCHESTRATOR_AWAKE_SETTING_MISMATCH"
+    }
+  }
   for ($index = 0; $index -le $lastIndex; $index += 1) {
     $completed.Add((Invoke-CcrAlpha5Stage $stages[$index])) | Out-Null
+  }
+  if (-not $PreflightOnly -and $StopAfter -cne "H") {
+    foreach ($failure in @(Restore-CcrPinnedDeviceSettings $context)) { throw "ALPHA5_PARTIAL_SETTING_RESTORE_FAILED:$failure" }
+    Assert-CcrAlpha5SettingsRestored $context | Out-Null
   }
 } catch {
   $primaryFailure = $_
