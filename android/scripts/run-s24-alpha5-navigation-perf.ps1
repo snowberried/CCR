@@ -180,8 +180,9 @@ Assert-CcrAlpha5Deadline $deadlineUtc "perf-preflight"
 $summaryPath = Join-Path $context.OutputDirectory "alpha5-navigation-perf-$($Direction.ToLowerInvariant())-v1.json"
 if ($Resume -and (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
   $existing = [System.IO.File]::ReadAllText($summaryPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+  $storedMaxMinutes = [int]$existing.maxMinutes
   if ([string]$existing.status -cne "PASS" -or [string]$existing.direction -cne $Direction -or
-      [int]$existing.maxMinutes -ne $MaxMinutes -or [int]$existing.scenarioCount -ne $expectedScenarioCount -or
+      $storedMaxMinutes -lt 1 -or $storedMaxMinutes -gt 240 -or [int]$existing.scenarioCount -ne $expectedScenarioCount -or
       [int]$existing.totalIndependentTraceCount -ne ($expectedScenarioCount * 3)) {
     throw "ALPHA5_PERF_RESUME_SUMMARY_IDENTITY_MISMATCH"
   }

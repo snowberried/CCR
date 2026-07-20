@@ -259,9 +259,10 @@ Assert-CcrAlpha5Deadline $deadlineUtc "instrumentation-preflight-$Stage"
 $summaryPath = Join-Path $context.OutputDirectory "alpha5-$($Stage.ToLowerInvariant())-summary-v1.json"
 if ($Resume -and (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
   $existing = [System.IO.File]::ReadAllText($summaryPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+  $storedMaxMinutes = [int]$existing.maxMinutes
   if ([string]$existing.status -cne "PASS" -or
       [string]$existing.stage -cne $Stage -or
-      [int]$existing.maxMinutes -ne $MaxMinutes) {
+      $storedMaxMinutes -lt 1 -or $storedMaxMinutes -gt 240) {
     throw "ALPHA5_INSTRUMENTATION_RESUME_IDENTITY_MISMATCH:$Stage"
   }
   Assert-CcrAlpha5IdentityRecord $existing.identity $context "ALPHA5_INSTRUMENTATION_RESUME_IDENTITY_MISMATCH:$Stage" | Out-Null

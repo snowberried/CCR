@@ -231,7 +231,8 @@ function Remove-CcrAlpha5RandomRemoteTrace {
 
 if ($Resume -and (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
   $existing = [System.IO.File]::ReadAllText($summaryPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-  if ([string]$existing.status -cne "PASS" -or [int]$existing.maxMinutes -ne $MaxMinutes) {
+  $storedMaxMinutes = [int]$existing.maxMinutes
+  if ([string]$existing.status -cne "PASS" -or $storedMaxMinutes -lt 1 -or $storedMaxMinutes -gt 240) {
     throw "ALPHA5_RANDOM_RESUME_IDENTITY_MISMATCH"
   }
   Assert-CcrAlpha5IdentityRecord $existing.identity $context "ALPHA5_RANDOM_RESUME_IDENTITY_MISMATCH" | Out-Null

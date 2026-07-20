@@ -214,6 +214,14 @@ try {
   Assert-Alpha5Test ($random -match 'maximumAllowedP95Us = 735597L' -and $random -match 'maximumAllowedMaxUs = 2236016L') "ALPHA5_TEST_RANDOM_HARD_GATES_MISSING"
   Assert-Alpha5Test ($instrumentation -match 'actualMeasurementDurationMs.*600000L' -and $instrumentation -match 'totalViolationCount') "ALPHA5_TEST_RESOURCE_REPORT_GATES_MISSING"
   Assert-Alpha5Test ($instrumentation -match 'foreach \(\$fixture in @\("h264-bframes\.mp4", "long-gop\.mp4", "vfr\.mp4"\)\)') "ALPHA5_TEST_SEQUENTIAL_FIXTURE_CONTRACT_MISMATCH"
+  foreach ($resumeContract in @(
+    [PSCustomObject]@{ Name = "instrumentation"; Source = $instrumentation },
+    [PSCustomObject]@{ Name = "performance"; Source = $performance },
+    [PSCustomObject]@{ Name = "random"; Source = $random }
+  )) {
+    Assert-Alpha5Test ($resumeContract.Source -notmatch '\[int\]\$existing\.maxMinutes -ne \$MaxMinutes') "ALPHA5_TEST_DYNAMIC_REMAINING_TIME_RESUME_REJECTED:$($resumeContract.Name)"
+    Assert-Alpha5Test ($resumeContract.Source -match '\$storedMaxMinutes -lt 1 -or \$storedMaxMinutes -gt 240') "ALPHA5_TEST_STORED_DEADLINE_RANGE_GUARD_MISSING:$($resumeContract.Name)"
+  }
 } finally {
   if (Test-Path -LiteralPath $root) {
     Get-ChildItem -LiteralPath $root -Recurse -File | ForEach-Object { $_.IsReadOnly = $false }
