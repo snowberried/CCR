@@ -44,7 +44,7 @@ function Assert-CcrAlpha5BenchmarkData {
       throw "ALPHA5_PERF_METRIC_RUN_COUNT_MISMATCH:$Method/$metric"
     }
   }
-  if ((@($benchmarks[0].metrics.ccrRunIteration.runs) -join ",") -cne "1,2,3" -or
+  if (((@($benchmarks[0].metrics.ccrRunIteration.runs) | ForEach-Object { [int]$_ }) -join ",") -cne "1,2,3" -or
       @($benchmarks[0].metrics.ccrCounterComplete.runs | Where-Object { [int]$_ -ne 1 }).Count -ne 0 -or
       @($benchmarks[0].metrics.ccrValidTraceIdentity.runs | Where-Object { [int]$_ -ne 1 }).Count -ne 0) {
     throw "ALPHA5_PERF_TRACE_COUNTER_INCOMPLETE:$Method"

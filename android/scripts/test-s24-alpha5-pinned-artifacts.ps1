@@ -209,6 +209,7 @@ try {
   Assert-Alpha5Test ($orchestrator -match 'CcrPinnedMainActivityComponent' -and $orchestrator -match 'ALPHA5_H_MAIN_ACTIVITY_NOT_FOREGROUND' -and $orchestrator -match 'Assert-CcrPinnedInstalledArtifact') "ALPHA5_TEST_H_INSTALL_FOREGROUND_GUARD_MISSING"
   Assert-Alpha5Test ($orchestrator -match 'PRIMARY=.*CLEANUP=' -and $orchestrator -match 'Assert-CcrAlpha5SettingsRestored') "ALPHA5_TEST_ORCHESTRATOR_CLEANUP_FAILURE_GUARD_MISSING"
   Assert-Alpha5Test ($performance -match 'ALPHA5_PERF_TRACE_SHA_DUPLICATE' -and $performance -match 'minimumFps = 12\.0' -and $performance -match 'minimumFps = 10\.0' -and $performance -match 'maximumLagMax') "ALPHA5_TEST_PERF_HARD_GATES_MISSING"
+  Assert-Alpha5Test ($performance.Contains('(@($benchmarks[0].metrics.ccrRunIteration.runs) | ForEach-Object { [int]$_ }) -join ","')) "ALPHA5_TEST_PERF_RUN_ITERATION_INTEGER_NORMALIZATION_MISSING"
   Assert-Alpha5Test ($performance -match 'Assert-CcrPinnedBenchmarkEvidence' -and $instrumentation -match 'Assert-CcrPinnedReport' -and $random -match 'Assert-CcrPinnedReport') "ALPHA5_TEST_RESUME_FULL_REPORT_IDENTITY_GUARD_MISSING"
   Assert-Alpha5Test ($performance -match 'PINNED_MANIFEST_SYNTHETIC_ONLY_AND_PULLED_FILE_WHITELIST') "ALPHA5_TEST_PERF_PRIVACY_WHITELIST_MISSING"
   Assert-Alpha5Test ($random -match 'maximumAllowedP95Us = 735597L' -and $random -match 'maximumAllowedMaxUs = 2236016L') "ALPHA5_TEST_RANDOM_HARD_GATES_MISSING"
