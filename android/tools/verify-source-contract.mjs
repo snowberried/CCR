@@ -98,6 +98,10 @@ const s24Alpha5PinnedTests = readFileSync(
   resolve(androidRoot, "scripts/test-s24-alpha5-pinned-artifacts.ps1"),
   "utf8",
 );
+const verifyApkPrivacy = readFileSync(
+  resolve(androidRoot, "scripts/verify-apk-privacy.ps1"),
+  "utf8",
+);
 const s24FrameAccuracyTest = readFileSync(
   resolve(androidRoot, "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/S24FrameAccuracyTest.kt"),
   "utf8",
@@ -327,6 +331,16 @@ requireContract(
     s24Alpha5PinnedTests.includes("ALPHA5_TEST_BUILD_COMMAND_FORBIDDEN"),
   "Alpha 5 pinned negative-test contract is incomplete",
 );
+for (const marker of [
+  '$ExpectedApplicationId = "com.snowberried.ctcinereviewer.internal"',
+  '$ExpectedVersionName = "0.2.0-alpha.5"',
+  "$ExpectedVersionCode = 6",
+  "android.permission.INTERNET",
+  "android.permission.READ_MEDIA_VIDEO",
+  "android.permission.MANAGE_EXTERNAL_STORAGE",
+]) {
+  requireContract(verifyApkPrivacy.includes(marker), `APK privacy verifier missing ${marker}`);
+}
 for (const marker of [
   'put("appVersionName"',
   'put("appVersionCode"',

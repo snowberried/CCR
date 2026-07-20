@@ -1,5 +1,8 @@
 param(
-  [string]$Apk = "$PSScriptRoot\..\app\build\outputs\apk\internal\debug\app-internal-debug.apk"
+  [string]$Apk = "$PSScriptRoot\..\app\build\outputs\apk\internal\debug\app-internal-debug.apk",
+  [string]$ExpectedApplicationId = "com.snowberried.ctcinereviewer.internal",
+  [string]$ExpectedVersionName = "0.2.0-alpha.5",
+  [int]$ExpectedVersionCode = 6
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,10 +29,10 @@ $versionCode = (& $analyzer manifest version-code $resolvedApk).Trim()
 if ($LASTEXITCODE -ne 0) {
   throw "Failed to inspect APK identity"
 }
-if ($applicationId -ne "com.snowberried.ctcinereviewer.internal") {
+if ($applicationId -cne $ExpectedApplicationId) {
   throw "Unexpected APK application ID"
 }
-if ($versionName -ne "0.2.0-alpha.4" -or $versionCode -ne "5") {
+if ($versionName -cne $ExpectedVersionName -or [int]$versionCode -ne $ExpectedVersionCode) {
   throw "Unexpected APK version"
 }
 
