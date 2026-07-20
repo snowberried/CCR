@@ -491,7 +491,6 @@ class BenchmarkActivity : ComponentActivity() {
         val nowNs = SystemClock.elapsedRealtimeNanos()
         val activeNs = holdAccumulatedNs + (nowNs - metricSegmentStartedNs).coerceAtLeast(0)
         if (activeNs >= holdActiveTargetNs) {
-            stopActiveMeasurementSegment()
             finishRepresentativeAfterSettled()
             return
         }

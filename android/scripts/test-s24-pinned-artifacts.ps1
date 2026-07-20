@@ -691,6 +691,23 @@ try {
     if (-not $perfSource.Contains("-FailureReportPath")) {
       throw "Alpha 5 performance failure report path missing"
     }
+    $horizonStart = $benchmarkSource.IndexOf("if (activeNs >= holdActiveTargetNs)", [StringComparison]::Ordinal)
+    $horizonEnd = $benchmarkSource.IndexOf("if (scenario == SCENARIO_REVERSE_1080", $horizonStart, [StringComparison]::Ordinal)
+    if ($horizonStart -lt 0 -or $horizonEnd -le $horizonStart) { throw "hold horizon source unavailable" }
+    $horizon = $benchmarkSource.Substring($horizonStart, $horizonEnd - $horizonStart)
+    if (-not $horizon.Contains("finishRepresentativeAfterSettled()") -or
+        $horizon.Contains("stopActiveMeasurementSegment()")) {
+      throw "hold horizon closed before settled publication drain"
+    }
+    $settledStart = $benchmarkSource.IndexOf("if (settled && publicationObserved)", [StringComparison]::Ordinal)
+    $settledStop = $benchmarkSource.IndexOf(
+      "if (measurementActive) stopActiveMeasurementSegment()",
+      $settledStart,
+      [StringComparison]::Ordinal)
+    $settledGuardEnd = $benchmarkSource.IndexOf("settledObservedAtMs?.let", $settledStart, [StringComparison]::Ordinal)
+    if ($settledStart -lt 0 -or $settledStop -le $settledStart -or $settledStop -ge $settledGuardEnd) {
+      throw "settled publication drain does not close measurement"
+    }
   }
 
   Reset-TestArtifacts
