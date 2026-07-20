@@ -343,6 +343,53 @@ function New-Alpha4RandomTestReport {
   }
 }
 
+function New-Alpha5FullStaleDiscardReport {
+  $events = @(
+    [PSCustomObject][ordered]@{
+      phase = "burst-supersede"
+      fixture = "burst.mp4"
+      observedWhileFixture = "burst.mp4"
+      fileGeneration = 10
+      requestGeneration = 20
+      requestedFrameIndex = 6
+      stage = "decode-loop"
+      supersedingRequestGeneration = 24
+      supersedingFileGeneration = 10
+      classification = "EXPECTED_SUPERSEDED"
+    },
+    [PSCustomObject][ordered]@{
+      phase = "file-switch-supersede"
+      fixture = "switch-a.mp4"
+      observedWhileFixture = "switch-b.mp4"
+      fileGeneration = 30
+      requestGeneration = 40
+      requestedFrameIndex = 11
+      stage = "before-decode"
+      supersedingRequestGeneration = 42
+      supersedingFileGeneration = 31
+      classification = "EXPECTED_SUPERSEDED"
+    }
+  )
+  return [PSCustomObject][ordered]@{
+    staleDiscardAssessmentVersion = 1
+    staleDiscardEvents = $events
+    gateCounters = [PSCustomObject][ordered]@{
+      staleDiscard = 1
+      staleDiscardEventCount = 2
+      expectedSupersededDiscardCount = 2
+      unexpectedStaleViolationCount = 0
+      staleBeforeSwap = 0
+      swapFailures = 0
+      surfaceInvalid = 0
+      publicationInvariantViolations = 0
+      cacheRejectionCount = 0
+      cacheThrashCount = 0
+      textureDoubleReleaseCount = 0
+    }
+    decoder = [PSCustomObject][ordered]@{ cacheBytes = 1024; peakCacheBytes = 2048 }
+  }
+}
+
 function Write-Alpha4RandomTestTrace {
   param([string]$Path, [object]$Report)
   $lines = [System.Collections.Generic.List[string]]::new()
@@ -609,6 +656,101 @@ try {
     "Save-CcrPerfFailureArtifacts")
   . (Import-TestScriptFunction (Join-Path $PSScriptRoot "run-s24-alpha4-random-baseline.ps1") `
     "Assert-CcrAlpha4RandomFileIdentity")
+  . (Import-TestScriptFunction (Join-Path $PSScriptRoot "run-s24-alpha5-instrumentation.ps1") `
+    "Assert-CcrAlpha5RequiredZero")
+  . (Import-TestScriptFunction (Join-Path $PSScriptRoot "run-s24-alpha5-instrumentation.ps1") `
+    "Assert-CcrAlpha5FullStaleDiscardContract")
+  . (Import-TestScriptFunction (Join-Path $PSScriptRoot "run-s24-alpha5-instrumentation.ps1") `
+    "Assert-CcrAlpha5ExactGateCounters")
+
+  Invoke-HostTest "alpha5-full-expected-stale-discard-contract-valid" {
+    Assert-CcrAlpha5ExactGateCounters (New-Alpha5FullStaleDiscardReport) `
+      "ALPHA5_FULL_GATE" -AllowExpectedSupersededStale
+  }
+
+  $staleNegativeCases = @(
+    @("unexpected", {
+      param($r)
+      $r.staleDiscardEvents[0].classification = "UNEXPECTED"
+      $r.gateCounters.expectedSupersededDiscardCount = 1
+      $r.gateCounters.unexpectedStaleViolationCount = 1
+    }, "ALPHA5_FULL_GATE/unexpected"),
+    @("raw-exceeds-events", { param($r) $r.gateCounters.staleDiscard = 3 }, "ALPHA5_FULL_GATE/raw-exceeds-events"),
+    @("stage", { param($r) $r.staleDiscardEvents[0].stage = "decode-exception" }, "ALPHA5_FULL_GATE/expected-event-stage"),
+    @("fixture", { param($r) $r.staleDiscardEvents[0].fixture = "switch-a.mp4" }, "ALPHA5_FULL_GATE/expected-event-scope"),
+    @("burst-boundary", { param($r) $r.staleDiscardEvents[0].supersedingRequestGeneration = 20 }, "ALPHA5_FULL_GATE/burst-request-boundary"),
+    @("file-request-boundary", { param($r) $r.staleDiscardEvents[1].supersedingRequestGeneration = 40 }, "ALPHA5_FULL_GATE/file-switch-request-boundary"),
+    @("file-boundary", { param($r) $r.staleDiscardEvents[1].supersedingFileGeneration = 30 }, "ALPHA5_FULL_GATE/file-switch-boundary"),
+    @("duplicate-token", {
+      param($r)
+      $r.staleDiscardEvents[1].fileGeneration = 10
+      $r.staleDiscardEvents[1].requestGeneration = 20
+    }, "ALPHA5_FULL_GATE/duplicate-token"),
+    @("burst-target", { param($r) $r.staleDiscardEvents[0].requestedFrameIndex = 2 }, "ALPHA5_FULL_GATE/burst-target"),
+    @("file-target", { param($r) $r.staleDiscardEvents[1].requestedFrameIndex = 10 }, "ALPHA5_FULL_GATE/file-switch-target"),
+    @("event-limit", {
+      param($r)
+      $extra = foreach ($generation in 21..24) {
+        [PSCustomObject][ordered]@{
+          phase = "burst-supersede"; fixture = "burst.mp4"; observedWhileFixture = "burst.mp4"
+          fileGeneration = 10; requestGeneration = $generation; requestedFrameIndex = 6; stage = "decode-loop"
+          supersedingRequestGeneration = 100; supersedingFileGeneration = 10
+          classification = "EXPECTED_SUPERSEDED"
+        }
+      }
+      $r.staleDiscardEvents = @($r.staleDiscardEvents) + @($extra)
+      $r.gateCounters.staleDiscardEventCount = 6
+      $r.gateCounters.expectedSupersededDiscardCount = 6
+    }, "ALPHA5_FULL_GATE/expected-event-limit"),
+    @("token", { param($r) $r.staleDiscardEvents[0].requestGeneration = 0 }, "ALPHA5_FULL_GATE/event-identity"),
+    @("count", { param($r) $r.gateCounters.staleDiscardEventCount = 1 }, "ALPHA5_FULL_GATE/count-contract")
+  )
+  foreach ($case in $staleNegativeCases) {
+    $currentCase = $case
+    Invoke-HostTest "alpha5-full-stale-discard-rejects-$($currentCase[0])" {
+      $report = Copy-TestValue (New-Alpha5FullStaleDiscardReport)
+      & $currentCase[1] $report
+      $caught = $null
+      try {
+        Assert-CcrAlpha5ExactGateCounters $report "ALPHA5_FULL_GATE" -AllowExpectedSupersededStale
+      } catch {
+        $caught = $_.Exception.Message
+      }
+      if ($caught -cne $currentCase[2]) { throw "unexpected rejection: $caught" }
+    }.GetNewClosure()
+  }
+
+  Invoke-HostTest "alpha5-nonfull-stale-events-remain-zero" {
+    $report = New-Alpha5FullStaleDiscardReport
+    $report.staleDiscardEvents = @()
+    $report.gateCounters.staleDiscard = 0
+    $report.gateCounters.staleDiscardEventCount = 0
+    $report.gateCounters.expectedSupersededDiscardCount = 0
+    Assert-CcrAlpha5ExactGateCounters $report "ALPHA5_NONFULL_GATE"
+
+    $report.staleDiscardEvents = @([PSCustomObject]@{ classification = "UNEXPECTED" })
+    $caught = $null
+    try { Assert-CcrAlpha5ExactGateCounters $report "ALPHA5_NONFULL_GATE" } catch { $caught = $_.Exception.Message }
+    if ($caught -cne "ALPHA5_NONFULL_GATE/stale-events") { throw "unexpected rejection: $caught" }
+  }
+
+  Invoke-HostTest "alpha5-stale-discard-source-contracts" {
+    $source = [System.IO.File]::ReadAllText((Join-Path $repoRoot `
+      "android/app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/S24FrameAccuracyTest.kt"))
+    foreach ($contract in @(
+      'acceptances.dropLast(1).forEach',
+      'supersedingFileGeneration = secondMetadata.fileGeneration',
+      'report.bindFileSwitchPublicationBoundary(secondPublished)',
+      'assertEquals("burst final publication acceptance", accepted.request, result.request)',
+      'result.stage in EXPECTED_SUPERSEDED_STAGES',
+      '"before-decode"', '"decode-loop"', '"TEXTURE_GENERATION_STALE"',
+      'activity.awaitActorIdle()', 'activity.awaitMainCallbacks()',
+      'report.endSupersedePhase("burst-supersede")',
+      'report.endSupersedePhase("file-switch-supersede")'
+    )) {
+      if (-not $source.Contains($contract)) { throw "Alpha 5 stale discard source contract missing: $contract" }
+    }
+  }
 
   $resumeContext = [PSCustomObject]@{
     ArtifactSet = $artifactSet

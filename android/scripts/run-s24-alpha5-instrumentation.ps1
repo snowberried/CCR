@@ -27,14 +27,112 @@ function Assert-CcrAlpha5RequiredZero {
   if (-not (Test-CcrPinnedProperty $Value $Field) -or [long]$Value.$Field -ne 0) { throw "$Failure/$Field" }
 }
 
-function Assert-CcrAlpha5ExactGateCounters {
+function Assert-CcrAlpha5FullStaleDiscardContract {
   param([object]$Report, [string]$Failure)
+  if ([long](Get-CcrPinnedRequiredProperty $Report "staleDiscardAssessmentVersion") -ne 1L) {
+    throw "$Failure/assessment-version"
+  }
+  $gate = Get-CcrPinnedRequiredProperty $Report "gateCounters"
+  $events = @((Get-CcrPinnedRequiredProperty $Report "staleDiscardEvents"))
+  $rawCount = [long](Get-CcrPinnedRequiredProperty $gate "staleDiscard")
+  $eventCount = [long](Get-CcrPinnedRequiredProperty $gate "staleDiscardEventCount")
+  $expectedCount = [long](Get-CcrPinnedRequiredProperty $gate "expectedSupersededDiscardCount")
+  $unexpectedCount = [long](Get-CcrPinnedRequiredProperty $gate "unexpectedStaleViolationCount")
+  if ($rawCount -lt 0L -or $eventCount -ne $events.Count -or $expectedCount -lt 0L -or
+      $unexpectedCount -lt 0L) { throw "$Failure/count-contract" }
+
+  $expectedEvents = 0L
+  $unexpectedEvents = 0L
+  $expectedBurstEvents = 0L
+  $expectedFileSwitchEvents = 0L
+  $seenTokens = @{}
+  foreach ($event in $events) {
+    foreach ($field in @(
+      "phase", "fixture", "fileGeneration", "requestGeneration", "requestedFrameIndex", "stage",
+      "supersedingRequestGeneration", "supersedingFileGeneration", "classification"
+    )) {
+      if (-not (Test-CcrPinnedProperty $event $field)) { throw "$Failure/event-missing-$field" }
+    }
+    $phase = [string]$event.phase
+    $fixture = [string]$event.fixture
+    $classification = [string]$event.classification
+    if ([long]$event.fileGeneration -lt 1L -or [long]$event.requestGeneration -lt 1L -or
+        [long]$event.requestedFrameIndex -lt 0L -or [string]::IsNullOrWhiteSpace([string]$event.stage)) {
+      throw "$Failure/event-identity"
+    }
+    $tokenKey = "$([long]$event.fileGeneration)/$([long]$event.requestGeneration)"
+    if ($seenTokens.ContainsKey($tokenKey)) { throw "$Failure/duplicate-token" }
+    $seenTokens[$tokenKey] = $true
+    if ($classification -ceq "EXPECTED_SUPERSEDED") {
+      $expectedEvents += 1L
+      if (($phase -ceq "burst-supersede" -and $fixture -cne "burst.mp4") -or
+          ($phase -ceq "file-switch-supersede" -and $fixture -cne "switch-a.mp4") -or
+          $phase -cnotin @("burst-supersede", "file-switch-supersede")) {
+        throw "$Failure/expected-event-scope"
+      }
+      if ([string]$event.stage -cnotin @("before-decode", "decode-loop", "TEXTURE_GENERATION_STALE")) {
+        throw "$Failure/expected-event-stage"
+      }
+      if ($phase -ceq "burst-supersede") {
+        $expectedBurstEvents += 1L
+        if ([long]$event.requestedFrameIndex -notin @(1L, 6L, 12L, 24L)) {
+          throw "$Failure/burst-target"
+        }
+        if ($null -eq $event.supersedingRequestGeneration -or
+            [long]$event.supersedingRequestGeneration -le [long]$event.requestGeneration -or
+            $null -eq $event.supersedingFileGeneration -or
+            [long]$event.supersedingFileGeneration -ne [long]$event.fileGeneration) {
+          throw "$Failure/burst-request-boundary"
+        }
+      } else {
+        $expectedFileSwitchEvents += 1L
+        if ([long]$event.requestedFrameIndex -ne 11L) { throw "$Failure/file-switch-target" }
+        if ($null -eq $event.supersedingRequestGeneration -or
+            [long]$event.supersedingRequestGeneration -le [long]$event.requestGeneration) {
+          throw "$Failure/file-switch-request-boundary"
+        }
+        if ($null -eq $event.supersedingFileGeneration -or
+            [long]$event.supersedingFileGeneration -ne ([long]$event.fileGeneration + 1L)) {
+          throw "$Failure/file-switch-boundary"
+        }
+      }
+    } elseif ($classification -ceq "UNEXPECTED") {
+      $unexpectedEvents += 1L
+    } else {
+      throw "$Failure/event-classification"
+    }
+  }
+  if ($expectedBurstEvents -gt 4L -or $expectedFileSwitchEvents -gt 1L) {
+    throw "$Failure/expected-event-limit"
+  }
+  if ($expectedCount -ne $expectedEvents -or $unexpectedCount -ne $unexpectedEvents -or
+      $eventCount -ne ($expectedEvents + $unexpectedEvents)) { throw "$Failure/event-count" }
+  if ($rawCount -gt $eventCount) { throw "$Failure/raw-exceeds-events" }
+  if ($unexpectedCount -ne 0L) { throw "$Failure/unexpected" }
+}
+
+function Assert-CcrAlpha5ExactGateCounters {
+  param([object]$Report, [string]$Failure, [switch]$AllowExpectedSupersededStale)
+  if ([long](Get-CcrPinnedRequiredProperty $Report "staleDiscardAssessmentVersion") -ne 1L) {
+    throw "$Failure/assessment-version"
+  }
   $gate = Get-CcrPinnedRequiredProperty $Report "gateCounters"
   foreach ($field in @(
-    "staleDiscard", "staleBeforeSwap", "swapFailures", "surfaceInvalid",
+    "staleBeforeSwap", "swapFailures", "surfaceInvalid",
     "publicationInvariantViolations", "cacheRejectionCount", "cacheThrashCount",
     "textureDoubleReleaseCount"
   )) { Assert-CcrAlpha5RequiredZero $gate $field $Failure }
+  if ($AllowExpectedSupersededStale) {
+    Assert-CcrAlpha5FullStaleDiscardContract $Report $Failure
+  } else {
+    Assert-CcrAlpha5RequiredZero $gate "staleDiscard" $Failure
+    Assert-CcrAlpha5RequiredZero $gate "staleDiscardEventCount" $Failure
+    Assert-CcrAlpha5RequiredZero $gate "expectedSupersededDiscardCount" $Failure
+    Assert-CcrAlpha5RequiredZero $gate "unexpectedStaleViolationCount" $Failure
+    if (@((Get-CcrPinnedRequiredProperty $Report "staleDiscardEvents")).Count -ne 0) {
+      throw "$Failure/stale-events"
+    }
+  }
   $decoder = Get-CcrPinnedRequiredProperty $Report "decoder"
   if ([long](Get-CcrPinnedRequiredProperty $decoder "cacheBytes") -gt 67108864L -or
       [long](Get-CcrPinnedRequiredProperty $decoder "peakCacheBytes") -gt 67108864L) {
@@ -74,7 +172,7 @@ function Assert-CcrAlpha5StageReport {
       $fixtures = @((Get-CcrPinnedRequiredProperty $Report "fixtures"))
       Assert-CcrAlpha5HardwareFixtures $fixtures 17 "ALPHA5_FULL_FIXTURES"
       if ([long](($fixtures | Measure-Object frameCount -Sum).Sum) -ne 236L) { throw "ALPHA5_FULL_FRAME_COUNT_MISMATCH" }
-      Assert-CcrAlpha5ExactGateCounters $Report "ALPHA5_FULL_GATE"
+      Assert-CcrAlpha5ExactGateCounters $Report "ALPHA5_FULL_GATE" -AllowExpectedSupersededStale
     }
     "Representative" {
       Assert-CcrAlpha5RequiredZero $Report "mismatchCount" "ALPHA5_REPRESENTATIVE_COUNTER"
@@ -335,6 +433,7 @@ try {
       "publicationInvariantViolations", "cacheRejectionCount", "cacheThrashCount",
       "textureDoubleReleaseCount"
     )) {
+      if ($Stage -ceq "Full" -and $field -ceq "staleDiscard") { continue }
       if ((Test-CcrPinnedProperty $report.gateCounters $field) -and [long]$report.gateCounters.$field -ne 0) {
         throw "ALPHA5_INSTRUMENTATION_GATE_COUNTER_NONZERO:$Stage/$field"
       }
