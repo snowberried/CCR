@@ -640,6 +640,59 @@ try {
     if ($caught -notmatch "PINNED_RUN_ID_DUPLICATE") { throw "unexpected rejection: $caught" }
   }
 
+  Invoke-HostTest "instrumentation-failure-report-preserves-output" {
+    $path = Join-Path $outputRoot "instrumentation-failure.json"
+    $context = [PSCustomObject]@{ OutputDirectory = $outputRoot }
+    Write-CcrPinnedInstrumentationFailureReport `
+      -Context $context -TestRole "macrobenchmarkTest" `
+      -ClassName "example.Test#method" -RunId "failure-12345678" `
+      -ExpectedTestCount 1 -ExitCode 1 -Output "failure-output" -Path $path | Out-Null
+    $item = Get-Item -LiteralPath $path
+    $report = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    if (-not $item.IsReadOnly -or [string]$report.kind -cne "pinned-instrumentation-failure" -or
+        [string]$report.testRole -cne "macrobenchmarkTest" -or [int]$report.exitCode -ne 1 -or
+        [string]$report.output -cne "failure-output") {
+      throw "failure report contract mismatch"
+    }
+    $item.IsReadOnly = $false
+  }
+
+  Invoke-HostTest "instrumentation-failure-report-rejects-outside-path" {
+    $context = [PSCustomObject]@{ OutputDirectory = $outputRoot }
+    $caught = $null
+    try {
+      Write-CcrPinnedInstrumentationFailureReport `
+        -Context $context -TestRole "debugTest" -ClassName "example.Test#method" `
+        -RunId "failure-87654321" -ExpectedTestCount 1 -ExitCode 1 -Output "failure" `
+        -Path (Join-Path $artifactRoot "outside-failure.json") | Out-Null
+    } catch { $caught = $_.Exception.Message }
+    if ($caught -cne "PINNED_INSTRUMENTATION_FAILURE_REPORT_PATH_FORBIDDEN") {
+      throw "unexpected rejection: $caught"
+    }
+  }
+
+  Invoke-HostTest "alpha5-hold-wrap-waits-for-published-boundary" {
+    $benchmarkSource = [System.IO.File]::ReadAllText((Join-Path $repoRoot `
+      "android/app/src/benchmark/java/com/snowberried/ctcinereviewer/benchmark/BenchmarkActivity.kt"))
+    $boundaryStart = $benchmarkSource.IndexOf("if (next !in 0..lastIndex)", [StringComparison]::Ordinal)
+    $resetStart = $benchmarkSource.IndexOf("pauseRepresentativeSegment()", $boundaryStart, [StringComparison]::Ordinal)
+    if ($boundaryStart -lt 0 -or $resetStart -le $boundaryStart) { throw "hold boundary source unavailable" }
+    $boundary = $benchmarkSource.Substring($boundaryStart, $resetStart - $boundaryStart)
+    foreach ($contract in @(
+      "state.currentDecodeTarget != null",
+      "state.latestPendingRequest != null",
+      "state.displayedFrameIndex != state.requestedFrameIndex",
+      "scheduleHoldTick()"
+    )) {
+      if (-not $boundary.Contains($contract)) { throw "hold boundary contract missing: $contract" }
+    }
+    $perfSource = [System.IO.File]::ReadAllText((Join-Path $repoRoot `
+      "android/scripts/run-s24-alpha5-navigation-perf.ps1"))
+    if (-not $perfSource.Contains("-FailureReportPath")) {
+      throw "Alpha 5 performance failure report path missing"
+    }
+  }
+
   Reset-TestArtifacts
   $validManifest = New-TestManifest
   $validPath = Save-TestManifest $validManifest "report-fixture"

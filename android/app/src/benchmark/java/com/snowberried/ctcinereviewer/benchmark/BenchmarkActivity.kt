@@ -506,6 +506,14 @@ class BenchmarkActivity : ComponentActivity() {
         val lastIndex = (state.metadata?.frameCount ?: 1) - 1
         val next = state.requestedFrameIndex + holdDelta
         if (next !in 0..lastIndex) {
+            if (
+                state.currentDecodeTarget != null ||
+                state.latestPendingRequest != null ||
+                state.displayedFrameIndex != state.requestedFrameIndex
+            ) {
+                scheduleHoldTick()
+                return
+            }
             pauseRepresentativeSegment()
             val resetIndex = if (holdDelta > 0) 0 else lastIndex
             phase = Phase.REPRESENTATIVE_RESET

@@ -243,6 +243,7 @@ try {
       -Context $context -TestRole "macrobenchmarkTest" `
       -ClassName "com.snowberried.ctcinereviewer.macrobenchmark.CcrProductMacrobenchmark#$($scenario.method)" `
       -RunId $runId -ExpectedTestCount 1 `
+      -FailureReportPath (Join-Path $context.OutputDirectory "failure-$runId-instrumentation-v1.json") `
       -AdditionalArguments @{ additionalTestOutputDir = $remote; "androidx.benchmark.output.enable" = "true" }
     Assert-CcrAlpha5Deadline $deadlineUtc "perf-after-$($scenario.method)"
     $evidence = Get-CcrAlpha5BenchmarkEvidence $invocation.Output
