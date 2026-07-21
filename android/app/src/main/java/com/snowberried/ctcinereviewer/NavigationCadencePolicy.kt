@@ -56,7 +56,7 @@ internal class NavigationCadencePolicy(
 
     companion object {
         const val STRIDE_ONE_PUBLICATIONS_PER_SECOND = 15
-        const val STRIDE_FIVE_PUBLICATIONS_PER_SECOND = 10
+        const val STRIDE_FIVE_PUBLICATIONS_PER_SECOND = 12
         private const val NANOS_PER_SECOND = 1_000_000_000L
     }
 }

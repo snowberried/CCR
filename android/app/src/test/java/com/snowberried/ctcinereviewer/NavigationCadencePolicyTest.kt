@@ -11,7 +11,8 @@ class NavigationCadencePolicyTest {
         assertEquals(policy.intervalNanos(1), policy.intervalNanos(-1))
         assertEquals(policy.intervalNanos(5), policy.intervalNanos(-5))
         assertEquals(15, policy.publicationsPerSecond(1))
-        assertEquals(10, policy.publicationsPerSecond(5))
+        assertEquals(12, policy.publicationsPerSecond(5))
+        assertEquals(83_333_333L, policy.intervalNanos(-5))
     }
 
     @Test
