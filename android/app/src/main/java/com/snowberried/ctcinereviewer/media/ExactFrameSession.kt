@@ -837,51 +837,63 @@ class ExactFrameSession(
                     return
                 }
 
-                if (!inputEos) {
+                var inputBatchCount = 0
+                while (
+                    !inputEos &&
+                    inputBatchCount < FOREGROUND_INPUT_BATCH_SIZE &&
+                    isCurrent(request.token)
+                ) {
                     val inputIndex = current.codec.dequeueInputBuffer(0)
-                    if (inputIndex >= 0) {
-                        val queueInput = {
-                            val inputBuffer = current.codec.getInputBuffer(inputIndex)
-                                ?: error("INPUT_BUFFER_MISSING")
-                            val sampleTrack = current.extractor.sampleTrackIndex
-                            if (sampleTrack < 0) {
-                                current.codec.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                    if (inputIndex < 0) break
+                    val queueInput = {
+                        val inputBuffer = current.codec.getInputBuffer(inputIndex)
+                            ?: error("INPUT_BUFFER_MISSING")
+                        val sampleTrack = current.extractor.sampleTrackIndex
+                        if (sampleTrack < 0) {
+                            current.codec.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            current.codecInputState.onInputQueued()
+                            inputEos = true
+                        } else {
+                            val size = current.extractor.readSampleData(inputBuffer, 0)
+                            if (size < 0) {
+                                current.codec.queueInputBuffer(
+                                    inputIndex,
+                                    0,
+                                    0,
+                                    0,
+                                    MediaCodec.BUFFER_FLAG_END_OF_STREAM,
+                                )
                                 current.codecInputState.onInputQueued()
                                 inputEos = true
                             } else {
-                                val size = current.extractor.readSampleData(inputBuffer, 0)
-                                if (size < 0) {
-                                    current.codec.queueInputBuffer(
-                                        inputIndex,
-                                        0,
-                                        0,
-                                        0,
-                                        MediaCodec.BUFFER_FLAG_END_OF_STREAM,
-                                    )
-                                    current.codecInputState.onInputQueued()
-                                    inputEos = true
-                                } else {
-                                    current.codec.queueInputBuffer(
-                                        inputIndex,
-                                        0,
-                                        size,
-                                        current.extractor.sampleTime,
-                                        0,
-                                    )
-                                    current.codecInputState.onInputQueued()
-                                    current.extractor.advance()
-                                }
-                            }
-                        }
-                        CcrTrace.section(CcrTrace.requestLabel(CcrTrace.CODEC_FEED, request)) {
-                            if (inputFirstTraced) {
-                                queueInput()
-                            } else {
-                                CcrTrace.section(CcrTrace.requestLabel(CcrTrace.INPUT_FIRST, request), queueInput)
-                                inputFirstTraced = true
+                                current.codec.queueInputBuffer(
+                                    inputIndex,
+                                    0,
+                                    size,
+                                    current.extractor.sampleTime,
+                                    0,
+                                )
+                                current.codecInputState.onInputQueued()
+                                current.extractor.advance()
                             }
                         }
                     }
+                    CcrTrace.section(CcrTrace.requestLabel(CcrTrace.CODEC_FEED, request)) {
+                        if (inputFirstTraced) {
+                            queueInput()
+                        } else {
+                            CcrTrace.section(CcrTrace.requestLabel(CcrTrace.INPUT_FIRST, request), queueInput)
+                            inputFirstTraced = true
+                        }
+                    }
+                    inputBatchCount += 1
+                }
+                if (!isCurrent(request.token)) {
+                    forwardSequentialState.invalidate()
+                    cancelPrefetch(prefetch)
+                    diagnostics = diagnostics.copy(staleDiscardCount = diagnostics.staleDiscardCount + 1)
+                    report(FrameResult.DiscardedStale(request, "input-batch"))
+                    return
                 }
 
                 when (val outputIndex = current.codec.dequeueOutputBuffer(info, 10_000)) {
@@ -2342,6 +2354,7 @@ class ExactFrameSession(
     companion object {
         private const val NO_GESTURE = Long.MIN_VALUE
         private const val NO_REVERSE_STRIDE = Long.MIN_VALUE
+        private const val FOREGROUND_INPUT_BATCH_SIZE = 8
         private const val REFILL_MIN_FREE_SLOTS = 2
         private const val REFILL_BATCH_TARGETS = 2
         private const val REFILL_YIELD_DELAY_MS = 1L
