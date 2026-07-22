@@ -18,6 +18,16 @@ $script:CcrAlpha5BaseAdbRaw = ${function:Invoke-CcrPinnedAdbRaw}
 $script:CcrAlpha5ActiveDeadlineUtc = $null
 $script:CcrAlpha5CleanupDeadlineUtc = $null
 
+function Test-CcrAlpha5MainActivityForeground {
+  param([AllowEmptyString()][string]$ActivityDump)
+  if ([string]::IsNullOrWhiteSpace($ActivityDump)) { return $false }
+  $component = [regex]::Escape($script:CcrPinnedMainActivityComponent)
+  return [regex]::IsMatch(
+    $ActivityDump,
+    "(?m)^\s*(?:mResumedActivity:|ResumedActivity:).*$component(?:\s|\})"
+  )
+}
+
 function Set-CcrAlpha5ActiveDeadline {
   param([Parameter(Mandatory = $true)][datetime]$DeadlineUtc)
   $script:CcrAlpha5ActiveDeadlineUtc = $DeadlineUtc.ToUniversalTime()

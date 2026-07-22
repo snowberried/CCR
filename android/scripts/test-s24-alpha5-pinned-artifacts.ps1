@@ -284,7 +284,14 @@ try {
   }
   Assert-Alpha5Test ($orchestrator -match 'ALPHA5_RESOURCE_REQUIRES_ELEVEN_MINUTES_REMAINING') "ALPHA5_TEST_RESOURCE_DEADLINE_GUARD_MISSING"
   Assert-Alpha5Test ($script:CcrPinnedMainActivityComponent -ceq 'com.snowberried.ctcinereviewer.internal/com.snowberried.ctcinereviewer.MainActivity') "ALPHA5_TEST_H_COMPONENT_IDENTITY_MISMATCH"
-  Assert-Alpha5Test ($orchestrator -match 'CcrPinnedMainActivityComponent' -and $orchestrator -match 'ALPHA5_H_MAIN_ACTIVITY_NOT_FOREGROUND' -and $orchestrator -match 'Assert-CcrPinnedInstalledArtifact') "ALPHA5_TEST_H_INSTALL_FOREGROUND_GUARD_MISSING"
+  $mainActivity = $script:CcrPinnedMainActivityComponent
+  Assert-Alpha5Test (Test-CcrAlpha5MainActivityForeground "  mResumedActivity: ActivityRecord{1 u0 $mainActivity t1}") "ALPHA5_TEST_H_LEGACY_FOREGROUND_FORMAT_REJECTED"
+  Assert-Alpha5Test (Test-CcrAlpha5MainActivityForeground "  ResumedActivity: ActivityRecord{1 u0 $mainActivity t1}") "ALPHA5_TEST_H_ANDROID15_FOREGROUND_FORMAT_REJECTED"
+  Assert-Alpha5Test (-not (Test-CcrAlpha5MainActivityForeground "  ResumedActivity: ActivityRecord{1 u0 com.sec.android.app.launcher/.Launcher t1}")) "ALPHA5_TEST_H_NON_TARGET_FOREGROUND_ACCEPTED"
+  $multiResumeDump = "  ResumedActivity: ActivityRecord{1 u0 com.sec.android.app.launcher/.Launcher t1}`n    topResumedActivity=ActivityRecord{2 u0 $mainActivity t2}"
+  Assert-Alpha5Test (-not (Test-CcrAlpha5MainActivityForeground $multiResumeDump)) "ALPHA5_TEST_H_TASK_LOCAL_FOREGROUND_ACCEPTED"
+  Assert-Alpha5Test (([regex]::Matches($orchestrator, 'Test-CcrAlpha5MainActivityForeground \$focus\.output')).Count -eq 2 -and $orchestrator -notmatch '\$focus\.output -notmatch .*mResumedActivity') "ALPHA5_TEST_H_FOREGROUND_HELPER_CALLS_MISSING"
+  Assert-Alpha5Test ($orchestrator -match 'ALPHA5_H_MAIN_ACTIVITY_NOT_FOREGROUND' -and $orchestrator -match 'Assert-CcrPinnedInstalledArtifact') "ALPHA5_TEST_H_INSTALL_FOREGROUND_GUARD_MISSING"
   Assert-Alpha5Test ($orchestrator -match 'PRIMARY=.*CLEANUP=' -and $orchestrator -match 'Assert-CcrAlpha5SettingsRestored') "ALPHA5_TEST_ORCHESTRATOR_CLEANUP_FAILURE_GUARD_MISSING"
   Assert-Alpha5Test ($orchestrator -match 'stay_on_while_plugged_in" "7"' -and $orchestrator -match 'screen_off_timeout" "1800000"' -and $orchestrator -match 'ALPHA5_ORCHESTRATOR_AWAKE_SETTING_MISMATCH' -and $orchestrator -match 'ALPHA5_PARTIAL_SETTING_RESTORE_FAILED') "ALPHA5_TEST_ORCHESTRATOR_AWAKE_GUARD_MISSING"
   Assert-Alpha5Test ($instrumentation -match 'FailureReportPath') "ALPHA5_TEST_INSTRUMENTATION_FAILURE_REPORT_MISSING"

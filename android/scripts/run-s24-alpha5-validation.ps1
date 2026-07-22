@@ -192,7 +192,7 @@ function Invoke-CcrAlpha5Stage {
         if (Test-CcrPinnedPackageInstalled $context $packageName) { throw "ALPHA5_H_RESUME_TEST_PACKAGE_PRESENT:$packageName" }
       }
       $focus = Invoke-CcrPinnedAdb $context @("-s", $context.Serial, "shell", "dumpsys", "activity", "activities")
-      if ($focus.exitCode -ne 0 -or $focus.output -notmatch "(?m)mResumedActivity:.*$([regex]::Escape($script:CcrPinnedMainActivityComponent))(?:\s|\})") {
+      if ($focus.exitCode -ne 0 -or -not (Test-CcrAlpha5MainActivityForeground $focus.output)) {
         throw "ALPHA5_H_RESUME_MAIN_ACTIVITY_NOT_FOREGROUND"
       }
     }
@@ -288,7 +288,7 @@ function Invoke-CcrAlpha5Stage {
         )
         if ($launch.exitCode -ne 0 -or $launch.output -notmatch "(?m)^Status:\s*ok\s*$") { throw "ALPHA5_H_MAIN_ACTIVITY_LAUNCH_FAILED" }
         $focus = Invoke-CcrPinnedAdb $context @("-s", $context.Serial, "shell", "dumpsys", "activity", "activities")
-        if ($focus.exitCode -ne 0 -or $focus.output -notmatch "(?m)mResumedActivity:.*$([regex]::Escape($script:CcrPinnedMainActivityComponent))(?:\s|\})") {
+        if ($focus.exitCode -ne 0 -or -not (Test-CcrAlpha5MainActivityForeground $focus.output)) {
           throw "ALPHA5_H_MAIN_ACTIVITY_NOT_FOREGROUND"
         }
         $installed = [ordered]@{
