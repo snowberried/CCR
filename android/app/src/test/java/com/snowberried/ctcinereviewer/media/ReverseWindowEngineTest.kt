@@ -120,6 +120,139 @@ class ReverseWindowEngineTest {
     }
 
     @Test
+    fun `rolling tail remains the next anchor after every appended target is consumed`() {
+        val video = video(20)
+        val initial = plan(video, anchorIndex = 14, targetCount = 5)
+        val engine = readyEngine(initial)
+        initial.publicationTargets.take(2).forEach { engine.consume(it.key, IDENTITY) }
+        val firstRolling = plan(video, anchorIndex = 9, targetCount = 2)
+        assertTrue(
+            engine.appendRefill(firstRolling, firstRolling.publicationTargets.map { it.key }, IDENTITY) is
+                ReverseWindowRefillResult.Ready,
+        )
+
+        engine.snapshot().remainingTargetKeys.forEach { engine.consume(it, IDENTITY) }
+        assertEquals(ReverseWindowSlotState.EXHAUSTED, engine.snapshot().state)
+        assertEquals(7, engine.snapshot().oldestTarget?.displayFrameIndex)
+
+        val secondRolling = plan(video, anchorIndex = 7, targetCount = 2)
+        assertTrue(
+            engine.appendRefill(secondRolling, secondRolling.publicationTargets.map { it.key }, IDENTITY) is
+                ReverseWindowRefillResult.Ready,
+        )
+        assertEquals(listOf(6, 5), engine.snapshot().remainingTargetKeys.map { it.displayFrameIndex })
+        assertEquals(5, engine.snapshot().oldestTarget?.displayFrameIndex)
+    }
+
+    @Test
+    fun `publication ticket consumes only the same current-next target after a successful swap`() {
+        val video = video(16)
+        val initial = plan(video, anchorIndex = 12, targetCount = 5)
+        val engine = readyEngine(initial)
+        val expected = initial.publicationTargets.first()
+        val ticket = checkNotNull(engine.acquirePublicationTicket(expected.key, -1))
+        assertEquals(IDENTITY, ticket.identity)
+        assertEquals(ticket, engine.acquirePublicationTicket(expected.key, -1, IDENTITY))
+        assertTrue(engine.isPublicationTicketCurrent(ticket))
+
+        val hit = engine.consume(ticket, IDENTITY) as ReverseWindowConsumeResult.Hit
+        assertEquals(expected, hit.target)
+        assertEquals(4, hit.remainingTargetCount)
+        assertFalse(engine.isPublicationTicketCurrent(ticket))
+
+        val reused = engine.consume(ticket, IDENTITY) as ReverseWindowConsumeResult.Fallback
+        assertEquals(ReverseWindowFallbackReason.PUBLICATION_TICKET_STALE, reused.reason)
+        assertEquals(ReverseWindowSlotState.READY, engine.snapshot().state)
+        assertEquals(0L, engine.snapshot().invalidationCount)
+        assertEquals(null, engine.acquirePublicationTicket(initial.publicationTargets[2].key, -1, IDENTITY))
+        assertEquals(null, engine.acquirePublicationTicket(initial.publicationTargets[1].key, -5, IDENTITY))
+    }
+
+    @Test
+    fun `publication ticket survives an ordered append behind it but not a replacement window`() {
+        val video = video(20)
+        val initial = plan(video, anchorIndex = 14, targetCount = 5)
+        val engine = readyEngine(initial)
+        initial.publicationTargets.take(2).forEach { engine.consume(it.key, IDENTITY) }
+        val ticket = checkNotNull(engine.acquirePublicationTicket(initial.publicationTargets[2].key, -1))
+        val rolling = plan(video, anchorIndex = 9, targetCount = 2)
+        rolling.decodeTargets.forEach { target ->
+            engine.stageRefillTarget(rolling, target.key, IDENTITY)
+        }
+        assertTrue(engine.isPublicationTicketCurrent(ticket))
+        assertTrue(engine.consume(ticket, IDENTITY) is ReverseWindowConsumeResult.Hit)
+
+        val replacementTicket = checkNotNull(engine.acquirePublicationTicket(initial.publicationTargets[3].key, -1))
+        engine.invalidate(ReverseWindowFallbackReason.CANCELLED)
+        assertTrue(
+            engine.refill(initial, initial.publicationTargets.map { it.key }, IDENTITY) is
+                ReverseWindowRefillResult.Ready,
+        )
+        assertFalse(engine.isPublicationTicketCurrent(replacementTicket))
+        assertEquals(
+            ReverseWindowFallbackReason.PUBLICATION_TICKET_STALE,
+            (engine.consume(replacementTicket, IDENTITY) as ReverseWindowConsumeResult.Fallback).reason,
+        )
+        assertEquals(ReverseWindowSlotState.READY, engine.snapshot().state)
+    }
+
+    @Test
+    fun `ordered staged append hides an older output until the contiguous prefix is ready`() {
+        val video = video(20)
+        val initial = plan(video, anchorIndex = 14, targetCount = 5)
+        val engine = readyEngine(initial)
+        initial.publicationTargets.take(2).forEach { engine.consume(it.key, IDENTITY) }
+        val rolling = plan(video, anchorIndex = 9, targetCount = 2)
+
+        val olderFirst = engine.stageRefillTarget(
+            rolling,
+            rolling.publicationTargets.last().key,
+            IDENTITY,
+        ) as ReverseWindowPartialAppendResult.Accepted
+        assertTrue(olderFirst.appendedTargets.isEmpty())
+        assertFalse(olderFirst.completed)
+        assertEquals(listOf(11, 10, 9), engine.snapshot().remainingTargetKeys.map { it.displayFrameIndex })
+        assertEquals(1, engine.snapshot().stagedReadyCount)
+
+        val contiguous = engine.stageRefillTarget(
+            rolling,
+            rolling.publicationTargets.first().key,
+            IDENTITY,
+        ) as ReverseWindowPartialAppendResult.Accepted
+        assertEquals(listOf(8, 7), contiguous.appendedTargets.map { it.key.displayFrameIndex })
+        assertTrue(contiguous.completed)
+        assertEquals(listOf(11, 10, 9, 8, 7), engine.snapshot().remainingTargetKeys.map { it.displayFrameIndex })
+        assertEquals(0, engine.snapshot().stagedTargetCount)
+        assertEquals(1L, engine.snapshot().partialAppendCount)
+        assertEquals(1L, engine.snapshot().rollingAppendRefillCount)
+    }
+
+    @Test
+    fun `staged refill enforces capacity and discards only uncommitted keys`() {
+        val video = video(20)
+        val initial = plan(video, anchorIndex = 14, targetCount = 5)
+        val engine = readyEngine(initial)
+        initial.publicationTargets.take(2).forEach { engine.consume(it.key, IDENTITY) }
+
+        val tooLarge = plan(video, anchorIndex = 9, targetCount = 3)
+        val rejected = engine.stageRefillTarget(tooLarge, tooLarge.publicationTargets.last().key, IDENTITY)
+        assertEquals(
+            ReverseWindowFallbackReason.READY_KEYS_MISMATCH,
+            (rejected as ReverseWindowPartialAppendResult.Fallback).reason,
+        )
+        assertEquals(listOf(11, 10, 9), engine.snapshot().remainingTargetKeys.map { it.displayFrameIndex })
+
+        val rolling = plan(video, anchorIndex = 9, targetCount = 2)
+        val stagedKey = rolling.publicationTargets.last().key
+        engine.stageRefillTarget(rolling, stagedKey, IDENTITY)
+        val wrong = engine.stageRefillTarget(rolling, video.frames[0].key, IDENTITY)
+        assertTrue(wrong is ReverseWindowPartialAppendResult.Fallback)
+        assertEquals(setOf(stagedKey), engine.discardStagedRefill(ReverseWindowFallbackReason.CANCELLED))
+        assertEquals(listOf(11, 10, 9), engine.snapshot().remainingTargetKeys.map { it.displayFrameIndex })
+        assertEquals(ReverseWindowSlotState.READY, engine.snapshot().state)
+    }
+
+    @Test
     fun `exhausted refill-needed latch survives until a rolling append becomes READY`() {
         val video = video(16)
         val initial = plan(video, anchorIndex = 8, targetCount = 2)
