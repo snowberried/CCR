@@ -133,6 +133,7 @@ function Assert-CcrAlpha6ReverseTailGate {
   $refillThresholdNs = if ($Stride -eq -1) { 100000000L } else { 125000000L }
   foreach ($name in @(
     "sampleCount", "targetCadenceNs", "coefficientOfVariationPpm", "p99Ns", "p995Ns", "maxNs",
+    "longestConsecutivePublicationGapNs",
     "overOnePointFiveCadenceCount", "overTwoCadenceCount",
     "longestConsecutiveOverOnePointFiveCadenceCount"
   )) { Get-CcrAlpha6RequiredProperty $Metrics $name | Out-Null }
@@ -159,7 +160,10 @@ function Assert-CcrAlpha6ReverseTailGate {
   if ([long]$Metrics.p99Ns -gt $cadenceNs * 2L) { throw "ALPHA6_TAIL_GATE_P99_FAIL" }
   if ($overTwoCount -gt 1L) { throw "ALPHA6_TAIL_GATE_OVER_2X_COUNT_FAIL" }
   if ([long]$RefillCorrelation.associatedLongGapCount -ne 0L) { throw "ALPHA6_TAIL_GATE_REFILL_GAP_FAIL" }
-  if ([long]$Metrics.maxNs -gt $cadenceNs * 2L) { throw "ALPHA6_TAIL_GATE_MAX_GAP_FAIL" }
+  if ([long]$Metrics.maxNs -gt $cadenceNs * 2L -or
+      [long]$Metrics.longestConsecutivePublicationGapNs -gt $cadenceNs * 2L) {
+    throw "ALPHA6_TAIL_GATE_MAX_GAP_FAIL"
+  }
   if ($ClassifiedSystemSchedulingOutlierCount -ne 0) {
     throw "ALPHA6_TAIL_GATE_FALSE_OUTLIER_CLASSIFICATION"
   }
@@ -193,6 +197,7 @@ function Assert-CcrAlpha6BenchmarkData {
     "ccrRunIteration", "ccrCounterComplete", "ccrValidTraceIdentity",
     "ccrPublicationCount", "ccrPublicationIntervalP50Us", "ccrPublicationIntervalP95Us",
     "ccrPublicationIntervalP99Us", "ccrPublicationIntervalP995Us", "ccrPublicationIntervalMaxUs",
+    "ccrPublicationGapMaxUs",
     "ccrPublicationIntervalCvPpm", "ccrPublicationIntervalOver1_5xCount",
     "ccrPublicationIntervalOver2xCount", "ccrPublicationIntervalLongestOver1_5xRun",
     "ccrPublicationIntervalSampleCount", "ccrPublicationIntervalSequenceStartCount",
@@ -240,6 +245,7 @@ function Assert-CcrAlpha6BenchmarkData {
       @("ccrPublicationIntervalP99Us", "publicationIntervalP99Us"),
       @("ccrPublicationIntervalP995Us", "publicationIntervalP995Us"),
       @("ccrPublicationIntervalMaxUs", "publicationIntervalMaxUs"),
+      @("ccrPublicationGapMaxUs", "publicationGapMaxUs"),
       @("ccrPublicationIntervalCvPpm", "publicationIntervalCvPpm"),
       @("ccrPublicationIntervalOver1_5xCount", "publicationIntervalOver1_5xCadenceCount"),
       @("ccrPublicationIntervalOver2xCount", "publicationIntervalOver2xCadenceCount"),

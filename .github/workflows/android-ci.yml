@@ -28,7 +28,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      CCR_ANDROID_COMMIT_SHA: dabf11fa103179c4d81fe4448aba84ac340cf230
+      CCR_ANDROID_COMMIT_SHA: c9a7147d39d2d370916f325a108876c0947ddcb8
 
     steps:
       - name: Check out repository
@@ -65,6 +65,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .\android\tools\verify-runtime-inputs-alpha5.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node .\android\tools\verify-runtime-inputs-alpha6.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .\android\tools\verify-source-contract.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -83,6 +85,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-s24-alpha5-pinned-artifacts.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-s24-alpha6-pinned-artifacts.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-alpha6-tail-contract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-run-s24-alpha6-stage1.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-run-s24-alpha6-random.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test and build internal APK
         working-directory: android
@@ -97,7 +107,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v6
         with:
-          name: ccr-android-0.2.0-alpha.5-internal
+          name: ccr-android-0.2.0-alpha.6-internal
           path: |
             android/app/build/outputs/apk/internal/debug/app-internal-debug.apk
             android/app/build/outputs/apk/internal/benchmark/app-internal-benchmark.apk
@@ -112,7 +122,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v6
         with:
-          name: ccr-android-0.2.0-alpha.5-test-tools
+          name: ccr-android-0.2.0-alpha.6-test-tools
           path: |
             android/app/build/outputs/apk/androidTest/internal/debug/app-internal-debug-androidTest.apk
             android/macrobenchmark/build/outputs/apk/internal/benchmark/macrobenchmark-internal-benchmark.apk

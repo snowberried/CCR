@@ -157,6 +157,156 @@ function Assert-CcrAlpha6ArtifactSetUnchanged {
   return $true
 }
 
+function New-CcrAlpha6TimedAdbInvoker {
+  param(
+    [Parameter(Mandatory = $true)][string]$AdbPath,
+    [Parameter(Mandatory = $true)][object]$DeadlineState
+  )
+  $resolvedAdb = [System.IO.Path]::GetFullPath($AdbPath)
+  return {
+    param($Arguments)
+    $deadline = if ($DeadlineState.CleanupMode) {
+      [datetime]$DeadlineState.CleanupDeadlineUtc
+    } else {
+      [datetime]$DeadlineState.ValidationDeadlineUtc
+    }
+    $remainingMs = [long][Math]::Floor(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+    if ($remainingMs -le 0L) {
+      return [PSCustomObject]@{ exitCode = 124; output = "ALPHA6_ADB_DEADLINE_EXCEEDED" }
+    }
+    foreach ($argument in @($Arguments)) {
+      if ([string]$argument -match '"') { throw "ALPHA6_ADB_ARGUMENT_QUOTE_FORBIDDEN" }
+    }
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = [System.Diagnostics.ProcessStartInfo]@{
+      FileName = $resolvedAdb
+      Arguments = (@($Arguments | ForEach-Object { '"' + [string]$_ + '"' }) -join ' ')
+      UseShellExecute = $false
+      RedirectStandardOutput = $true
+      RedirectStandardError = $true
+      CreateNoWindow = $true
+    }
+    try {
+      if (-not $process.Start()) { throw "ALPHA6_ADB_PROCESS_START_FAILED" }
+      $stdout = $process.StandardOutput.ReadToEndAsync()
+      $stderr = $process.StandardError.ReadToEndAsync()
+      $boundedMs = [int][Math]::Min([int]::MaxValue, [Math]::Max(1L, $remainingMs))
+      if (-not $process.WaitForExit($boundedMs)) {
+        try { $process.Kill() } catch { }
+        try { $null = $process.WaitForExit(2000) } catch { }
+        return [PSCustomObject]@{
+          exitCode = 124
+          output = "ALPHA6_ADB_PROCESS_TIMEOUT"
+        }
+      }
+      $process.WaitForExit()
+      $output = (($stdout.GetAwaiter().GetResult(), $stderr.GetAwaiter().GetResult()) -join "`n").Trim()
+      return [PSCustomObject]@{ exitCode = [int]$process.ExitCode; output = $output }
+    } finally {
+      $process.Dispose()
+    }
+  }.GetNewClosure()
+}
+
+function Initialize-CcrAlpha6PinnedDeviceSettings {
+  param(
+    [Parameter(Mandatory = $true)][object]$Context,
+    [AllowEmptyString()][string]$OriginalStayAwakeSetting = "",
+    [AllowEmptyString()][string]$OriginalScreenTimeoutSetting = "",
+    [object]$ResumeRestoreBaseline = $null
+  )
+  $observed = Save-CcrPinnedDeviceSettings $Context
+  $missing = [System.Collections.Generic.List[string]]::new()
+  $settingSpecs = @(
+    [PSCustomObject]@{ Property = "stayAwake"; Namespace = "global"; Name = "stay_on_while_plugged_in"; ToolValue = "7" },
+    [PSCustomObject]@{ Property = "brightnessMode"; Namespace = "system"; Name = "screen_brightness_mode"; ToolValue = "0" },
+    [PSCustomObject]@{ Property = "brightness"; Namespace = "system"; Name = "screen_brightness"; ToolValue = "128" },
+    [PSCustomObject]@{ Property = "screenTimeout"; Namespace = "system"; Name = "screen_off_timeout"; ToolValue = "1800000" },
+    [PSCustomObject]@{ Property = "accelerometerRotation"; Namespace = "system"; Name = "accelerometer_rotation"; ToolValue = "0" },
+    [PSCustomObject]@{ Property = "userRotation"; Namespace = "system"; Name = "user_rotation"; ToolValue = "0" }
+  )
+  $resumeBaselineProvided = $null -ne $ResumeRestoreBaseline
+  $resumeObservedStateCompatible = $true
+  $interruptedAttemptStateDetected = $false
+  if ($resumeBaselineProvided) {
+    foreach ($spec in $settingSpecs) {
+      $baselineValue = [string](Get-CcrPinnedRequiredProperty $ResumeRestoreBaseline $spec.Property)
+      $observedValue = [string]$observed.($spec.Property)
+      if ($observedValue -cne $baselineValue -and $observedValue -cne $spec.ToolValue) {
+        $resumeObservedStateCompatible = $false
+      }
+      if ($baselineValue -cne $spec.ToolValue -and $observedValue -ceq $spec.ToolValue) {
+        $interruptedAttemptStateDetected = $true
+      }
+    }
+    if (-not $resumeObservedStateCompatible) {
+      $missing.Add("resume_device_settings_changed") | Out-Null
+    } elseif ($interruptedAttemptStateDetected) {
+      foreach ($spec in $settingSpecs) {
+        $baselineValue = [string](Get-CcrPinnedRequiredProperty $ResumeRestoreBaseline $spec.Property)
+        Set-CcrPinnedDeviceSetting $Context $spec.Namespace $spec.Name $baselineValue
+        $Context.SavedSettings.($spec.Property) = $baselineValue
+      }
+    }
+  }
+  $staleStayAwake = [string]$Context.SavedSettings.stayAwake -ceq "15"
+  $staleScreenTimeout = [string]$Context.SavedSettings.screenTimeout -ceq "600000"
+  if ($staleStayAwake -and -not $resumeBaselineProvided -and [string]::IsNullOrWhiteSpace($OriginalStayAwakeSetting)) {
+    $missing.Add("stay_on_while_plugged_in") | Out-Null
+  }
+  if ($staleScreenTimeout -and -not $resumeBaselineProvided -and [string]::IsNullOrWhiteSpace($OriginalScreenTimeoutSetting)) {
+    $missing.Add("screen_off_timeout") | Out-Null
+  }
+  $record = [PSCustomObject][ordered]@{
+    schemaVersion = 1
+    kind = "alpha6-device-settings-preflight"
+    status = $(if ($missing.Count -eq 0) { "PASS" } else { "BLOCKED" })
+    observed = [PSCustomObject][ordered]@{
+      stayAwake = [string]$observed.stayAwake
+      brightnessMode = [string]$observed.brightnessMode
+      brightness = [string]$observed.brightness
+      screenTimeout = [string]$observed.screenTimeout
+      accelerometerRotation = [string]$observed.accelerometerRotation
+      userRotation = [string]$observed.userRotation
+    }
+    staleStayAwakeDetected = $staleStayAwake
+    staleScreenTimeoutDetected = $staleScreenTimeout
+    trustedOriginalStayAwakeProvided = -not [string]::IsNullOrWhiteSpace($OriginalStayAwakeSetting)
+    trustedOriginalScreenTimeoutProvided = -not [string]::IsNullOrWhiteSpace($OriginalScreenTimeoutSetting)
+    resumeRestoreBaselineProvided = $resumeBaselineProvided
+    resumeObservedStateCompatible = $resumeObservedStateCompatible
+    interruptedAttemptStateDetected = $interruptedAttemptStateDetected
+    restoredInterruptedAttemptBeforeValidation = $resumeBaselineProvided -and $resumeObservedStateCompatible -and $interruptedAttemptStateDetected
+    missingTrustedOriginalSettings = $missing.ToArray()
+    restoredBeforeValidation = $false
+  }
+  if ($missing.Count -ne 0) { return $record }
+  if ($staleStayAwake) {
+    $trustedStayAwake = if ($resumeBaselineProvided) {
+      [string](Get-CcrPinnedRequiredProperty $ResumeRestoreBaseline "stayAwake")
+    } else { $OriginalStayAwakeSetting }
+    Set-CcrPinnedDeviceSetting $Context "global" "stay_on_while_plugged_in" $trustedStayAwake
+    $Context.SavedSettings.stayAwake = $trustedStayAwake
+  }
+  if ($staleScreenTimeout) {
+    $trustedScreenTimeout = if ($resumeBaselineProvided) {
+      [string](Get-CcrPinnedRequiredProperty $ResumeRestoreBaseline "screenTimeout")
+    } else { $OriginalScreenTimeoutSetting }
+    Set-CcrPinnedDeviceSetting $Context "system" "screen_off_timeout" $trustedScreenTimeout
+    $Context.SavedSettings.screenTimeout = $trustedScreenTimeout
+  }
+  $record.restoredBeforeValidation = $record.restoredInterruptedAttemptBeforeValidation -or $staleStayAwake -or $staleScreenTimeout
+  $record | Add-Member -NotePropertyName effectiveRestoreBaseline -NotePropertyValue ([PSCustomObject][ordered]@{
+    stayAwake = [string]$Context.SavedSettings.stayAwake
+    brightnessMode = [string]$Context.SavedSettings.brightnessMode
+    brightness = [string]$Context.SavedSettings.brightness
+    screenTimeout = [string]$Context.SavedSettings.screenTimeout
+    accelerometerRotation = [string]$Context.SavedSettings.accelerometerRotation
+    userRotation = [string]$Context.SavedSettings.userRotation
+  })
+  return $record
+}
+
 function Invoke-CcrAlpha6PinnedHostPreflight {
   param(
     [Parameter(Mandatory = $true)][string]$ArtifactManifest,

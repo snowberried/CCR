@@ -92,6 +92,12 @@ Assert-Alpha6Throws {
   Assert-CcrAlpha6ReverseTailGate -Stride -1 -Metrics $maxGapFailure `
     -ForwardCoefficientOfVariationPpm 180000L -RefillCorrelation $passCorrelation | Out-Null
 } "ALPHA6_TAIL_GATE_MAX_GAP_FAIL" "max-gap-hard-fail"
+$boundaryGapFailure = $passTail.PSObject.Copy()
+$boundaryGapFailure.longestConsecutivePublicationGapNs = $cadence * 2L + 1L
+Assert-Alpha6Throws {
+  Assert-CcrAlpha6ReverseTailGate -Stride -1 -Metrics $boundaryGapFailure `
+    -ForwardCoefficientOfVariationPpm 180000L -RefillCorrelation $passCorrelation | Out-Null
+} "ALPHA6_TAIL_GATE_MAX_GAP_FAIL" "boundary-gap-hard-fail"
 $passRefillFailureEvents = @($passCorrelationEvents | ForEach-Object {
   [PSCustomObject]@{
     intervalNs = [long]$_.intervalNs
@@ -181,6 +187,7 @@ foreach ($entry in @(
   @("ccrPublicationIntervalP99Us", 80000),
   @("ccrPublicationIntervalP995Us", 90000),
   @("ccrPublicationIntervalMaxUs", 100000),
+  @("ccrPublicationGapMaxUs", 100000),
   @("ccrPublicationIntervalCvPpm", 180000),
   @("ccrPublicationIntervalOver1_5xCount", 1),
   @("ccrPublicationIntervalOver2xCount", 0),
@@ -219,6 +226,7 @@ $iterations = @(1..3 | ForEach-Object {
     publicationIntervalP99Us = 80000
     publicationIntervalP995Us = 90000
     publicationIntervalMaxUs = 100000
+    publicationGapMaxUs = 100000
     publicationIntervalCvPpm = 180000
     publicationIntervalOver1_5xCadenceCount = 1
     publicationIntervalOver2xCadenceCount = 0

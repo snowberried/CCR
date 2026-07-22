@@ -373,8 +373,14 @@ class BenchmarkActivity : ComponentActivity() {
                     SCENARIO_HOLD_720_PLUS_FIVE,
                     SCENARIO_HOLD_1080_PLUS_ONE,
                     SCENARIO_HOLD_1080_PLUS_FIVE -> startRepresentativeHold()
-                    SCENARIO_HOLD_1080_MINUS_ONE -> preparePureReverseHold(state, -1)
-                    SCENARIO_HOLD_1080_MINUS_FIVE -> preparePureReverseHold(state, -5)
+                    SCENARIO_HOLD_1080_MINUS_ONE,
+                    SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+                    SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+                    SCENARIO_HOLD_1080_VFR_MINUS_ONE -> preparePureReverseHold(state, -1)
+                    SCENARIO_HOLD_1080_MINUS_FIVE,
+                    SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+                    SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+                    SCENARIO_HOLD_1080_VFR_MINUS_FIVE -> preparePureReverseHold(state, -5)
                     SCENARIO_REVERSE_1080 -> prepareRepresentativeReverse(state)
                     SCENARIO_SEEK_1080 -> startRepresentativeSeek(state)
                     SCENARIO_SWITCH_1080_H264_HEVC,
@@ -1002,6 +1008,7 @@ class BenchmarkActivity : ComponentActivity() {
         val runtime = Runtime.getRuntime()
         val memory = Debug.MemoryInfo().also(Debug::getMemoryInfo)
         return identity + buildString {
+            append("|fixture=").append(safeMetricToken(firstFixture()))
             append("|segmented=").append(isSegmentedHoldScenario())
             append("|activeMs=").append(activeNs / 1_000_000L)
             append("|measurementTargetMs=").append(holdActiveTargetNs / 1_000_000L)
@@ -1412,6 +1419,12 @@ class BenchmarkActivity : ComponentActivity() {
         SCENARIO_HOLD_1080_MINUS_FIVE,
         SCENARIO_REVERSE_1080,
         SCENARIO_SEEK_1080 -> REPRESENTATIVE_1080_H264_BFRAMES
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE -> REPRESENTATIVE_1080_H264_LONG_GOP
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE -> REPRESENTATIVE_1080_HEVC_MAIN8
+        SCENARIO_HOLD_1080_VFR_MINUS_ONE,
+        SCENARIO_HOLD_1080_VFR_MINUS_FIVE -> REPRESENTATIVE_1080_VFR
         SCENARIO_SWITCH_1080_HEVC_H264 -> REPRESENTATIVE_1080_SWITCH_HEVC
         SCENARIO_SWITCH_1080_H264_HEVC -> REPRESENTATIVE_1080_SWITCH_H264
         SCENARIO_SWITCH_HEVC_H264, SCENARIO_SWITCH_HEVC_HEVC -> HEVC_FIXTURE
@@ -1447,10 +1460,16 @@ class BenchmarkActivity : ComponentActivity() {
         SCENARIO_HOLD_720_PLUS_ONE,
         SCENARIO_HOLD_1080_PLUS_ONE,
         SCENARIO_HOLD_1080_MINUS_ONE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+        SCENARIO_HOLD_1080_VFR_MINUS_ONE,
         SCENARIO_REVERSE_1080 -> NavigationCadencePolicy().intervalNanos(1)
         SCENARIO_HOLD_720_PLUS_FIVE,
         SCENARIO_HOLD_1080_PLUS_FIVE,
-        SCENARIO_HOLD_1080_MINUS_FIVE -> NavigationCadencePolicy().intervalNanos(5)
+        SCENARIO_HOLD_1080_MINUS_FIVE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+        SCENARIO_HOLD_1080_VFR_MINUS_FIVE -> NavigationCadencePolicy().intervalNanos(5)
         else -> null
     }
 
@@ -1461,8 +1480,14 @@ class BenchmarkActivity : ComponentActivity() {
 
     private fun refillGapThresholdNs(): Long? = when (scenario) {
         SCENARIO_HOLD_1080_MINUS_ONE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+        SCENARIO_HOLD_1080_VFR_MINUS_ONE,
         SCENARIO_REVERSE_1080 -> 100_000_000L
-        SCENARIO_HOLD_1080_MINUS_FIVE -> 125_000_000L
+        SCENARIO_HOLD_1080_MINUS_FIVE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+        SCENARIO_HOLD_1080_VFR_MINUS_FIVE -> 125_000_000L
         else -> null
     }
 
@@ -1501,6 +1526,12 @@ class BenchmarkActivity : ComponentActivity() {
         const val SCENARIO_HOLD_1080_PLUS_FIVE = "1080p-hold-plus-five"
         const val SCENARIO_HOLD_1080_MINUS_ONE = "1080p-hold-minus-one"
         const val SCENARIO_HOLD_1080_MINUS_FIVE = "1080p-hold-minus-five"
+        const val SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE = "1080p-h264-long-gop-hold-minus-one"
+        const val SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE = "1080p-h264-long-gop-hold-minus-five"
+        const val SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE = "1080p-hevc-main8-hold-minus-one"
+        const val SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE = "1080p-hevc-main8-hold-minus-five"
+        const val SCENARIO_HOLD_1080_VFR_MINUS_ONE = "1080p-vfr-hold-minus-one"
+        const val SCENARIO_HOLD_1080_VFR_MINUS_FIVE = "1080p-vfr-hold-minus-five"
         const val SCENARIO_REVERSE_1080 = "1080p-direction-reverse"
         const val SCENARIO_SEEK_1080 = "1080p-distant-seek"
         const val SCENARIO_SWITCH_1080_H264_HEVC = "1080p-switch-h264-hevc"
@@ -1537,9 +1568,9 @@ class BenchmarkActivity : ComponentActivity() {
         private const val RELEASE_ACCEPTANCE_GRACE_MS = 500L
         private const val ENTRY_TRACE_COOKIE = 1L
         private const val ARTIFACT_SET_REVISION = 4
-        private const val EXPECTED_RUNTIME_SOURCE_SHA = "dabf11fa103179c4d81fe4448aba84ac340cf230"
+        private const val EXPECTED_RUNTIME_SOURCE_SHA = "c9a7147d39d2d370916f325a108876c0947ddcb8"
         private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
-            "612d695e4c9b57d4e4fb10076879bcb9b306d034ff05ba67ad7706c0f22c12e8"
+            "0eb249abadab7d89ba42a40772eb9a8610c193c87279c8633bb6275ac828fc0d"
         private val RUN_ID_PATTERN = Regex("[A-Za-z0-9._:-]{1,80}")
         private val TRACE_IDENTITY_PATTERN = Regex("[A-Za-z0-9._:-]{1,120}")
         private val GIT_SHA_PATTERN = Regex("[0-9a-f]{40}")
@@ -1552,6 +1583,12 @@ class BenchmarkActivity : ComponentActivity() {
             SCENARIO_HOLD_1080_PLUS_FIVE,
             SCENARIO_HOLD_1080_MINUS_ONE,
             SCENARIO_HOLD_1080_MINUS_FIVE,
+            SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+            SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+            SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+            SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+            SCENARIO_HOLD_1080_VFR_MINUS_ONE,
+            SCENARIO_HOLD_1080_VFR_MINUS_FIVE,
             SCENARIO_REVERSE_1080,
         )
         private val REPRESENTATIVE_SCENARIOS = REPRESENTATIVE_HOLD_SCENARIOS + setOf(

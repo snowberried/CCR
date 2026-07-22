@@ -1333,6 +1333,6 @@ class S24FrameAccuracyTest {
             "short-last-gop", "rotation-90", "rotation-180", "rotation-270", "hevc-main8", "burst",
             "switch-a", "switch-b", "par-8-9", "duplicate-pts",
         )
-        private val SEQUENTIAL_FIXTURES = listOf("h264-bframes", "long-gop", "vfr")
+        private val SEQUENTIAL_FIXTURES = listOf("h264-bframes", "long-gop", "vfr", "hevc-main8")
     }
 }

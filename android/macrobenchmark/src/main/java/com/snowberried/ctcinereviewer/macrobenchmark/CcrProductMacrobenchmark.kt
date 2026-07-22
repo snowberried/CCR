@@ -350,6 +350,7 @@ class CcrProductMacrobenchmark {
                 "ccr.publication_interval_p99_us" to "ccrPublicationIntervalP99Us",
                 "ccr.publication_interval_p995_us" to "ccrPublicationIntervalP995Us",
                 "ccr.publication_interval_max_us" to "ccrPublicationIntervalMaxUs",
+                "ccr.publication_gap_max_us" to "ccrPublicationGapMaxUs",
                 "ccr.publication_interval_cv_ppm" to "ccrPublicationIntervalCvPpm",
                 "ccr.publication_interval_over_1_5x_count" to
                     "ccrPublicationIntervalOver1_5xCount",
@@ -517,6 +518,24 @@ class CcrProductMacrobenchmark {
     fun hold1080MinusFive() = representativeFixture(SCENARIO_HOLD_1080_MINUS_FIVE)
 
     @Test
+    fun hold1080H264LongGopMinusOne() = representativeFixture(SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE)
+
+    @Test
+    fun hold1080H264LongGopMinusFive() = representativeFixture(SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE)
+
+    @Test
+    fun hold1080HevcMain8MinusOne() = representativeFixture(SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE)
+
+    @Test
+    fun hold1080HevcMain8MinusFive() = representativeFixture(SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE)
+
+    @Test
+    fun hold1080VfrMinusOne() = representativeFixture(SCENARIO_HOLD_1080_VFR_MINUS_ONE)
+
+    @Test
+    fun hold1080VfrMinusFive() = representativeFixture(SCENARIO_HOLD_1080_VFR_MINUS_FIVE)
+
+    @Test
     fun reverse1080() = representativeFixture(SCENARIO_REVERSE_1080)
 
     @Test
@@ -678,6 +697,7 @@ class CcrProductMacrobenchmark {
         }
         if (requireCompleteCounters) {
             val requiredCounters = listOf(
+                "|fixture=",
                 "|published=",
                 "|fps=",
                 "|measurementTargetMs=",
@@ -686,6 +706,7 @@ class CcrProductMacrobenchmark {
                 "|intervalP99Us=",
                 "|intervalP995Us=",
                 "|intervalMaxUs=",
+                "|gapMaxUs=",
                 "|intervalCvPpm=",
                 "|intervalOver1_5xCount=",
                 "|intervalOver2xCount=",
@@ -800,6 +821,7 @@ class CcrProductMacrobenchmark {
             check(required("traceIdentity") == item.traceIdentity) { "Report trace identity mismatch" }
             check(required("runIteration").toInt() == item.runIteration) { "Report iteration mismatch" }
             check(required("counterComplete").toBooleanStrict()) { "Report counters incomplete" }
+            check(required("fixture") == expectedFixture(scenario)) { "Report fixture mismatch" }
             check(required("codecComponent") != "UNKNOWN") { "Decoder component unavailable" }
             check(required("hardwareAccelerated").toBooleanStrict()) { "Software decoder forbidden" }
             val activeMs = required("activeMs").toLong()
@@ -882,6 +904,19 @@ class CcrProductMacrobenchmark {
             check(required("reverseRefillRestartCount").toLong() == 0L) {
                 "Reverse refill generation restarted"
             }
+            if (scenario in REVERSE_HOLD_SCENARIOS) {
+                listOf(
+                    "cachedNavigationActorBypassCount" to "Cached navigation did not bypass the media actor",
+                    "reverseRefillGenerationCount" to "Reverse refill generation was not exercised",
+                    "reverseRefillCachedTargetCount" to "Reverse refill cached no targets",
+                    "reverseLowWaterTriggerCount" to "Reverse low-water trigger was not exercised",
+                    "reversePartialAppendCount" to "Reverse partial append was not exercised",
+                    "reverseRefillCompletedBeforeDepletionCount" to
+                        "Reverse refill never completed before depletion",
+                ).forEach { (field, description) ->
+                    check(required(field).toLong() > 0L) { description }
+                }
+            }
             val reverseWindowRefillCount = required("reverseWindowRefillCount").toLong()
             val reverseWindowInitialReadyCount = required("reverseWindowInitialReadyCount").toLong()
             val reverseWindowRollingAppendRefillCount =
@@ -893,6 +928,7 @@ class CcrProductMacrobenchmark {
                 JSONObject()
                     .put("runIteration", item.runIteration)
                     .put("traceIdentity", item.traceIdentity)
+                    .put("fixture", required("fixture"))
                     .put("appApkSha256", harnessIdentity.appApkSha256)
                     .put("testApkSha256", harnessIdentity.testApkSha256)
                     .put("status", "PASS")
@@ -906,7 +942,7 @@ class CcrProductMacrobenchmark {
                     .put("publicationIntervalP99Us", required("intervalP99Us").toLong())
                     .put("publicationIntervalP995Us", required("intervalP995Us").toLong())
                     .put("publicationIntervalMaxUs", required("intervalMaxUs").toLong())
-                    .put("longestConsecutivePublicationGapUs", required("intervalMaxUs").toLong())
+                    .put("longestConsecutivePublicationGapUs", required("gapMaxUs").toLong())
                     .put("publicationIntervalCvPpm", required("intervalCvPpm").toLong())
                     .put(
                         "publicationIntervalOver1_5xCadenceCount",
@@ -1103,6 +1139,7 @@ class CcrProductMacrobenchmark {
             .put("testApkSha256", harnessIdentity.testApkSha256)
             .put("status", "PASS")
             .put("scenario", scenario)
+            .put("fixture", expectedFixture(scenario))
             .put("measurementDescription", "source-equivalent pinned benchmark measurement build")
             .put("expectedTraceCount", REPRESENTATIVE_ITERATIONS)
             .put("traceIdentityCount", evidence.map(IterationEvidence::traceIdentity).distinct().size)
@@ -1121,11 +1158,31 @@ class CcrProductMacrobenchmark {
         SCENARIO_HOLD_720_PLUS_ONE,
         SCENARIO_HOLD_1080_PLUS_ONE,
         SCENARIO_HOLD_1080_MINUS_ONE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+        SCENARIO_HOLD_1080_VFR_MINUS_ONE,
         SCENARIO_REVERSE_1080 -> STRIDE_ONE_CADENCE_NS
         SCENARIO_HOLD_720_PLUS_FIVE,
         SCENARIO_HOLD_1080_PLUS_FIVE,
-        SCENARIO_HOLD_1080_MINUS_FIVE -> STRIDE_FIVE_CADENCE_NS
+        SCENARIO_HOLD_1080_MINUS_FIVE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+        SCENARIO_HOLD_1080_VFR_MINUS_FIVE -> STRIDE_FIVE_CADENCE_NS
         else -> error("No fixed publication cadence for scenario: $scenario")
+    }
+
+    private fun expectedFixture(scenario: String): String = when (scenario) {
+        SCENARIO_HOLD_720_PLUS_ONE,
+        SCENARIO_HOLD_720_PLUS_FIVE -> FIXTURE_720_H264_BFRAMES
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE -> FIXTURE_1080_H264_LONG_GOP
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE -> FIXTURE_1080_HEVC_MAIN8
+        SCENARIO_HOLD_1080_VFR_MINUS_ONE,
+        SCENARIO_HOLD_1080_VFR_MINUS_FIVE -> FIXTURE_1080_VFR
+        SCENARIO_SWITCH_1080_H264_HEVC -> FIXTURE_1080_SWITCH_H264
+        SCENARIO_SWITCH_1080_HEVC_H264 -> FIXTURE_1080_SWITCH_HEVC
+        else -> FIXTURE_1080_H264_BFRAMES
     }
 
     private fun readHarnessIdentity(): HarnessIdentity {
@@ -1226,6 +1283,16 @@ class CcrProductMacrobenchmark {
         private const val SCENARIO_HOLD_1080_PLUS_FIVE = "1080p-hold-plus-five"
         private const val SCENARIO_HOLD_1080_MINUS_ONE = "1080p-hold-minus-one"
         private const val SCENARIO_HOLD_1080_MINUS_FIVE = "1080p-hold-minus-five"
+        private const val SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE =
+            "1080p-h264-long-gop-hold-minus-one"
+        private const val SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE =
+            "1080p-h264-long-gop-hold-minus-five"
+        private const val SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE =
+            "1080p-hevc-main8-hold-minus-one"
+        private const val SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE =
+            "1080p-hevc-main8-hold-minus-five"
+        private const val SCENARIO_HOLD_1080_VFR_MINUS_ONE = "1080p-vfr-hold-minus-one"
+        private const val SCENARIO_HOLD_1080_VFR_MINUS_FIVE = "1080p-vfr-hold-minus-five"
         private const val SCENARIO_REVERSE_1080 = "1080p-direction-reverse"
         private const val SCENARIO_SEEK_1080 = "1080p-distant-seek"
         private const val SCENARIO_SWITCH_1080_H264_HEVC = "1080p-switch-h264-hevc"
@@ -1245,16 +1312,29 @@ class CcrProductMacrobenchmark {
         private const val STRIDE_FIVE_CADENCE_NS = 1_000_000_000L / 12L
         private const val HOLD_HORIZON_TOLERANCE_MS = 2_000L
         private const val EXPECTED_CACHE_BUDGET_BYTES = 64L * 1_024L * 1_024L
+        private const val FIXTURE_720_H264_BFRAMES = "720p-h264-bframes.mp4"
+        private const val FIXTURE_1080_H264_BFRAMES = "1080p-h264-bframes.mp4"
+        private const val FIXTURE_1080_H264_LONG_GOP = "1080p-h264-long-gop.mp4"
+        private const val FIXTURE_1080_HEVC_MAIN8 = "1080p-hevc-main8.mp4"
+        private const val FIXTURE_1080_VFR = "1080p-vfr.mp4"
+        private const val FIXTURE_1080_SWITCH_H264 = "1080p-switch-a.mp4"
+        private const val FIXTURE_1080_SWITCH_HEVC = "1080p-switch-b.mp4"
         private const val ARTIFACT_SET_REVISION = 4
-        private const val EXPECTED_RUNTIME_SOURCE_SHA = "dabf11fa103179c4d81fe4448aba84ac340cf230"
+        private const val EXPECTED_RUNTIME_SOURCE_SHA = "c9a7147d39d2d370916f325a108876c0947ddcb8"
         private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
-            "612d695e4c9b57d4e4fb10076879bcb9b306d034ff05ba67ad7706c0f22c12e8"
+            "0eb249abadab7d89ba42a40772eb9a8610c193c87279c8633bb6275ac828fc0d"
         private val RUN_ID_PATTERN = Regex("[A-Za-z0-9._:-]{1,48}")
         private val GIT_SHA_PATTERN = Regex("[0-9a-f]{40}")
         private val SHA256_PATTERN = Regex("[0-9a-f]{64}")
         private val REVERSE_HOLD_SCENARIOS = setOf(
             SCENARIO_HOLD_1080_MINUS_ONE,
             SCENARIO_HOLD_1080_MINUS_FIVE,
+            SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+            SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+            SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+            SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+            SCENARIO_HOLD_1080_VFR_MINUS_ONE,
+            SCENARIO_HOLD_1080_VFR_MINUS_FIVE,
         )
         private val FIXED_HORIZON_HOLD_SCENARIOS = setOf(
             SCENARIO_HOLD_720_PLUS_ONE,
@@ -1263,6 +1343,12 @@ class CcrProductMacrobenchmark {
             SCENARIO_HOLD_1080_PLUS_FIVE,
             SCENARIO_HOLD_1080_MINUS_ONE,
             SCENARIO_HOLD_1080_MINUS_FIVE,
+            SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+            SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+            SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+            SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+            SCENARIO_HOLD_1080_VFR_MINUS_ONE,
+            SCENARIO_HOLD_1080_VFR_MINUS_FIVE,
             SCENARIO_REVERSE_1080,
         )
     }

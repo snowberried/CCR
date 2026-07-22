@@ -26,6 +26,17 @@ const runtimeInputs = JSON.parse(
 const runtimeInputsAlpha5 = JSON.parse(
   readFileSync(resolve(androidRoot, "validation/runtime-inputs-alpha5-v1.json"), "utf8"),
 );
+const runtimeInputsAlpha6 = JSON.parse(
+  readFileSync(resolve(androidRoot, "validation/runtime-inputs-alpha6-v1.json"), "utf8"),
+);
+const verifyRuntimeInputsAlpha5 = readFileSync(
+  resolve(androidRoot, "tools/verify-runtime-inputs-alpha5.mjs"),
+  "utf8",
+);
+const verifyRuntimeInputsAlpha6 = readFileSync(
+  resolve(androidRoot, "tools/verify-runtime-inputs-alpha6.mjs"),
+  "utf8",
+);
 const baselineDir = resolve(
   androidRoot,
   "validation/device-baselines/sm-s928n-android16-2026-07-15",
@@ -98,6 +109,49 @@ const s24Alpha5PinnedTests = readFileSync(
   resolve(androidRoot, "scripts/test-s24-alpha5-pinned-artifacts.ps1"),
   "utf8",
 );
+const alpha6ScriptNames = [
+  "run-s24-alpha6-stage1.ps1",
+  "run-s24-alpha6-random.ps1",
+];
+const alpha6Scripts = new Map(
+  alpha6ScriptNames.map((name) => [
+    name,
+    readFileSync(resolve(androidRoot, "scripts", name), "utf8"),
+  ]),
+);
+const alpha6Stage1Runner = alpha6Scripts.get("run-s24-alpha6-stage1.ps1");
+const alpha6RandomRunner = alpha6Scripts.get("run-s24-alpha6-random.ps1");
+const s24Alpha6Pinned = readFileSync(
+  resolve(androidRoot, "scripts/s24-alpha6-pinned-artifacts.ps1"),
+  "utf8",
+);
+const s24Alpha6PinnedTests = readFileSync(
+  resolve(androidRoot, "scripts/test-s24-alpha6-pinned-artifacts.ps1"),
+  "utf8",
+);
+const alpha6TailContract = readFileSync(
+  resolve(androidRoot, "scripts/alpha6-tail-contract.ps1"),
+  "utf8",
+);
+const alpha6TailTests = readFileSync(
+  resolve(androidRoot, "scripts/test-alpha6-tail-contract.ps1"),
+  "utf8",
+);
+const alpha6Stage1Tests = readFileSync(
+  resolve(androidRoot, "scripts/test-run-s24-alpha6-stage1.ps1"),
+  "utf8",
+);
+const alpha6RandomTests = readFileSync(
+  resolve(androidRoot, "scripts/test-run-s24-alpha6-random.ps1"),
+  "utf8",
+);
+const alpha6RandomEvidence = [
+  "Alpha5RandomSeekExactnessTest.kt",
+  "Alpha5RandomSeekPerformanceTest.kt",
+].map((name) => readFileSync(
+  resolve(androidRoot, "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate", name),
+  "utf8",
+)).join("\n");
 const verifyApkPrivacy = readFileSync(
   resolve(androidRoot, "scripts/verify-apk-privacy.ps1"),
   "utf8",
@@ -142,8 +196,8 @@ requireContract(session.includes('openFileDescriptor(uri, "r")'), "source URI is
 requireContract(!/openFileDescriptor\([^\n]+,\s*"(?:w|rw|rwt|wa)"/.test(session), "write-capable source open mode");
 requireContract(provider.includes("ParcelFileDescriptor.MODE_READ_ONLY"), "fixture provider is not read-only");
 requireContract(provider.includes('if (mode != "r")'), "fixture provider does not reject write modes");
-requireContract(/versionCode\s*=\s*6\b/.test(build), "versionCode is not 6");
-requireContract(/versionName\s*=\s*"0\.2\.0-alpha\.5"/.test(build), "versionName is not 0.2.0-alpha.5");
+requireContract(/versionCode\s*=\s*7\b/.test(build), "versionCode is not 7");
+requireContract(/versionName\s*=\s*"0\.2\.0-alpha\.6"/.test(build), "versionName is not 0.2.0-alpha.6");
 requireContract(build.includes('applicationIdSuffix = ".internal"'), "internal application ID suffix is missing");
 requireContract(
   build.includes('androidx.compose.material3.adaptive:adaptive:1.2.0'),
@@ -164,12 +218,13 @@ requireContract(gitignore.split(/\r?\n/).includes("*.jks"), "recursive JKS ignor
 requireContract(gitignore.split(/\r?\n/).includes("*.keystore"), "recursive keystore ignore is missing");
 requireContract(gitignore.split(/\r?\n/).includes("signing.properties"), "recursive signing properties ignore is missing");
 requireContract(workflow.includes('      - "codex/android-*"'), "Android CI codex/android-* push filter is missing");
+requireContract(workflow.includes("fetch-depth: 0"), "Android CI does not fetch frozen runtime history");
 requireContract(
-  workflow.includes("name: ccr-android-0.2.0-alpha.5-internal"),
+  workflow.includes("name: ccr-android-0.2.0-alpha.6-internal"),
   "Android CI artifact identity is stale",
 );
 requireContract(
-  workflow.includes("name: ccr-android-0.2.0-alpha.5-test-tools"),
+  workflow.includes("name: ccr-android-0.2.0-alpha.6-test-tools"),
   "Android CI test-tool artifact identity is stale",
 );
 requireContract(
@@ -182,6 +237,10 @@ requireContract(
   "Alpha 5 runtime-input verifier is missing from CI",
 );
 requireContract(
+  workflow.includes("verify-runtime-inputs-alpha6.mjs"),
+  "Alpha 6 runtime-input verifier is missing from CI",
+);
+requireContract(
   workflow.includes("test-s24-pinned-artifacts.ps1"),
   "pinned S24 negative tests are missing from CI",
 );
@@ -190,9 +249,17 @@ requireContract(
   "Alpha 5 pinned S24 negative tests are missing from CI",
 );
 requireContract(
-  workflow.includes(`CCR_ANDROID_COMMIT_SHA: ${runtimeInputsAlpha5.runtimeSourceSha}`),
+  workflow.includes(`CCR_ANDROID_COMMIT_SHA: ${runtimeInputsAlpha6.runtimeSourceSha}`),
   "Android CI does not separate the runtime source SHA from the harness SHA",
 );
+for (const scriptName of [
+  "test-s24-alpha6-pinned-artifacts.ps1",
+  "test-alpha6-tail-contract.ps1",
+  "test-run-s24-alpha6-stage1.ps1",
+  "test-run-s24-alpha6-random.ps1",
+]) {
+  requireContract(workflow.includes(scriptName), `Alpha 6 CI host test is missing: ${scriptName}`);
+}
 requireContract(
   (workflow.match(/if: github\.ref == 'refs\/heads\/main'/g) ?? []).length === 2,
   "binary CI artifacts are not restricted to main",
@@ -224,6 +291,28 @@ requireContract(
   "Alpha 5 runtime-input manifest tree SHA",
 );
 requireContract(runtimeInputsAlpha5.files?.length >= 32, "Alpha 5 runtime-input manifest file count");
+requireContract(runtimeInputsAlpha6.schemaVersion === 1, "Alpha 6 runtime-input manifest schema");
+requireContract(
+  runtimeInputsAlpha6.runtimeSourceSha === "c9a7147d39d2d370916f325a108876c0947ddcb8",
+  "Alpha 6 runtime-input manifest source SHA",
+);
+requireContract(
+  runtimeInputsAlpha6.runtimeInputsTreeSha256 ===
+    "0eb249abadab7d89ba42a40772eb9a8610c193c87279c8633bb6275ac828fc0d",
+  "Alpha 6 runtime-input manifest tree SHA",
+);
+requireContract(runtimeInputsAlpha6.files?.length === 40, "Alpha 6 runtime-input manifest file count");
+requireContract(
+  verifyRuntimeInputsAlpha5.includes('snapshot(runtimeSourceSha)') &&
+    !verifyRuntimeInputsAlpha5.includes('snapshot("HEAD")'),
+  "Alpha 5 verifier no longer verifies its historical snapshot independently",
+);
+requireContract(
+  verifyRuntimeInputsAlpha6.includes('snapshot(runtimeSourceSha)') &&
+    verifyRuntimeInputsAlpha6.includes('snapshot("HEAD")') &&
+    verifyRuntimeInputsAlpha6.includes("assertNoRuntimeWorkingTreeChanges"),
+  "Alpha 6 verifier does not freeze historical, HEAD, and worktree runtime inputs",
+);
 requireContract(
   build.includes('add("benchmarkImplementation", "androidx.metrics:metrics-performance:1.0.0")'),
   "JankStats is not isolated to the benchmark variant",
@@ -331,10 +420,136 @@ requireContract(
     s24Alpha5PinnedTests.includes("ALPHA5_TEST_BUILD_COMMAND_FORBIDDEN"),
   "Alpha 5 pinned negative-test contract is incomplete",
 );
+for (const [name, source] of alpha6Scripts) {
+  for (const marker of [
+    "ArtifactManifest",
+    "ArtifactManifestSha256",
+    "RuntimeSourceSha",
+    "HarnessSourceSha",
+    "RuntimeInputsTreeSha256",
+    "ExpectedDebugAppSha256",
+    "OutputDirectory",
+    "MaxMinutes",
+    "Resume",
+    "PreflightOnly",
+    "Invoke-CcrAlpha6PinnedHostPreflight",
+    "Assert-CcrAlpha6ArtifactSetUnchanged",
+    "buildCommandCount = 0L",
+  ]) {
+    requireContract(source.includes(marker), `${name} missing Alpha 6 safety marker ${marker}`);
+  }
+  for (const forbidden of [/connectedAndroidTest/i, /build[\\/]outputs/i]) {
+    requireContract(!forbidden.test(source), `${name} contains build-time execution path ${forbidden}`);
+  }
+}
+for (const marker of [
+  "$script:CcrPinnedArtifactSetRevision = 4",
+  '$script:CcrPinnedVersionName = "0.2.0-alpha.6"',
+  "$script:CcrPinnedVersionCode = 7",
+  "Invoke-CcrAlpha6PinnedHostPreflight",
+  "Assert-CcrAlpha6ArtifactSetUnchanged",
+  "Assert-CcrAlpha6ValidationScriptsBuildFree",
+  "ALPHA6_DEVICE_VALIDATION_BUILD_COUNT_NOT_ZERO",
+  "New-CcrAlpha6TimedAdbInvoker",
+  "Initialize-CcrAlpha6PinnedDeviceSettings",
+  "$process.WaitForExit(2000)",
+  "ResumeRestoreBaseline",
+  "resume_device_settings_changed",
+]) {
+  requireContract(s24Alpha6Pinned.includes(marker), `Alpha 6 pinned contract missing ${marker}`);
+}
+requireContract(
+  !/\$script:CcrPinned(?:RuntimeSourceSha|RuntimeInputsTreeSha256|DebugAppSha256)\s*=\s*"[0-9a-f]{40,64}"/.test(
+    s24Alpha6Pinned,
+  ),
+  "Alpha 6 pinned helper contains a tracked final artifact placeholder",
+);
+requireContract(
+  s24Alpha6PinnedTests.includes("Alpha 6 pinned-artifact v4 host tests passed") &&
+    s24Alpha6PinnedTests.includes("device-validation-pending-build-count-zero"),
+  "Alpha 6 pinned negative-test contract is incomplete",
+);
+requireContract(
+  alpha6TailTests.includes("Alpha 6 tail contract tests passed") &&
+    alpha6TailContract.includes("associatedLongGapCount") &&
+    alpha6TailContract.includes("p995Ns") &&
+    alpha6TailContract.includes("longestConsecutivePublicationGapNs") &&
+    alpha6TailTests.includes("boundary-gap-hard-fail"),
+  "Alpha 6 tail hard-gate contract is incomplete",
+);
+requireContract(
+  alpha6Stage1Tests.includes("Alpha 6 Stage 1 host-only tests passed") &&
+    alpha6RandomTests.includes("Alpha6 random runner host tests passed"),
+  "Alpha 6 runner host-negative tests are incomplete",
+);
+for (const marker of [
+  "measuredWindowBuildAssociatedLongGapCount",
+  "ALPHA6_STAGE1_REVERSE_MECHANISM_NOT_EXERCISED",
+  "$absoluteMinimumFps",
+  "publicationGapMaxUs",
+  "ALPHA6_STAGE1_RESUME_COMPLETED_CHECKPOINT_MISSING",
+  "Initialize-CcrAlpha6PinnedDeviceSettings",
+  "New-CcrAlpha6TimedAdbInvoker",
+  "ALPHA6_STAGE1_RESUME_SUMMARY_CONTRACT_MISMATCH",
+  "ALPHA6_STAGE1_RESUME_PREFLIGHT_SUMMARY_CONTRACT_MISMATCH",
+  'checkpoint-alpha6-stage1-device-settings-$hostPreflightRunId.json',
+  '"h264-bframes.mp4", "long-gop.mp4", "hevc-main8.mp4", "vfr.mp4"',
+]) {
+  requireContract(alpha6Stage1Runner.includes(marker), `Alpha 6 Stage 1 contract missing ${marker}`);
+}
+for (const marker of [
+  "ALPHA6_RANDOM_STAGE2_NOT_IMPLEMENTED",
+  "ALPHA6_RANDOM_TARGET_SET_IDENTITY_MISMATCH",
+  "ALPHA6_RANDOM_TARGET_ORDINAL_SET_MISMATCH",
+  "ALPHA6_RANDOM_MAX_REGRESSION",
+  "Initialize-CcrAlpha6PinnedDeviceSettings",
+  "New-CcrAlpha6TimedAdbInvoker",
+  "Assert-CcrAlpha6RandomCompletedSummary",
+  "Assert-CcrAlpha6RandomPreflightSummary",
+  'checkpoint-alpha6-random-device-settings-$hostPreflightRunId.json',
+]) {
+  requireContract(alpha6RandomRunner.includes(marker), `Alpha 6 random contract missing ${marker}`);
+}
+requireContract(
+  s24FrameAccuracyTest.includes(
+    'listOf("h264-bframes", "long-gop", "vfr", "hevc-main8")',
+  ),
+  "Alpha 6 reverse exactness fixture set does not include HEVC Main8",
+);
+requireContract(
+  macrobenchmark.includes('"ccr.publication_gap_max_us" to "ccrPublicationGapMaxUs"') &&
+    macrobenchmark.includes('required("gapMaxUs")'),
+  "Alpha 6 macrobenchmark boundary-gap evidence is not wired",
+);
+for (const marker of [
+  '"requestedCategory"',
+  '"attemptedPlan"',
+  '"selectedPlan"',
+  '"fallbackReason"',
+  '"decoderCursorFrame"',
+  '"previousSyncFrame"',
+  '"estimatedOutputCount"',
+  '"actualOutputCount"',
+  '"auxiliaryUsed"',
+]) {
+  requireContract(alpha6RandomEvidence.includes(marker), `Alpha 6 random report missing ${marker}`);
+}
+for (const marker of [
+  runtimeInputsAlpha6.runtimeSourceSha,
+  runtimeInputsAlpha6.runtimeInputsTreeSha256,
+  "EXPECTED_ARTIFACT_SET_REVISION = 4",
+]) {
+  requireContract(validationHarnessV2.includes(marker), `Alpha 6 validation harness identity missing ${marker}`);
+}
+for (const source of [benchmarkActivity, macrobenchmark]) {
+  requireContract(source.includes(runtimeInputsAlpha6.runtimeSourceSha), "Alpha 6 benchmark runtime SHA mismatch");
+  requireContract(source.includes(runtimeInputsAlpha6.runtimeInputsTreeSha256), "Alpha 6 benchmark runtime tree mismatch");
+  requireContract(source.includes("ARTIFACT_SET_REVISION = 4"), "Alpha 6 benchmark artifact revision mismatch");
+}
 for (const marker of [
   '$ExpectedApplicationId = "com.snowberried.ctcinereviewer.internal"',
-  '$ExpectedVersionName = "0.2.0-alpha.5"',
-  "$ExpectedVersionCode = 6",
+  '$ExpectedVersionName = "0.2.0-alpha.6"',
+  "$ExpectedVersionCode = 7",
   "android.permission.INTERNET",
   "android.permission.READ_MEDIA_VIDEO",
   "android.permission.MANAGE_EXTERNAL_STORAGE",
@@ -488,4 +703,4 @@ requireContract(
   "local sample reference frame index/PTS contract",
 );
 
-console.log("verified Android 0.2.0-alpha.5 identity, Alpha 4/5 runtime freezes, evidence privacy, CI, local sample, and signing contracts");
+console.log("verified Android 0.2.0-alpha.6 identity, Alpha 4/5/6 runtime freezes, v4 host gates, evidence privacy, CI, local sample, and signing contracts");

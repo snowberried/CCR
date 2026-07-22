@@ -237,6 +237,60 @@ try {
   )
   Assert-Alpha6PinnedTest ($source -notmatch '(?m)^\s*\$script:CcrPinned(?:RuntimeSourceSha|RuntimeInputsTreeSha256|DebugAppSha256)\s*=\s*"[0-9a-f]{40,64}"') "no-tracked-alpha6-sha-placeholder"
   Assert-Alpha6PinnedTest ($source -notmatch 'Invoke-CcrPinnedPreflight|Get-CcrPinnedS24Device|Invoke-CcrPinnedAdb') "host-preflight-has-no-adb-path"
+  Assert-Alpha6PinnedTest ($source.Contains("New-CcrAlpha6TimedAdbInvoker") -and
+    $source.Contains("Initialize-CcrAlpha6PinnedDeviceSettings")) "deadline-and-stale-settings-helpers-present"
+  Assert-Alpha6PinnedTest ($source.Contains('$null = $process.WaitForExit(2000)') -and
+    -not $source.Contains('try { $process.WaitForExit() } catch { }')) "timeout-cleanup-remains-bounded"
+
+  $deadlineState = [PSCustomObject]@{
+    ValidationDeadlineUtc = [DateTime]::UtcNow.AddSeconds(5)
+    CleanupMode = $false
+    CleanupDeadlineUtc = [DateTime]::UtcNow.AddSeconds(5)
+  }
+  $timedInvoker = New-CcrAlpha6TimedAdbInvoker (Join-Path $env:SystemRoot "System32\where.exe") $deadlineState
+  $quick = & $timedInvoker @("cmd.exe")
+  Assert-Alpha6PinnedTest ($quick.exitCode -eq 0 -and $quick.output -match "cmd.exe") "timed-invoker-success"
+  $deadlineState.ValidationDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds(150)
+  $timedPowerShell = New-CcrAlpha6TimedAdbInvoker (Join-Path $PSHOME "powershell.exe") $deadlineState
+  $timedOut = & $timedPowerShell @("-NoProfile", "-Command", "Start-Sleep -Seconds 2")
+  Assert-Alpha6PinnedTest ($timedOut.exitCode -eq 124 -and $timedOut.output -ceq "ALPHA6_ADB_PROCESS_TIMEOUT") "timed-invoker-kills-hung-process"
+  $deadlineState.ValidationDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds(-1)
+  $expired = & $timedInvoker @("cmd.exe")
+  Assert-Alpha6PinnedTest ($expired.exitCode -eq 124 -and $expired.output -ceq "ALPHA6_ADB_DEADLINE_EXCEEDED") "expired-deadline-never-starts-process"
+
+  $settingsState = @{
+    "global/stay_on_while_plugged_in" = "7"
+    "system/screen_brightness_mode" = "0"
+    "system/screen_brightness" = "128"
+    "system/screen_off_timeout" = "1800000"
+    "system/accelerometer_rotation" = "0"
+    "system/user_rotation" = "0"
+  }
+  $settingsInvoker = {
+    param($Arguments)
+    $operation = [string]$Arguments[4]
+    $key = "$($Arguments[5])/$($Arguments[6])"
+    if ($operation -ceq "get") { return [PSCustomObject]@{ exitCode = 0; output = [string]$settingsState[$key] } }
+    if ($operation -ceq "put") { $settingsState[$key] = [string]$Arguments[7]; return [PSCustomObject]@{ exitCode = 0; output = "" } }
+    if ($operation -ceq "delete") { $settingsState[$key] = "null"; return [PSCustomObject]@{ exitCode = 0; output = "" } }
+    return [PSCustomObject]@{ exitCode = 1; output = "unexpected" }
+  }.GetNewClosure()
+  $settingsContext = [PSCustomObject]@{ Adb = "fake-adb"; AdbInvoker = $settingsInvoker; Serial = "FAKE-S24" }
+  $restoreBaseline = [PSCustomObject][ordered]@{
+    stayAwake = "0"; brightnessMode = "1"; brightness = "77"; screenTimeout = "120000"
+    accelerometerRotation = "1"; userRotation = "2"
+  }
+  $interrupted = Initialize-CcrAlpha6PinnedDeviceSettings -Context $settingsContext -ResumeRestoreBaseline $restoreBaseline
+  Assert-Alpha6PinnedTest ($interrupted.status -ceq "PASS" -and
+    $interrupted.interruptedAttemptStateDetected -eq $true -and
+    $interrupted.restoredInterruptedAttemptBeforeValidation -eq $true -and
+    [string]$settingsState["system/screen_off_timeout"] -ceq "120000") "resume-restores-known-tool-setting-vector"
+
+  $settingsState["system/screen_brightness"] = "200"
+  $changed = Initialize-CcrAlpha6PinnedDeviceSettings -Context $settingsContext -ResumeRestoreBaseline $restoreBaseline
+  Assert-Alpha6PinnedTest ($changed.status -ceq "BLOCKED" -and
+    @($changed.missingTrustedOriginalSettings) -ccontains "resume_device_settings_changed" -and
+    [string]$settingsState["system/screen_brightness"] -ceq "200") "resume-blocks-on-possible-user-setting-change"
 
   $devicePending = @{} + $common
   $devicePending.RunId = "alpha6-test-0011"
