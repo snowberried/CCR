@@ -311,7 +311,8 @@ try {
   $exactInvocation = Invoke-CcrPinnedInstrumentation `
     -Context $context -TestRole "debugTest" `
     -ClassName "com.snowberried.ctcinereviewer.gate.Alpha5RandomSeekExactnessTest#deterministicRandomTargetsRemainExact" `
-    -RunId $exactRunId -ExpectedTestCount 1
+    -RunId $exactRunId -ExpectedTestCount 1 `
+    -FailureReportPath (Join-Path $context.OutputDirectory "failure-$exactRunId-instrumentation-v1.json")
   $exact = Receive-CcrPinnedReport `
     -Context $context -ReportName $exactName -RunId $exactRunId `
     -AppRole "debugApp" -TestRole "debugTest" `
@@ -333,7 +334,8 @@ try {
     $perfInvocation = Invoke-CcrPinnedInstrumentation `
       -Context $context -TestRole "debugTest" `
       -ClassName "com.snowberried.ctcinereviewer.gate.Alpha5RandomSeekPerformanceTest#deterministicCostAwareRandomSeekAlpha5" `
-      -RunId $perfRunId -ExpectedTestCount 1
+      -RunId $perfRunId -ExpectedTestCount 1 `
+      -FailureReportPath (Join-Path $context.OutputDirectory "failure-$perfRunId-instrumentation-v1.json")
   } finally {
     Stop-CcrAlpha5RandomTrace $context $remoteTracePath $localTracePath | Out-Null
     $traceStopped = $true

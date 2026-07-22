@@ -346,6 +346,19 @@ function New-CcrAlpha5DeadlineUtc {
   return [DateTime]::UtcNow.AddMinutes($MaxMinutes)
 }
 
+function Assert-CcrAlpha5PreflightDomain {
+  param(
+    [Parameter(Mandatory = $true)][object]$Record,
+    [Parameter(Mandatory = $true)][bool]$ExpectedPreflightOnly,
+    [Parameter(Mandatory = $true)][string]$Failure
+  )
+  if (-not (Test-CcrPinnedProperty $Record "preflightOnly") -or
+      $Record.preflightOnly -isnot [bool] -or
+      [bool]$Record.preflightOnly -ne $ExpectedPreflightOnly) {
+    throw $Failure
+  }
+}
+
 function Write-CcrAlpha5ImmutableJson {
   param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][object]$Value)
   if (Test-Path -LiteralPath $Path) { throw "ALPHA5_EVIDENCE_ALREADY_EXISTS:$Path" }

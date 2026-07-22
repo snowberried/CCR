@@ -156,6 +156,14 @@ try {
   $newPingProcesses = @(Get-Process -Name ping -ErrorAction SilentlyContinue | Where-Object { $_.Id -notin $pingIdsBefore })
   Assert-Alpha5Test ($newPingProcesses.Count -eq 0) "ALPHA5_TEST_PROCESS_TREE_NOT_TERMINATED"
   Set-CcrAlpha5ActiveDeadline ([DateTime]::UtcNow.AddMinutes(5))
+  Assert-CcrAlpha5PreflightDomain ([PSCustomObject]@{ preflightOnly = $false }) $false "ALPHA5_TEST_PREFLIGHT_DOMAIN_FALSE"
+  Assert-CcrAlpha5PreflightDomain ([PSCustomObject]@{ preflightOnly = $true }) $true "ALPHA5_TEST_PREFLIGHT_DOMAIN_TRUE"
+  Assert-Alpha5Throws {
+    Assert-CcrAlpha5PreflightDomain ([PSCustomObject]@{ preflightOnly = $true }) $false "ALPHA5_TEST_PREFLIGHT_DOMAIN_MISMATCH"
+  } "ALPHA5_TEST_PREFLIGHT_DOMAIN_MISMATCH"
+  Assert-Alpha5Throws {
+    Assert-CcrAlpha5PreflightDomain ([PSCustomObject]@{}) $false "ALPHA5_TEST_PREFLIGHT_DOMAIN_MISSING"
+  } "ALPHA5_TEST_PREFLIGHT_DOMAIN_MISSING"
   $quotedProcess = Invoke-CcrAlpha5TimedProcess $env:ComSpec @("/d", "/s", "/c", "echo alpha5 quoted argument") "ALPHA5_TEST_QUOTED_PROCESS_TIMEOUT"
   Assert-Alpha5Test ($quotedProcess.exitCode -eq 0 -and $quotedProcess.output.Trim() -ceq "alpha5 quoted argument") "ALPHA5_TEST_WINDOWS_ARGUMENT_QUOTING_FAILED"
   $toolScript = Join-Path $root "alpha5 tool wrapper.cmd"
@@ -204,6 +212,17 @@ try {
   } "ALPHA5_ORCHESTRATOR_STOP_AFTER_NOT_CANONICAL"
   Assert-Alpha5Test ($orchestrator -match 'correctnessBeforePerformance = \$true') "ALPHA5_TEST_CORRECTNESS_ORDER_MARKER_MISSING"
   Assert-Alpha5Test ($orchestrator -match 'status = "PENDING_USER"') "ALPHA5_TEST_MANUAL_PENDING_MARKER_MISSING"
+  Assert-Alpha5Test ($orchestrator -match 'ALPHA5_SESSION_PREFLIGHT_DOMAIN_MISMATCH' -and $orchestrator -match 'ALPHA5_ORCHESTRATOR_RESUME_PREFLIGHT_DOMAIN_MISMATCH' -and $orchestrator -match 'ALPHA5_ORCHESTRATOR_RESUME_SUMMARY_PREFLIGHT_DOMAIN_MISMATCH') "ALPHA5_TEST_PREFLIGHT_RESUME_GUARDS_MISSING"
+  Assert-Alpha5Test (([regex]::Matches($random, 'FailureReportPath')).Count -eq 2) "ALPHA5_TEST_RANDOM_FAILURE_REPORT_PATHS_MISSING"
+  foreach ($manualCheck in @(
+    '+1 tap', '+1 hold', '-1 tap', '-1 hold', '+5 tap', '+5 hold', '-5 tap', '-5 hold',
+    'forward/reverse same-stride speed similarity', 'release overshoot', 'direct frame index input',
+    'near random frame', 'far random frame', 'timeline final seek', 'H.264 to HEVC file switch',
+    'HEVC to H.264 file switch', 'portrait and landscape', 'background and resume',
+    'black/green/blank/previous-file frame absence'
+  )) {
+    Assert-Alpha5Test ($orchestrator.Contains("`"$manualCheck`"")) "ALPHA5_TEST_MANUAL_CHECK_MISSING:$manualCheck"
+  }
   Assert-Alpha5Test ($orchestrator -match 'ALPHA5_RESOURCE_REQUIRES_ELEVEN_MINUTES_REMAINING') "ALPHA5_TEST_RESOURCE_DEADLINE_GUARD_MISSING"
   Assert-Alpha5Test ($script:CcrPinnedMainActivityComponent -ceq 'com.snowberried.ctcinereviewer.internal/com.snowberried.ctcinereviewer.MainActivity') "ALPHA5_TEST_H_COMPONENT_IDENTITY_MISMATCH"
   Assert-Alpha5Test ($orchestrator -match 'CcrPinnedMainActivityComponent' -and $orchestrator -match 'ALPHA5_H_MAIN_ACTIVITY_NOT_FOREGROUND' -and $orchestrator -match 'Assert-CcrPinnedInstalledArtifact') "ALPHA5_TEST_H_INSTALL_FOREGROUND_GUARD_MISSING"

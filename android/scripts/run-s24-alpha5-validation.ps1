@@ -24,12 +24,14 @@ if ($Resume) {
   if (-not (Test-Path -LiteralPath $sessionPath -PathType Leaf)) { throw "ALPHA5_SESSION_CHECKPOINT_MISSING" }
   $session = [System.IO.File]::ReadAllText($sessionPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
   if ([string]$session.status -cne "PASS" -or [int]$session.maxMinutes -ne $MaxMinutes) { throw "ALPHA5_SESSION_CHECKPOINT_MISMATCH" }
+  Assert-CcrAlpha5PreflightDomain $session ([bool]$PreflightOnly) "ALPHA5_SESSION_PREFLIGHT_DOMAIN_MISMATCH"
   Assert-CcrAlpha5IdentityRecord $session.identity $context "ALPHA5_SESSION_CHECKPOINT_IDENTITY_MISMATCH" | Out-Null
   $context | Add-Member -Force -NotePropertyName SavedSettings -NotePropertyValue $session.savedSettings
 } else {
   Save-CcrPinnedDeviceSettings $context | Out-Null
   $session = [ordered]@{
     schemaVersion = 1; kind = "alpha5-validation-session"; status = "PASS"; maxMinutes = $MaxMinutes
+    preflightOnly = [bool]$PreflightOnly
     identity = New-CcrAlpha5IdentityRecord $context; savedSettings = $context.SavedSettings
     resumeContract = "completed-stage-only; exact identity and device required"
     buildCommandCount = 0; syntheticOnly = $true; containsRealMediaMetadata = $false
@@ -63,6 +65,7 @@ function Assert-CcrAlpha5StageCheckpoint {
       @($Checkpoint.evidence).Count -eq 0) {
     throw "ALPHA5_ORCHESTRATOR_RESUME_IDENTITY_MISMATCH:$Stage"
   }
+  Assert-CcrAlpha5PreflightDomain $Checkpoint ([bool]$PreflightOnly) "ALPHA5_ORCHESTRATOR_RESUME_PREFLIGHT_DOMAIN_MISMATCH:$Stage"
   Assert-CcrAlpha5IdentityRecord $Checkpoint.identity $context "ALPHA5_ORCHESTRATOR_RESUME_IDENTITY_MISMATCH:$Stage" | Out-Null
   foreach ($file in @($Checkpoint.evidence)) {
     if (-not (Test-Path -LiteralPath ([string]$file.path) -PathType Leaf) -or
@@ -226,8 +229,13 @@ function Invoke-CcrAlpha5Stage {
         schemaVersion = 1; kind = "alpha5-manual-user-evaluation"; status = "PENDING_USER"
         identity = New-CcrAlpha5IdentityRecord $context
         requestedChecks = @(
-          "forward +1/+5 hold smoothness", "reverse -1/-5 hold smoothness",
-          "direction reversal", "random jump", "file switch", "lifecycle return"
+          "+1 tap", "+1 hold", "-1 tap", "-1 hold",
+          "+5 tap", "+5 hold", "-5 tap", "-5 hold",
+          "forward/reverse same-stride speed similarity", "stop control at chosen frame",
+          "release overshoot", "direct frame index input", "near random frame", "far random frame",
+          "timeline final seek", "H.264 to HEVC file switch", "HEVC to H.264 file switch",
+          "portrait and landscape", "background and resume",
+          "black/green/blank/previous-file frame absence"
         )
         passClaimed = $false; buildCommandCount = 0
         installedArtifact = $installed; foregroundActivity = $foreground
@@ -295,6 +303,7 @@ if (Test-Path -LiteralPath $summaryPath) {
       [string]$existingSummary.stopAfter -cne $StopAfter) {
     throw "ALPHA5_ORCHESTRATOR_RESUME_SUMMARY_IDENTITY_MISMATCH"
   }
+  Assert-CcrAlpha5PreflightDomain $existingSummary ([bool]$PreflightOnly) "ALPHA5_ORCHESTRATOR_RESUME_SUMMARY_PREFLIGHT_DOMAIN_MISMATCH"
   Assert-CcrAlpha5IdentityRecord $existingSummary.identity $context "ALPHA5_ORCHESTRATOR_RESUME_SUMMARY_IDENTITY_MISMATCH" | Out-Null
   Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath
   return
