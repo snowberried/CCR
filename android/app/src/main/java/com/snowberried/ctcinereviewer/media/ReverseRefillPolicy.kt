@@ -1,5 +1,8 @@
 package com.snowberried.ctcinereviewer.media
 
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+
 internal data class ReverseRefillLowWaterDecision(
     val enabled: Boolean,
     val remainingTargetMark: Int,
@@ -50,8 +53,10 @@ internal enum class ReverseRefillGenerationPhase {
 }
 
 internal class ReverseRefillDepletionLatch(initialRemainingTargetCount: Int) {
-    var depletedDuringBuild: Boolean = initialRemainingTargetCount == 0
-        private set
+    private val depleted = AtomicBoolean(initialRemainingTargetCount == 0)
+
+    val depletedDuringBuild: Boolean
+        get() = depleted.get()
 
     init {
         require(initialRemainingTargetCount >= 0)
@@ -59,7 +64,59 @@ internal class ReverseRefillDepletionLatch(initialRemainingTargetCount: Int) {
 
     fun observeRemainingTargetCount(remainingTargetCount: Int) {
         require(remainingTargetCount >= 0)
-        if (remainingTargetCount == 0) depletedDuringBuild = true
+        if (remainingTargetCount == 0) depleted.set(true)
+    }
+}
+
+internal data class ReverseRefillDepletionObservation(
+    val identity: ReverseWindowIdentity,
+    val generationId: Long,
+    val latch: ReverseRefillDepletionLatch,
+) {
+    init {
+        require(generationId > 0)
+    }
+}
+
+/** Orders an EGL/actor consume against exact-once completion of the active refill generation. */
+internal class ReverseRefillDepletionTracker {
+    private val active = AtomicReference<ReverseRefillDepletionObservation?>()
+
+    fun activate(observation: ReverseRefillDepletionObservation) {
+        check(active.compareAndSet(null, observation)) { "reverse refill depletion generation already active" }
+    }
+
+    fun consumeAndObserve(
+        identity: ReverseWindowIdentity,
+        consume: () -> ReverseWindowConsumeResult,
+    ): ReverseWindowConsumeResult {
+        while (true) {
+            val observation = active.get()
+            if (observation == null || observation.identity != identity) return consume()
+            val result = synchronized(observation) {
+                if (active.get() !== observation) {
+                    null
+                } else {
+                    consume().also { consumed ->
+                        if (consumed is ReverseWindowConsumeResult.Hit) {
+                            observation.latch.observeRemainingTargetCount(consumed.remainingTargetCount)
+                        }
+                    }
+                }
+            }
+            if (result != null) return result
+        }
+    }
+
+    fun finish(observation: ReverseRefillDepletionObservation): Boolean = synchronized(observation) {
+        active.compareAndSet(observation, null)
+        observation.latch.depletedDuringBuild
+    }
+
+    fun cancel(observation: ReverseRefillDepletionObservation) {
+        synchronized(observation) {
+            active.compareAndSet(observation, null)
+        }
     }
 }
 

@@ -256,6 +256,7 @@ data class DecoderDiagnostics(
     val randomSeekSequentialPlanCount: Long = 0,
     val randomSeekSameGopPlanCount: Long = 0,
     val randomSeekPreviousSyncPlanCount: Long = 0,
+    val lastRandomSeekAttemptedPlanKind: String? = null,
     val lastRandomSeekPlanKind: String? = null,
     val lastRandomSeekFallbackReason: String? = null,
     val lastRandomSeekDecoderCursorFrameIndex: Int? = null,

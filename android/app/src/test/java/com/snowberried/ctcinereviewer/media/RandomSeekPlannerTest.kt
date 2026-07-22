@@ -81,6 +81,25 @@ class RandomSeekPlannerTest {
     }
 
     @Test
+    fun `runtime continuation fallback reports the final previous-sync plan`() {
+        val video = video(syncOrdinals = setOf(0, 8))
+        val planned = RandomSeekPlanner(lowCostSequentialOutputLimit = 2).plan(
+            input(video, video.frames[6].key, cursor = cursor(video, 1)),
+        )
+        val selected = planned
+            .fallbackToPreviousSync(RandomSeekFallbackReason.OUTPUT_FRAME_UNMAPPED, 7)
+            .withActualDecodeOutputCount(9)
+
+        assertEquals(RandomSeekPlanKind.SAME_GOP_CURSOR, planned.kind)
+        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, selected.kind)
+        assertEquals(RandomSeekFallbackReason.OUTPUT_FRAME_UNMAPPED, selected.fallbackReason)
+        assertEquals(7, selected.estimatedDecodeOutputCount)
+        assertEquals(9, selected.actualDecodeOutputCount)
+        assertTrue(selected.flushRequired)
+        assertNull(selected.sourceDecoderCursor)
+    }
+
+    @Test
     fun `previous sync beats an expensive cross-GOP cursor and requires one flush`() {
         val video = video(syncOrdinals = setOf(0, 8))
         val cursor = cursor(video, 1)
@@ -97,6 +116,21 @@ class RandomSeekPlannerTest {
         assertEquals(RandomSeekFallbackReason.PREVIOUS_SYNC_LOWER_COST, result.fallbackReason)
         assertEquals(1, result.observedDecoderCursorFrameIndex)
         assertEquals(8, result.previousSyncFrameIndex)
+    }
+
+    @Test
+    fun `different GOP fallback is reported when continuation is cheap but not eligible`() {
+        val video = video(syncOrdinals = setOf(0, 8))
+        val cursor = cursor(video, 7)
+        val result = RandomSeekPlanner(lowCostSequentialOutputLimit = 0).plan(
+            input(video, video.frames[9].key, cursor = cursor),
+        )
+
+        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, result.kind)
+        assertEquals(RandomSeekFallbackReason.DIFFERENT_GOP, result.fallbackReason)
+        assertEquals(7, result.observedDecoderCursorFrameIndex)
+        assertEquals(8, result.previousSyncFrameIndex)
+        assertTrue(result.flushRequired)
     }
 
     @Test

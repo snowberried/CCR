@@ -25,6 +25,10 @@ internal enum class RandomSeekFallbackReason {
     TARGET_NOT_AHEAD,
     PREVIOUS_SYNC_LOWER_COST,
     DIFFERENT_GOP,
+    OUTPUT_FORMAT_CHANGED,
+    OUTPUT_FRAME_UNMAPPED,
+    OUTPUT_PASSED_TARGET,
+    END_OF_STREAM,
 }
 
 internal data class RandomSeekDecoderCursor(
@@ -66,6 +70,23 @@ internal data class RandomSeekPlan(
     fun withActualDecodeOutputCount(count: Int): RandomSeekPlan {
         require(count >= 0)
         return copy(actualDecodeOutputCount = count)
+    }
+
+    fun fallbackToPreviousSync(
+        reason: RandomSeekFallbackReason,
+        estimatedOutputCount: Int,
+    ): RandomSeekPlan {
+        require(reason != RandomSeekFallbackReason.NONE)
+        require(estimatedOutputCount >= 0)
+        return copy(
+            kind = RandomSeekPlanKind.PREVIOUS_SYNC,
+            sourceDecoderCursor = null,
+            estimatedDecodeOutputCount = estimatedOutputCount,
+            actualDecodeOutputCount = null,
+            flushRequired = true,
+            expectedCacheResult = RandomSeekCacheExpectation.CACHE_MISS,
+            fallbackReason = reason,
+        )
     }
 }
 

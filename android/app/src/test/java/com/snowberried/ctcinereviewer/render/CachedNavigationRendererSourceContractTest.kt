@@ -86,4 +86,29 @@ class CachedNavigationRendererSourceContractTest {
         assertTrue(boundary.contains("forwardSequentialState.invalidate()"))
         assertTrue(boundary.contains("invalidateReverseWindow(ReverseWindowFallbackReason.CODEC_ERROR)"))
     }
+
+    @Test
+    fun `refill generation is cancellable and accounted before exact seek can fail`() {
+        val start = sessionSource.substringAfter("val generation = ReverseRefillGenerationState(")
+            .substringBefore("if (SystemClock.elapsedRealtime() - refill.wallStartedAtMs")
+        val installWork = start.indexOf("reverseRefillWork = startedRefill")
+        val activateDepletion = start.indexOf("reverseRefillDepletionTracker.activate(depletionObservation)")
+        val prepareSeek = start.indexOf("prepareExactSeek(")
+
+        assertTrue(installWork >= 0)
+        assertTrue(activateDepletion > installWork)
+        assertTrue(prepareSeek > activateDepletion)
+        assertTrue(start.contains("finally"))
+        assertTrue(start.contains("reverseRefillGenerationCount = diagnostics.reverseRefillGenerationCount + 1"))
+        assertTrue(sessionSource.contains("reverseRefillDepletionTracker.cancel(refill.depletionObservation)"))
+    }
+
+    @Test
+    fun `both EGL and actor reverse consumes use atomic depletion observation`() {
+        val occurrences = Regex("consumeReverseWindowWithDepletionObservation\\(")
+            .findAll(sessionSource)
+            .count()
+
+        assertTrue(occurrences >= 3) // helper declaration plus EGL and actor call sites
+    }
 }

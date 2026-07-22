@@ -142,6 +142,10 @@ class Alpha6RandomSeekExactnessTest {
                     !observed.diagnostics.lastRandomSeekPlanKind.isNullOrBlank(),
                 )
                 assertTrue(
+                    "non-cache target omitted its attempted seek plan",
+                    !observed.diagnostics.lastRandomSeekAttemptedPlanKind.isNullOrBlank(),
+                )
+                assertTrue(
                     "non-cache target omitted its estimated decode count",
                     requireNotNull(observed.diagnostics.lastRandomSeekEstimatedOutputCount) >= 0,
                 )
@@ -156,6 +160,7 @@ class Alpha6RandomSeekExactnessTest {
                 JSONObject()
                     .put("ordinal", target.ordinal)
                     .put("category", target.category.wireName)
+                    .put("requestedCategory", target.category.wireName)
                     .put("direction", target.direction.wireName)
                     .put("setupFrameIndex", target.setupFrameIndex)
                     .put("targetFrameIndex", target.targetFrameIndex)
@@ -182,13 +187,23 @@ class Alpha6RandomSeekExactnessTest {
                     .put("seekCount", delta(before.seekCount, observed.diagnostics.seekCount))
                     .put("flushCount", delta(before.flushCount, observed.diagnostics.flushCount))
                     .put("seekPlanKind", observed.diagnostics.lastRandomSeekPlanKind ?: JSONObject.NULL)
+                    .put(
+                        "attemptedPlan",
+                        observed.diagnostics.lastRandomSeekAttemptedPlanKind ?: JSONObject.NULL,
+                    )
+                    .put("selectedPlan", selectedPlanWire(observed.diagnostics.lastRandomSeekPlanKind))
                     .put("planFallbackReason", observed.diagnostics.lastRandomSeekFallbackReason ?: JSONObject.NULL)
+                    .put("fallbackReason", observed.diagnostics.lastRandomSeekFallbackReason ?: JSONObject.NULL)
                     .put(
                         "decoderCursorFrame",
                         observed.diagnostics.lastRandomSeekDecoderCursorFrameIndex ?: JSONObject.NULL,
                     )
                     .put(
                         "actualPreviousSyncFrame",
+                        observed.diagnostics.lastRandomSeekPreviousSyncFrameIndex ?: JSONObject.NULL,
+                    )
+                    .put(
+                        "previousSyncFrame",
                         observed.diagnostics.lastRandomSeekPreviousSyncFrameIndex ?: JSONObject.NULL,
                     )
                     .put("auxiliaryUsed", observed.diagnostics.lastRandomSeekAuxiliaryUsed)
@@ -198,7 +213,15 @@ class Alpha6RandomSeekExactnessTest {
                         observed.diagnostics.lastRandomSeekEstimatedOutputCount ?: JSONObject.NULL,
                     )
                     .put(
+                        "estimatedOutputCount",
+                        observed.diagnostics.lastRandomSeekEstimatedOutputCount ?: JSONObject.NULL,
+                    )
+                    .put(
                         "actualDecodeOutputCount",
+                        observed.diagnostics.lastRandomSeekActualOutputCount ?: JSONObject.NULL,
+                    )
+                    .put(
+                        "actualOutputCount",
                         observed.diagnostics.lastRandomSeekActualOutputCount ?: JSONObject.NULL,
                     )
                     .put(
@@ -555,6 +578,12 @@ class Alpha6RandomSeekExactnessTest {
     }
 
     private fun delta(before: Long, after: Long): Long = if (after >= before) after - before else after
+
+    private fun selectedPlanWire(plan: String?): Any = when (plan) {
+        null -> JSONObject.NULL
+        "CACHE", "HISTORY", "REVERSE_WINDOW" -> "CACHE_HIT"
+        else -> plan
+    }
 
     companion object {
         const val REPORT_FILE = "s24-alpha6-random-exactness-v1.json"

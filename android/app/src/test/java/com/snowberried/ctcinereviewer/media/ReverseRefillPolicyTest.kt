@@ -1,5 +1,9 @@
 package com.snowberried.ctcinereviewer.media
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -94,9 +98,65 @@ class ReverseRefillPolicyTest {
         assertFails { ReverseRefillDepletionLatch(-1) }
     }
 
+    @Test
+    fun `depletion tracker orders an EGL consume before generation completion`() {
+        val identity = ReverseWindowIdentity(1, 2, 3, 4)
+        val observation = ReverseRefillDepletionObservation(
+            identity = identity,
+            generationId = 9,
+            latch = ReverseRefillDepletionLatch(1),
+        )
+        val tracker = ReverseRefillDepletionTracker().also { it.activate(observation) }
+        val consumeEntered = CountDownLatch(1)
+        val releaseConsume = CountDownLatch(1)
+        val consumed = AtomicReference<ReverseWindowConsumeResult>()
+        val consumeThread = thread {
+            consumed.set(
+                tracker.consumeAndObserve(identity) {
+                    consumeEntered.countDown()
+                    assertTrue(releaseConsume.await(1, TimeUnit.SECONDS))
+                    ReverseWindowConsumeResult.Hit(frame(7), 0, true)
+                },
+            )
+        }
+        assertTrue(consumeEntered.await(1, TimeUnit.SECONDS))
+        val completedDepleted = AtomicReference<Boolean>()
+        val finishThread = thread { completedDepleted.set(tracker.finish(observation)) }
+
+        releaseConsume.countDown()
+        consumeThread.join(1_000)
+        finishThread.join(1_000)
+
+        assertTrue(consumed.get() is ReverseWindowConsumeResult.Hit)
+        assertEquals(true, completedDepleted.get())
+    }
+
+    @Test
+    fun `depletion tracker ignores a different window identity`() {
+        val identity = ReverseWindowIdentity(1, 2, 3, 4)
+        val observation = ReverseRefillDepletionObservation(
+            identity = identity,
+            generationId = 10,
+            latch = ReverseRefillDepletionLatch(1),
+        )
+        val tracker = ReverseRefillDepletionTracker().also { it.activate(observation) }
+
+        tracker.consumeAndObserve(identity.copy(gestureEpoch = 5)) {
+            ReverseWindowConsumeResult.Hit(frame(6), 0, true)
+        }
+
+        assertFalse(tracker.finish(observation))
+    }
+
     private fun decision(capacity: Int) = reverseRefillLowWaterDecision(
         targetCapacity = capacity,
         cadenceUs = 66_667,
+    )
+
+    private fun frame(index: Int) = IndexedFrame(
+        key = FrameKey(index, index * 1_000L, 0),
+        sampleOrdinal = index,
+        sync = false,
     )
 
     private fun assertFails(block: () -> Unit) {
