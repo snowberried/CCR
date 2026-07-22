@@ -28,7 +28,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      CCR_ANDROID_COMMIT_SHA: c93742281d668936f43c66ccbb6b7236b9a87399
+      CCR_ANDROID_COMMIT_SHA: 823c39504a1ddd8f0e457755ebff0d067d6dc863
 
     steps:
       - name: Check out repository

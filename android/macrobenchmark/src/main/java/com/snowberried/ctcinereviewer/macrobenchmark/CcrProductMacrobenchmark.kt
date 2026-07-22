@@ -962,9 +962,9 @@ class CcrProductMacrobenchmark {
         private const val HOLD_HORIZON_TOLERANCE_MS = 2_000L
         private const val EXPECTED_CACHE_BUDGET_BYTES = 64L * 1_024L * 1_024L
         private const val ARTIFACT_SET_REVISION = 3
-        private const val EXPECTED_RUNTIME_SOURCE_SHA = "c93742281d668936f43c66ccbb6b7236b9a87399"
+        private const val EXPECTED_RUNTIME_SOURCE_SHA = "823c39504a1ddd8f0e457755ebff0d067d6dc863"
         private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
-            "94be5815dbe77baa517c4f8692f8229ffb07b46b4f856b8d748d21865281153e"
+            "9689cadf140b54d0b93f67749e527fc8fab1392d0cd4117893ea91908f7530b3"
         private val RUN_ID_PATTERN = Regex("[A-Za-z0-9._:-]{1,48}")
         private val GIT_SHA_PATTERN = Regex("[0-9a-f]{40}")
         private val SHA256_PATTERN = Regex("[0-9a-f]{64}")

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const toolDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(toolDir, "..", "..");
 const manifestPath = resolve(repoRoot, "android/validation/runtime-inputs-alpha5-v1.json");
-const runtimeSourceSha = "c93742281d668936f43c66ccbb6b7236b9a87399";
+const runtimeSourceSha = "823c39504a1ddd8f0e457755ebff0d067d6dc863";
 const includePaths = [
   "android/app/src/main",
   "android/app/src/debug",
