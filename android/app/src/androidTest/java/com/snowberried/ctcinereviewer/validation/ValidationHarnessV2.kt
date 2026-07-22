@@ -19,9 +19,9 @@ internal data class ValidationHarnessIdentity(
 )
 
 internal object ValidationHarnessV2 {
-    private const val EXPECTED_RUNTIME_SOURCE_SHA = "823c39504a1ddd8f0e457755ebff0d067d6dc863"
+    private const val EXPECTED_RUNTIME_SOURCE_SHA = "dabf11fa103179c4d81fe4448aba84ac340cf230"
     private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
-        "9689cadf140b54d0b93f67749e527fc8fab1392d0cd4117893ea91908f7530b3"
+        "612d695e4c9b57d4e4fb10076879bcb9b306d034ff05ba67ad7706c0f22c12e8"
     private const val EXPECTED_ARTIFACT_SET_REVISION = 3
     private const val RUN_ID_LEDGER = "validation-harness-v2-run-ids.txt"
     private val shaPattern = Regex("[0-9a-f]{64}")

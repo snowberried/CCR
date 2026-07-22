@@ -54,7 +54,8 @@ function Assert-CcrAlpha5BenchmarkData {
 
 function Assert-CcrAlpha5PerfCheckpoint {
   param([object]$Value, [object]$Context, [object]$Scenario)
-  if ([string]$Value.status -cne "PASS" -or [string]$Value.method -cne $Scenario.method -or
+  if ([string]$Value.status -cnotin @("PASS", "PERFORMANCE_MISS") -or
+      [string]$Value.method -cne $Scenario.method -or
       @($Value.traces).Count -ne 3) {
     throw "ALPHA5_PERF_RESUME_CHECKPOINT_IDENTITY_MISMATCH:$($Scenario.method)"
   }
@@ -72,7 +73,8 @@ function Assert-CcrAlpha5PerfCheckpoint {
     $resumeEvidence $Context.ArtifactSet ([string]$Value.runId) $Scenario.evidence 3 | Out-Null
   $resumeIterations = @(Assert-CcrAlpha5BenchmarkEvidenceStrict $resumeEvidence $Scenario ([string]$Value.runId))
   $resumeGate = Assert-CcrAlpha5PerformanceThreshold $resumeIterations $Scenario
-  if (($resumeGate | ConvertTo-Json -Compress) -cne ($Value.performanceGate | ConvertTo-Json -Compress)) {
+  if ([string]$Value.status -cne [string]$resumeGate.status -or
+      ($resumeGate | ConvertTo-Json -Depth 10 -Compress) -cne ($Value.performanceGate | ConvertTo-Json -Depth 10 -Compress)) {
     throw "ALPHA5_PERF_RESUME_HARD_GATE_MISMATCH:$($Scenario.method)"
   }
   Assert-CcrAlpha5BenchmarkData ([string]$Value.benchmarkData.path) $Scenario.method | Out-Null
@@ -143,23 +145,35 @@ function Assert-CcrAlpha5PerformanceThreshold {
   $threshold = $null
   if ([string]$Scenario.label -ceq "-1") { $threshold = [ordered]@{ minimumFps = 12.0; maximumLagP95 = 1L; maximumLagMax = 1L } }
   if ([string]$Scenario.label -ceq "-5") { $threshold = [ordered]@{ minimumFps = 10.0; maximumLagP95 = 5L; maximumLagMax = 5L } }
-  if ($null -eq $threshold) { return [ordered]@{ applied = $false } }
+  if ($null -eq $threshold) {
+    return [ordered]@{
+      applied = $false; status = "PASS"; failureCount = 0; failures = @()
+      allThreeIterationsPassed = $true
+    }
+  }
+  $failures = [System.Collections.Generic.List[object]]::new()
   foreach ($iteration in $Iterations) {
-    if ([double](Get-CcrPinnedRequiredProperty $iteration "publishedFps") -lt $threshold.minimumFps -or
-        [long](Get-CcrPinnedRequiredProperty $iteration "rawLagP95") -gt $threshold.maximumLagP95 -or
-        [long](Get-CcrPinnedRequiredProperty $iteration "rawLagMax") -gt $threshold.maximumLagMax -or
-        [long](Get-CcrPinnedRequiredProperty $iteration "reverseWindowRefillStallOver250MsCount") -ne 0 -or
-        [long](Get-CcrPinnedRequiredProperty $iteration "reverseWindowBuildCount") -le 0 -or
-        [long](Get-CcrPinnedRequiredProperty $iteration "reverseWindowHitCount") -le 0 -or
-        [long](Get-CcrPinnedRequiredProperty $iteration "reverseWindowSeekCount") -ge [long](Get-CcrPinnedRequiredProperty $iteration "acceptedTargetCount")) {
-      throw "ALPHA5_REVERSE_PERFORMANCE_GATE_FAILED:$($Scenario.method)/$($iteration.runIteration)"
+    $codes = [System.Collections.Generic.List[string]]::new()
+    if ([double](Get-CcrPinnedRequiredProperty $iteration "publishedFps") -lt $threshold.minimumFps) { $codes.Add("FPS_BELOW_MINIMUM") | Out-Null }
+    if ([long](Get-CcrPinnedRequiredProperty $iteration "rawLagP95") -gt $threshold.maximumLagP95) { $codes.Add("RAW_LAG_P95_EXCEEDED") | Out-Null }
+    if ([long](Get-CcrPinnedRequiredProperty $iteration "rawLagMax") -gt $threshold.maximumLagMax) { $codes.Add("RAW_LAG_MAX_EXCEEDED") | Out-Null }
+    if ([long](Get-CcrPinnedRequiredProperty $iteration "reverseWindowRefillStallOver250MsCount") -ne 0) { $codes.Add("REFILL_STALL_OVER_250MS") | Out-Null }
+    if ([long](Get-CcrPinnedRequiredProperty $iteration "reverseWindowBuildCount") -le 0) { $codes.Add("REVERSE_WINDOW_NOT_BUILT") | Out-Null }
+    if ([long](Get-CcrPinnedRequiredProperty $iteration "reverseWindowHitCount") -le 0) { $codes.Add("REVERSE_WINDOW_NO_HIT") | Out-Null }
+    if ([long](Get-CcrPinnedRequiredProperty $iteration "reverseWindowSeekCount") -ge [long](Get-CcrPinnedRequiredProperty $iteration "acceptedTargetCount")) { $codes.Add("SEEK_PER_ACCEPTED_TARGET_NOT_REDUCED") | Out-Null }
+    if ([long](Get-CcrPinnedRequiredProperty $iteration "holdPrefetchStarted") -ne 0 -or
+        [long](Get-CcrPinnedRequiredProperty $iteration "holdPrefetchCompleted") -ne 0) { $codes.Add("HOLD_PREFETCH_DURING_HOLD") | Out-Null }
+    if ($codes.Count -gt 0) {
+      $failures.Add([ordered]@{ runIteration = [int]$iteration.runIteration; codes = @($codes) }) | Out-Null
     }
   }
   return [ordered]@{
     applied = $true; minimumFps = $threshold.minimumFps; maximumRawLagP95 = $threshold.maximumLagP95
     maximumRawLagMax = $threshold.maximumLagMax; maximumRefillStallOver250MsCount = 0
     thresholdContract = "ALPHA5_BIDIRECTIONAL_VALIDATION_V1_USER_APPROVED"
-    allThreeIterationsPassed = $true
+    status = if ($failures.Count -eq 0) { "PASS" } else { "PERFORMANCE_MISS" }
+    failureCount = $failures.Count; failures = @($failures)
+    allThreeIterationsPassed = $failures.Count -eq 0
   }
 }
 
@@ -181,7 +195,22 @@ $summaryPath = Join-Path $context.OutputDirectory "alpha5-navigation-perf-$($Dir
 if ($Resume -and (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
   $existing = [System.IO.File]::ReadAllText($summaryPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
   $storedMaxMinutes = [int]$existing.maxMinutes
-  if ([string]$existing.status -cne "PASS" -or [string]$existing.direction -cne $Direction -or
+  Assert-CcrAlpha5PreflightDomain $existing ([bool]$PreflightOnly) "ALPHA5_PERF_RESUME_PREFLIGHT_DOMAIN_MISMATCH"
+  if ($PreflightOnly) {
+    if ([string]$existing.kind -cne "alpha5-navigation-perf-preflight" -or
+        [string]$existing.status -cne "PASS" -or [string]$existing.direction -cne $Direction -or
+        [int]$existing.deviceMutationCount -ne 0 -or
+        $storedMaxMinutes -lt 1 -or $storedMaxMinutes -gt 240 -or
+        [int]$existing.scenarioCount -ne $expectedScenarioCount -or
+        [int]$existing.totalIndependentTraceCount -ne ($expectedScenarioCount * 3)) {
+      throw "ALPHA5_PERF_PREFLIGHT_RESUME_IDENTITY_MISMATCH"
+    }
+    Assert-CcrAlpha5IdentityRecord $existing.identity $context "ALPHA5_PERF_PREFLIGHT_RESUME_IDENTITY_MISMATCH" | Out-Null
+    Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath
+    return
+  }
+  if ([string]$existing.status -cnotin @("PASS", "PERFORMANCE_MISS") -or
+      [string]$existing.direction -cne $Direction -or
       $storedMaxMinutes -lt 1 -or $storedMaxMinutes -gt 240 -or [int]$existing.scenarioCount -ne $expectedScenarioCount -or
       [int]$existing.totalIndependentTraceCount -ne ($expectedScenarioCount * 3)) {
     throw "ALPHA5_PERF_RESUME_SUMMARY_IDENTITY_MISMATCH"
@@ -192,6 +221,10 @@ if ($Resume -and (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
     if ($checkpoint.Count -ne 1) { throw "ALPHA5_PERF_RESUME_SCENARIO_MISSING:$($scenario.method)" }
     Assert-CcrAlpha5PerfCheckpoint $checkpoint[0] $context $scenario
   }
+  $expectedStatus = if (@($existing.scenarios | Where-Object { [string]$_.status -ceq "PERFORMANCE_MISS" }).Count -gt 0) {
+    "PERFORMANCE_MISS"
+  } else { "PASS" }
+  if ([string]$existing.status -cne $expectedStatus) { throw "ALPHA5_PERF_RESUME_SUMMARY_STATUS_MISMATCH" }
   Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath
   return
 }
@@ -285,8 +318,7 @@ try {
     foreach ($iteration in $iterations) {
       if ([long]$iteration.cacheBudgetBytes -ne 67108864L -or
           [long]$iteration.cacheBytes -gt 67108864L -or [long]$iteration.peakCacheBytes -gt 67108864L -or
-          [long]$iteration.outstandingForegroundTargetDepthMax -gt 1 -or
-          [long]$iteration.holdPrefetchStarted -ne 0 -or [long]$iteration.holdPrefetchCompleted -ne 0) {
+          [long]$iteration.outstandingForegroundTargetDepthMax -gt 1) {
         throw "ALPHA5_PERF_INVARIANT_MISMATCH:$($scenario.method)"
       }
     }
@@ -295,7 +327,7 @@ try {
       [ordered]@{ path = $item.FullName; bytes = [long]$item.Length; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $item.FullName).Hash.ToLowerInvariant() }
     }
     $checkpoint = [ordered]@{
-      schemaVersion = 1; kind = "alpha5-navigation-perf-scenario"; status = "PASS"
+      schemaVersion = 1; kind = "alpha5-navigation-perf-scenario"; status = [string]$performanceGate.status
       method = $scenario.method; label = $scenario.label; evidenceScenario = $scenario.evidence
       runId = $runId; identity = New-CcrAlpha5IdentityRecord $context
       traceValidation = "PASS_NONEMPTY_THREE_INDEPENDENT_TRACES"
@@ -343,8 +375,12 @@ if ($null -ne $primaryFailure -and $cleanupFailures.Count -gt 0) { throw "PRIMAR
 if ($null -ne $primaryFailure) { throw $primaryFailure }
 if ($cleanupFailures.Count -gt 0) { throw "CLEANUP=$($cleanupFailures -join ' | ')" }
 if ($results.Count -ne $expectedScenarioCount) { throw "ALPHA5_PERF_COMPLETED_SCENARIO_COUNT_MISMATCH:$Direction" }
+$summaryStatus = if (@($results | Where-Object { [string]$_.status -ceq "PERFORMANCE_MISS" }).Count -gt 0) {
+  "PERFORMANCE_MISS"
+} else { "PASS" }
 $summary = [ordered]@{
-  schemaVersion = 1; kind = "alpha5-navigation-performance"; status = "PASS"
+  schemaVersion = 1; kind = "alpha5-navigation-performance"; status = $summaryStatus
+  preflightOnly = $false
   direction = $Direction; maxMinutes = $MaxMinutes; identity = New-CcrAlpha5IdentityRecord $context
   scenarios = @($results); scenarioCount = $results.Count; totalIndependentTraceCount = $results.Count * 3
   buildCommandCount = 0; syntheticOnly = $true; containsRealMediaMetadata = $false

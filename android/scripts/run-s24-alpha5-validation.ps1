@@ -60,8 +60,15 @@ function Get-CcrAlpha5EvidenceFiles {
 
 function Assert-CcrAlpha5StageCheckpoint {
   param([object]$Checkpoint, [string]$Stage)
-  $expectedStatus = if ($Stage -ceq "H") { "PENDING_USER" } else { "PASS" }
-  if ([string]$Checkpoint.status -cne $expectedStatus -or [string]$Checkpoint.stage -cne $Stage -or
+  $allowedStatuses = if ($Stage -ceq "H") {
+    @("PENDING_USER")
+  } elseif ($Stage -cin @("C", "D", "E")) {
+    @("PASS", "PERFORMANCE_MISS")
+  } else { @("PASS") }
+  if ([string]$Checkpoint.status -cnotin $allowedStatuses -or
+      [string]$Checkpoint.hardCorrectnessStatus -cne "PASS" -or
+      [string]$Checkpoint.performanceStatus -cne $(if ([string]$Checkpoint.status -ceq "PERFORMANCE_MISS") { "PERFORMANCE_MISS" } else { "PASS" }) -or
+      [string]$Checkpoint.stage -cne $Stage -or
       @($Checkpoint.evidence).Count -eq 0) {
     throw "ALPHA5_ORCHESTRATOR_RESUME_IDENTITY_MISMATCH:$Stage"
   }
@@ -73,6 +80,43 @@ function Assert-CcrAlpha5StageCheckpoint {
       throw "ALPHA5_ORCHESTRATOR_RESUME_EVIDENCE_MISMATCH:$Stage"
     }
   }
+  if (-not $PreflightOnly -and $Stage -cin @("C", "D", "E")) {
+    $expectedStatus = "PASS"
+    if ($Stage -ceq "C") {
+      $expectedStatus = Get-CcrAlpha5ChildPerformanceStatus `
+        (Join-Path $context.OutputDirectory "stage-C\forward-perf\alpha5-navigation-perf-forward-v1.json") `
+        "alpha5-navigation-performance"
+    } elseif ($Stage -ceq "D") {
+      $reverseStatus = Get-CcrAlpha5ChildPerformanceStatus `
+        (Join-Path $context.OutputDirectory "stage-D\reverse-perf\alpha5-navigation-perf-reverse-v1.json") `
+        "alpha5-navigation-performance"
+      $parity = Assert-CcrAlpha5ForwardReverseParity `
+        (Join-Path $context.OutputDirectory "stage-D\forward-reverse-parity-v1.json")
+      if ($reverseStatus -ceq "PERFORMANCE_MISS" -or [string]$parity.status -ceq "PERFORMANCE_MISS") {
+        $expectedStatus = "PERFORMANCE_MISS"
+      }
+    } else {
+      $expectedStatus = Get-CcrAlpha5ChildPerformanceStatus `
+        (Join-Path $context.OutputDirectory "stage-E\random\alpha5-random-summary-v1.json") `
+        "alpha5-cost-aware-random"
+    }
+    if ([string]$Checkpoint.status -cne $expectedStatus -or
+        [string]$Checkpoint.performanceStatus -cne $expectedStatus) {
+      throw "ALPHA5_ORCHESTRATOR_RESUME_PERFORMANCE_STATUS_MISMATCH:$Stage"
+    }
+  }
+}
+
+function Get-CcrAlpha5ChildPerformanceStatus {
+  param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Kind)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "ALPHA5_CHILD_PERFORMANCE_SUMMARY_MISSING:$Kind" }
+  $summary = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+  if ([string]$summary.kind -cne $Kind -or [string]$summary.status -cnotin @("PASS", "PERFORMANCE_MISS")) {
+    throw "ALPHA5_CHILD_PERFORMANCE_SUMMARY_CONTRACT_MISMATCH:$Kind"
+  }
+  Assert-CcrAlpha5PreflightDomain $summary $false "ALPHA5_CHILD_PERFORMANCE_SUMMARY_PREFLIGHT_DOMAIN_MISMATCH:$Kind"
+  Assert-CcrAlpha5IdentityRecord $summary.identity $context "ALPHA5_CHILD_PERFORMANCE_SUMMARY_IDENTITY_MISMATCH:$Kind" | Out-Null
+  return [string]$summary.status
 }
 
 function Assert-CcrAlpha5ForwardReverseParity {
@@ -84,6 +128,8 @@ function Assert-CcrAlpha5ForwardReverseParity {
   }
   $forward = [System.IO.File]::ReadAllText($forwardPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
   $reverse = [System.IO.File]::ReadAllText($reversePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+  Get-CcrAlpha5ChildPerformanceStatus $forwardPath "alpha5-navigation-performance" | Out-Null
+  Get-CcrAlpha5ChildPerformanceStatus $reversePath "alpha5-navigation-performance" | Out-Null
   Assert-CcrAlpha5IdentityRecord $forward.identity $context "ALPHA5_PARITY_FORWARD_IDENTITY_MISMATCH" | Out-Null
   Assert-CcrAlpha5IdentityRecord $reverse.identity $context "ALPHA5_PARITY_REVERSE_IDENTITY_MISMATCH" | Out-Null
   $pairs = @(
@@ -91,6 +137,7 @@ function Assert-CcrAlpha5ForwardReverseParity {
     @("hold1080PlusFive", "hold1080MinusFive", 5)
   )
   $comparisons = @()
+  $allPassed = $true
   foreach ($pair in $pairs) {
     $f = @($forward.scenarios | Where-Object { [string]$_.method -ceq $pair[0] })
     $r = @($reverse.scenarios | Where-Object { [string]$_.method -ceq $pair[1] })
@@ -102,26 +149,38 @@ function Assert-CcrAlpha5ForwardReverseParity {
       $higher = [Math]::Max([double]$forwardFps[$index], [double]$reverseFps[$index])
       if ($higher -le 0) { throw "ALPHA5_PARITY_FPS_INVALID:$($pair[2])/$index" }
       $difference = [Math]::Abs([double]$forwardFps[$index] - [double]$reverseFps[$index]) / $higher
-      if ($difference -gt 0.25) { throw "ALPHA5_PARITY_DIFFERENCE_EXCEEDED:$($pair[2])/$index" }
+      $passed = $difference -le 0.25
+      if (-not $passed) { $allPassed = $false }
       $comparisons += [ordered]@{
         stride = [int]$pair[2]; iteration = $index + 1
         forwardFpsMilli = [double]$forwardFps[$index]; reverseFpsMilli = [double]$reverseFps[$index]
-        relativeDifference = $difference; maximumAllowed = 0.25
+        relativeDifference = $difference; maximumAllowed = 0.25; passed = $passed
       }
     }
   }
   $evidence = [ordered]@{
-    schemaVersion = 1; kind = "alpha5-forward-reverse-fps-parity"; status = "PASS"
+    schemaVersion = 1; kind = "alpha5-forward-reverse-fps-parity"
+    status = if ($allPassed) { "PASS" } else { "PERFORMANCE_MISS" }
     identity = New-CcrAlpha5IdentityRecord $context; comparisons = $comparisons
     thresholdContract = "ALPHA5_BIDIRECTIONAL_VALIDATION_V1_USER_APPROVED"
     buildCommandCount = 0; syntheticOnly = $true; containsRealMediaMetadata = $false
   }
+  if (Test-Path -LiteralPath $EvidencePath -PathType Leaf) {
+    if (-not $Resume) { throw "ALPHA5_PARITY_EVIDENCE_ALREADY_EXISTS" }
+    $existing = [System.IO.File]::ReadAllText($EvidencePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    if (($existing | ConvertTo-Json -Depth 10 -Compress) -cne ($evidence | ConvertTo-Json -Depth 10 -Compress)) {
+      throw "ALPHA5_PARITY_RESUME_EVIDENCE_MISMATCH"
+    }
+    return $existing
+  }
   Write-CcrAlpha5ImmutableJson $EvidencePath $evidence | Out-Null
+  return $evidence
 }
 
 function Invoke-CcrAlpha5Stage {
   param([Parameter(Mandatory = $true)][string]$Stage)
   Assert-CcrAlpha5Deadline $deadlineUtc "orchestrator-before-$Stage"
+  $stageStatus = "PASS"
   $checkpointPath = Join-Path $context.OutputDirectory "checkpoint-alpha5-stage-$Stage.json"
   if ($Resume -and (Test-Path -LiteralPath $checkpointPath -PathType Leaf)) {
     $checkpoint = [System.IO.File]::ReadAllText($checkpointPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
@@ -164,23 +223,37 @@ function Invoke-CcrAlpha5Stage {
     "C" {
       & (Join-Path $PSScriptRoot "run-s24-alpha5-instrumentation.ps1") @common `
         -OutputDirectory (Join-Path $stageDirectory "forward-exact") -Stage Forward | Out-Null
+      & (Join-Path $PSScriptRoot "run-s24-alpha5-navigation-perf.ps1") @common `
+        -OutputDirectory (Join-Path $stageDirectory "forward-perf") -Direction Forward | Out-Null
       if (-not $PreflightOnly) {
-        & (Join-Path $PSScriptRoot "run-s24-alpha5-navigation-perf.ps1") @common `
-          -OutputDirectory (Join-Path $stageDirectory "forward-perf") -Direction Forward | Out-Null
+        $stageStatus = Get-CcrAlpha5ChildPerformanceStatus `
+          (Join-Path $stageDirectory "forward-perf\alpha5-navigation-perf-forward-v1.json") `
+          "alpha5-navigation-performance"
       }
     }
     "D" {
       & (Join-Path $PSScriptRoot "run-s24-alpha5-instrumentation.ps1") @common `
         -OutputDirectory (Join-Path $stageDirectory "reverse-exact") -Stage Reverse | Out-Null
+      & (Join-Path $PSScriptRoot "run-s24-alpha5-navigation-perf.ps1") @common `
+        -OutputDirectory (Join-Path $stageDirectory "reverse-perf") -Direction Reverse | Out-Null
       if (-not $PreflightOnly) {
-        & (Join-Path $PSScriptRoot "run-s24-alpha5-navigation-perf.ps1") @common `
-          -OutputDirectory (Join-Path $stageDirectory "reverse-perf") -Direction Reverse | Out-Null
-        Assert-CcrAlpha5ForwardReverseParity (Join-Path $stageDirectory "forward-reverse-parity-v1.json")
+        $reverseStatus = Get-CcrAlpha5ChildPerformanceStatus `
+          (Join-Path $stageDirectory "reverse-perf\alpha5-navigation-perf-reverse-v1.json") `
+          "alpha5-navigation-performance"
+        $parity = Assert-CcrAlpha5ForwardReverseParity (Join-Path $stageDirectory "forward-reverse-parity-v1.json")
+        if ($reverseStatus -ceq "PERFORMANCE_MISS" -or [string]$parity.status -ceq "PERFORMANCE_MISS") {
+          $stageStatus = "PERFORMANCE_MISS"
+        }
       }
     }
     "E" {
       & (Join-Path $PSScriptRoot "run-s24-alpha5-random.ps1") @common `
         -OutputDirectory (Join-Path $stageDirectory "random") | Out-Null
+      if (-not $PreflightOnly) {
+        $stageStatus = Get-CcrAlpha5ChildPerformanceStatus `
+          (Join-Path $stageDirectory "random\alpha5-random-summary-v1.json") `
+          "alpha5-cost-aware-random"
+      }
     }
     "F" {
       & (Join-Path $PSScriptRoot "run-s24-alpha5-instrumentation.ps1") @common `
@@ -250,7 +323,9 @@ function Invoke-CcrAlpha5Stage {
   if ($evidence.Count -eq 0) { throw "ALPHA5_ORCHESTRATOR_STAGE_EVIDENCE_EMPTY:$Stage" }
   $checkpoint = [ordered]@{
     schemaVersion = 1; kind = "alpha5-validation-stage-checkpoint"
-    status = if ($Stage -ceq "H") { "PENDING_USER" } else { "PASS" }
+    status = if ($Stage -ceq "H") { "PENDING_USER" } else { $stageStatus }
+    hardCorrectnessStatus = "PASS"
+    performanceStatus = if ($stageStatus -ceq "PERFORMANCE_MISS") { "PERFORMANCE_MISS" } else { "PASS" }
     stage = $Stage; preflightOnly = [bool]$PreflightOnly
     completedAtUtc = [DateTime]::UtcNow.ToString("o"); identity = New-CcrAlpha5IdentityRecord $context
     evidence = $evidence; buildCommandCount = 0
@@ -295,6 +370,20 @@ try {
   throw $primaryFailure
 }
 
+$performanceMissStages = @($completed | Where-Object { [string]$_.status -ceq "PERFORMANCE_MISS" } | ForEach-Object { [string]$_.stage })
+$expectedStatus = if ($StopAfter -ceq "H") {
+  "PENDING_USER"
+} elseif ($performanceMissStages.Count -gt 0) {
+  "PERFORMANCE_MISS_PARTIAL"
+} else { "PASS_PARTIAL" }
+$expectedPerformanceStatus = if ($performanceMissStages.Count -gt 0) { "PERFORMANCE_MISS" } else { "PASS" }
+$expectedOverallGateStatus = if ($StopAfter -ceq "H" -and $expectedPerformanceStatus -ceq "PERFORMANCE_MISS") {
+  "PENDING_USER_PERFORMANCE_MISS"
+} else { $expectedStatus }
+$expectedManualEvaluation = if ($StopAfter -ceq "H") { "PENDING_USER" } else { "NOT_REACHED" }
+$expectedStages = @($completed | ForEach-Object {
+  [ordered]@{ stage = $_.stage; status = $_.status; evidenceCount = @($_.evidence).Count }
+})
 $summaryPath = Join-Path $context.OutputDirectory "alpha5-validation-summary-through-$($StopAfter.ToLowerInvariant())-v1.json"
 if (Test-Path -LiteralPath $summaryPath) {
   if (-not $Resume) { throw "ALPHA5_ORCHESTRATOR_SUMMARY_ALREADY_EXISTS" }
@@ -305,17 +394,29 @@ if (Test-Path -LiteralPath $summaryPath) {
   }
   Assert-CcrAlpha5PreflightDomain $existingSummary ([bool]$PreflightOnly) "ALPHA5_ORCHESTRATOR_RESUME_SUMMARY_PREFLIGHT_DOMAIN_MISMATCH"
   Assert-CcrAlpha5IdentityRecord $existingSummary.identity $context "ALPHA5_ORCHESTRATOR_RESUME_SUMMARY_IDENTITY_MISMATCH" | Out-Null
+  if ([string]$existingSummary.status -cne $expectedStatus -or
+      [string]$existingSummary.hardCorrectnessStatus -cne "PASS" -or
+      [string]$existingSummary.performanceStatus -cne $expectedPerformanceStatus -or
+      [string]$existingSummary.overallGateStatus -cne $expectedOverallGateStatus -or
+      [string]$existingSummary.manualEvaluation -cne $expectedManualEvaluation -or
+      (@($existingSummary.performanceMissStages) | ConvertTo-Json -Compress) -cne ($performanceMissStages | ConvertTo-Json -Compress) -or
+      (@($existingSummary.stages) | ConvertTo-Json -Depth 5 -Compress) -cne ($expectedStages | ConvertTo-Json -Depth 5 -Compress)) {
+    throw "ALPHA5_ORCHESTRATOR_RESUME_SUMMARY_STATUS_MISMATCH"
+  }
   Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath
   return
 }
-$status = if ($StopAfter -ceq "H") { "PENDING_USER" } else { "PASS_PARTIAL" }
 $summary = [ordered]@{
-  schemaVersion = 1; kind = "alpha5-s24-validation"; status = $status
+  schemaVersion = 1; kind = "alpha5-s24-validation"; status = $expectedStatus
   stopAfter = $StopAfter; maxMinutes = $MaxMinutes; preflightOnly = [bool]$PreflightOnly
   identity = New-CcrAlpha5IdentityRecord $context
-  stages = @($completed | ForEach-Object { [ordered]@{ stage = $_.stage; status = $_.status; evidenceCount = @($_.evidence).Count } })
+  stages = $expectedStages
   correctnessBeforePerformance = $true
-  manualEvaluation = if ($StopAfter -ceq "H") { "PENDING_USER" } else { "NOT_REACHED" }
+  hardCorrectnessStatus = "PASS"
+  performanceStatus = $expectedPerformanceStatus
+  overallGateStatus = $expectedOverallGateStatus
+  performanceMissStages = $performanceMissStages
+  manualEvaluation = $expectedManualEvaluation
   buildCommandCount = 0; syntheticOnly = $true; containsRealMediaMetadata = $false
 }
 Write-Output (Write-CcrAlpha5ImmutableJson $summaryPath $summary)

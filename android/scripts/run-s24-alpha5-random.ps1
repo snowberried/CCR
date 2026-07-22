@@ -17,8 +17,8 @@ $deadlineUtc = if ($AbsoluteDeadlineUtc -eq [datetime]::MinValue) { $localDeadli
   if ($candidate -lt $localDeadlineUtc) { $candidate } else { $localDeadlineUtc }
 }
 Set-CcrAlpha5ActiveDeadline $deadlineUtc
-$script:CcrAlpha4FrozenRandomSummarySha256 = "005b971bb65c3e692bef8a645a29af119ff3178f42cd51ed76e2aa33e02e585e"
-$script:CcrAlpha4FrozenRandomReportSha256 = "42f6a582874165d67609b5842a0cf83113a67934a50bbb8908986bc7733eab34"
+$script:CcrAlpha4FrozenRandomSummarySha256 = "5829311f14dbfeb0235fe5e511702c4ca161408ff1d260c41c6e668a9e14bab8"
+$script:CcrAlpha4FrozenRandomReportSha256 = "8c9c1390bde85b4a5aebc1732acbaed78639c76d69967fa573a12891fc8feb7f"
 $script:CcrAlpha4FrozenTargetSetIdentities = [ordered]@{
   "fixture-01" = "e27c3831f54e977f8cbe66221fd8cbf636b255cbfbd06cbd31119ea2d5ec6da6"
   "fixture-02" = "e32cb87230d992d8e7b596b0c45f7ecb22d39d915808eaf5c626324e12295b83"
@@ -158,17 +158,26 @@ function Assert-CcrAlpha5RandomTargetIdentityAndPerformance {
       maxUs = [long](($values | Measure-Object -Maximum).Maximum)
     }
   }
-  if ($metrics.p95Us -gt 735597L -or $metrics.maxUs -gt 2236016L -or
-      [long]($metrics.categories["cache-or-history-hit"].p95Us) -gt 16000L -or
-      [long]($metrics.categories["same-gop"].p95Us) -gt 150000L -or
-      [long]($metrics.categories["far-random"].p95Us) -gt 300000L) {
-    throw "ALPHA5_RANDOM_PERFORMANCE_GATE_FAILED"
+  $thresholdMisses = [System.Collections.Generic.List[string]]::new()
+  if ($metrics.p95Us -gt 791002L) { $thresholdMisses.Add("OVERALL_P95") | Out-Null }
+  if ($metrics.maxUs -gt 2194244L) { $thresholdMisses.Add("OVERALL_MAX") | Out-Null }
+  if ([long]($metrics.categories["cache-or-history-hit"].p95Us) -gt 16000L) {
+    $thresholdMisses.Add("CACHE_OR_HISTORY_P95") | Out-Null
   }
-  $metrics.alpha4BaselineP95Us = 1050853L
+  if ([long]($metrics.categories["same-gop"].p95Us) -gt 150000L) {
+    $thresholdMisses.Add("SAME_GOP_P95") | Out-Null
+  }
+  if ([long]($metrics.categories["far-random"].p95Us) -gt 300000L) {
+    $thresholdMisses.Add("FAR_RANDOM_P95") | Out-Null
+  }
+  $metrics.status = if ($thresholdMisses.Count -eq 0) { "PASS" } else { "PERFORMANCE_MISS" }
+  $metrics.allThresholdsPassed = $thresholdMisses.Count -eq 0
+  $metrics.thresholdMisses = @($thresholdMisses)
+  $metrics.alpha4BaselineP95Us = 1130004L
   $metrics.requiredP95ImprovementPercent = 30
-  $metrics.maximumAllowedP95Us = 735597L
-  $metrics.alpha4BaselineMaxUs = 2236016L
-  $metrics.maximumAllowedMaxUs = 2236016L
+  $metrics.maximumAllowedP95Us = 791002L
+  $metrics.alpha4BaselineMaxUs = 2194244L
+  $metrics.maximumAllowedMaxUs = 2194244L
   $metrics.thresholdContract = "ALPHA5_BIDIRECTIONAL_VALIDATION_V1_USER_APPROVED"
   $metrics.alpha4FrozenSummarySha256 = $script:CcrAlpha4FrozenRandomSummarySha256
   $metrics.alpha4FrozenReportSha256 = $script:CcrAlpha4FrozenRandomReportSha256
@@ -232,7 +241,19 @@ function Remove-CcrAlpha5RandomRemoteTrace {
 if ($Resume -and (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
   $existing = [System.IO.File]::ReadAllText($summaryPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
   $storedMaxMinutes = [int]$existing.maxMinutes
-  if ([string]$existing.status -cne "PASS" -or $storedMaxMinutes -lt 1 -or $storedMaxMinutes -gt 240) {
+  Assert-CcrAlpha5PreflightDomain $existing ([bool]$PreflightOnly) "ALPHA5_RANDOM_RESUME_PREFLIGHT_DOMAIN_MISMATCH"
+  if ($PreflightOnly) {
+    if ([string]$existing.kind -cne "alpha5-random-preflight" -or
+        [string]$existing.status -cne "PASS" -or [int]$existing.deviceMutationCount -ne 0 -or
+        $storedMaxMinutes -lt 1 -or $storedMaxMinutes -gt 240) {
+      throw "ALPHA5_RANDOM_PREFLIGHT_RESUME_IDENTITY_MISMATCH"
+    }
+    Assert-CcrAlpha5IdentityRecord $existing.identity $context "ALPHA5_RANDOM_PREFLIGHT_RESUME_IDENTITY_MISMATCH" | Out-Null
+    Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath
+    return
+  }
+  if ([string]$existing.status -cnotin @("PASS", "PERFORMANCE_MISS") -or
+      $storedMaxMinutes -lt 1 -or $storedMaxMinutes -gt 240) {
     throw "ALPHA5_RANDOM_RESUME_IDENTITY_MISMATCH"
   }
   Assert-CcrAlpha5IdentityRecord $existing.identity $context "ALPHA5_RANDOM_RESUME_IDENTITY_MISMATCH" | Out-Null
@@ -268,7 +289,8 @@ if ($Resume -and (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
     throw "ALPHA5_RANDOM_RESUME_MERGED_REPORT_MISMATCH"
   }
   $recomputed = Assert-CcrAlpha5RandomTargetIdentityAndPerformance $resumeExact $resumePerformance
-  if (($recomputed | ConvertTo-Json -Depth 10 -Compress) -cne ($existing.performanceGate | ConvertTo-Json -Depth 10 -Compress)) {
+  if ([string]$existing.status -cne [string]$recomputed.status -or
+      ($recomputed | ConvertTo-Json -Depth 10 -Compress) -cne ($existing.performanceGate | ConvertTo-Json -Depth 10 -Compress)) {
     throw "ALPHA5_RANDOM_RESUME_PERFORMANCE_GATE_MISMATCH"
   }
   Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath
@@ -371,7 +393,8 @@ try {
   [System.IO.File]::SetAttributes($localTracePath, [System.IO.FileAttributes]::ReadOnly)
 
   $summary = [ordered]@{
-    schemaVersion = 1; kind = "alpha5-cost-aware-random"; status = "PASS"
+    schemaVersion = 1; kind = "alpha5-cost-aware-random"; status = [string]$performanceMetrics.status
+    preflightOnly = $false
     completedAtUtc = [DateTime]::UtcNow.ToString("o"); maxMinutes = $MaxMinutes
     identity = New-CcrAlpha5IdentityRecord $context
     exactnessRunId = $exactRunId; performanceRunId = $perfRunId

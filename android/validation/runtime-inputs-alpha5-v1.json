@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "manifestKind": "ccr-android-runtime-inputs",
-  "runtimeSourceSha": "823c39504a1ddd8f0e457755ebff0d067d6dc863",
+  "runtimeSourceSha": "dabf11fa103179c4d81fe4448aba84ac340cf230",
   "treeAlgorithm": "sha256(CCR_RUNTIME_INPUTS_V1\\0 + sorted(path\\0byteSize\\0fileSha256\\n))",
   "includePaths": [
     "android/app/src/main",
@@ -12,7 +12,7 @@
     "android/gradle.properties",
     "android/gradle/wrapper/gradle-wrapper.properties"
   ],
-  "runtimeInputsTreeSha256": "9689cadf140b54d0b93f67749e527fc8fab1392d0cd4117893ea91908f7530b3",
+  "runtimeInputsTreeSha256": "612d695e4c9b57d4e4fb10076879bcb9b306d034ff05ba67ad7706c0f22c12e8",
   "files": [
     {
       "path": "android/app/build.gradle.kts",
@@ -96,8 +96,8 @@
     },
     {
       "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/ExactFrameSession.kt",
-      "byteSize": 113202,
-      "sha256": "41fd922298db0ed65b29db54f28d6e4a2858e4ba5bce9b382455e70b9361532f"
+      "byteSize": 113988,
+      "sha256": "7adf64dade7949e7afa4679568ff7639fb2b8f2f7a9a6b3f99271534cb7fbf40"
     },
     {
       "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/ForwardSequentialDecodeState.kt",

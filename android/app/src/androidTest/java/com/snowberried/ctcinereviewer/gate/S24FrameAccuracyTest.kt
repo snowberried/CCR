@@ -1233,6 +1233,8 @@ class S24FrameAccuracyTest {
             private val EXPECTED_SUPERSEDED_STAGES = setOf(
                 "before-decode",
                 "decode-loop",
+                "input-batch",
+                "output-batch",
                 "TEXTURE_GENERATION_STALE",
             )
         }

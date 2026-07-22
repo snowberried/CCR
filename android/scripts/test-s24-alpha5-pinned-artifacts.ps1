@@ -229,11 +229,22 @@ try {
   Assert-Alpha5Test ($orchestrator -match 'PRIMARY=.*CLEANUP=' -and $orchestrator -match 'Assert-CcrAlpha5SettingsRestored') "ALPHA5_TEST_ORCHESTRATOR_CLEANUP_FAILURE_GUARD_MISSING"
   Assert-Alpha5Test ($orchestrator -match 'stay_on_while_plugged_in" "7"' -and $orchestrator -match 'screen_off_timeout" "1800000"' -and $orchestrator -match 'ALPHA5_ORCHESTRATOR_AWAKE_SETTING_MISMATCH' -and $orchestrator -match 'ALPHA5_PARTIAL_SETTING_RESTORE_FAILED') "ALPHA5_TEST_ORCHESTRATOR_AWAKE_GUARD_MISSING"
   Assert-Alpha5Test ($instrumentation -match 'FailureReportPath') "ALPHA5_TEST_INSTRUMENTATION_FAILURE_REPORT_MISSING"
-  Assert-Alpha5Test ($performance -match 'ALPHA5_PERF_TRACE_SHA_DUPLICATE' -and $performance -match 'minimumFps = 12\.0' -and $performance -match 'minimumFps = 10\.0' -and $performance -match 'maximumLagMax') "ALPHA5_TEST_PERF_HARD_GATES_MISSING"
+  Assert-Alpha5Test ($performance -match 'ALPHA5_PERF_TRACE_SHA_DUPLICATE' -and $performance -match 'minimumFps = 12\.0' -and $performance -match 'minimumFps = 10\.0' -and $performance -match 'maximumLagMax' -and $performance -match 'PERFORMANCE_MISS' -and $performance -notmatch 'throw "ALPHA5_REVERSE_PERFORMANCE_GATE_FAILED') "ALPHA5_TEST_PERF_PERFORMANCE_THRESHOLDS_MISSING"
   Assert-Alpha5Test ($performance.Contains('(@($benchmarks[0].metrics.ccrRunIteration.runs) | ForEach-Object { [int]$_ }) -join ","')) "ALPHA5_TEST_PERF_RUN_ITERATION_INTEGER_NORMALIZATION_MISSING"
   Assert-Alpha5Test ($performance -match 'Assert-CcrPinnedBenchmarkEvidence' -and $instrumentation -match 'Assert-CcrPinnedReport' -and $random -match 'Assert-CcrPinnedReport') "ALPHA5_TEST_RESUME_FULL_REPORT_IDENTITY_GUARD_MISSING"
   Assert-Alpha5Test ($performance -match 'PINNED_MANIFEST_SYNTHETIC_ONLY_AND_PULLED_FILE_WHITELIST') "ALPHA5_TEST_PERF_PRIVACY_WHITELIST_MISSING"
-  Assert-Alpha5Test ($random -match 'maximumAllowedP95Us = 735597L' -and $random -match 'maximumAllowedMaxUs = 2236016L') "ALPHA5_TEST_RANDOM_HARD_GATES_MISSING"
+  Assert-Alpha5Test ($random -match 'maximumAllowedP95Us = 791002L' -and $random -match 'maximumAllowedMaxUs = 2194244L' -and $random -match 'PERFORMANCE_MISS' -and $random -notmatch 'throw "ALPHA5_RANDOM_PERFORMANCE_GATE_FAILED') "ALPHA5_TEST_RANDOM_PERFORMANCE_THRESHOLDS_MISSING"
+  Assert-Alpha5Test ($orchestrator -match 'performanceMissStages' -and $orchestrator -match 'PERFORMANCE_MISS_PARTIAL' -and $orchestrator -notmatch 'throw "ALPHA5_PARITY_DIFFERENCE_EXCEEDED') "ALPHA5_TEST_NON_BLOCKING_PERFORMANCE_STATUS_MISSING"
+  Assert-Alpha5Test ($orchestrator -match '(?s)"C"\s*\{.*run-s24-alpha5-navigation-perf\.ps1.*-Direction Forward.*if \(-not \$PreflightOnly\)' -and
+      $orchestrator -match '(?s)"D"\s*\{.*run-s24-alpha5-navigation-perf\.ps1.*-Direction Reverse.*if \(-not \$PreflightOnly\)') "ALPHA5_TEST_PERF_PREFLIGHT_ORCHESTRATION_MISSING"
+  Assert-Alpha5Test ($instrumentation -match 'ALPHA5_INSTRUMENTATION_RESUME_PREFLIGHT_DOMAIN_MISMATCH' -and
+      $performance -match 'ALPHA5_PERF_RESUME_PREFLIGHT_DOMAIN_MISMATCH' -and
+      $random -match 'ALPHA5_RANDOM_RESUME_PREFLIGHT_DOMAIN_MISMATCH') "ALPHA5_TEST_CHILD_PREFLIGHT_RESUME_DOMAIN_GUARDS_MISSING"
+  Assert-Alpha5Test ($orchestrator -match 'ALPHA5_PARITY_RESUME_EVIDENCE_MISMATCH' -and
+      $orchestrator -match 'ALPHA5_ORCHESTRATOR_RESUME_PERFORMANCE_STATUS_MISMATCH') "ALPHA5_TEST_RESUME_PERFORMANCE_RECOMPUTE_MISSING"
+  Assert-Alpha5Test ($orchestrator -match 'overallGateStatus' -and
+      $orchestrator -match 'PENDING_USER_PERFORMANCE_MISS' -and
+      $orchestrator -match 'ALPHA5_ORCHESTRATOR_RESUME_SUMMARY_STATUS_MISMATCH') "ALPHA5_TEST_FINAL_SUMMARY_STATUS_RECOMPUTE_MISSING"
   Assert-Alpha5Test ($instrumentation -match 'actualMeasurementDurationMs.*600000L' -and $instrumentation -match 'totalViolationCount') "ALPHA5_TEST_RESOURCE_REPORT_GATES_MISSING"
   Assert-Alpha5Test ($instrumentation -match 'foreach \(\$fixture in @\("h264-bframes\.mp4", "long-gop\.mp4", "vfr\.mp4"\)\)') "ALPHA5_TEST_SEQUENTIAL_FIXTURE_CONTRACT_MISMATCH"
   foreach ($resumeContract in @(

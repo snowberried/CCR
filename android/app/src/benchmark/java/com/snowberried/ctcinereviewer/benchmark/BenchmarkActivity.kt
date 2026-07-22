@@ -1334,9 +1334,9 @@ class BenchmarkActivity : ComponentActivity() {
         private const val RELEASE_ACCEPTANCE_GRACE_MS = 500L
         private const val ENTRY_TRACE_COOKIE = 1L
         private const val ARTIFACT_SET_REVISION = 3
-        private const val EXPECTED_RUNTIME_SOURCE_SHA = "823c39504a1ddd8f0e457755ebff0d067d6dc863"
+        private const val EXPECTED_RUNTIME_SOURCE_SHA = "dabf11fa103179c4d81fe4448aba84ac340cf230"
         private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
-            "9689cadf140b54d0b93f67749e527fc8fab1392d0cd4117893ea91908f7530b3"
+            "612d695e4c9b57d4e4fb10076879bcb9b306d034ff05ba67ad7706c0f22c12e8"
         private val RUN_ID_PATTERN = Regex("[A-Za-z0-9._:-]{1,80}")
         private val TRACE_IDENTITY_PATTERN = Regex("[A-Za-z0-9._:-]{1,120}")
         private val GIT_SHA_PATTERN = Regex("[0-9a-f]{40}")

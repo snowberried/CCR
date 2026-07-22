@@ -7,8 +7,8 @@ $ErrorActionPreference = "Stop"
 
 $script:CcrAlpha5BasePinnedPreflight = ${function:Invoke-CcrPinnedPreflight}
 $script:CcrPinnedArtifactSetRevision = 3
-$script:CcrPinnedRuntimeSourceSha = "823c39504a1ddd8f0e457755ebff0d067d6dc863"
-$script:CcrPinnedRuntimeInputsTreeSha256 = "9689cadf140b54d0b93f67749e527fc8fab1392d0cd4117893ea91908f7530b3"
+$script:CcrPinnedRuntimeSourceSha = "dabf11fa103179c4d81fe4448aba84ac340cf230"
+$script:CcrPinnedRuntimeInputsTreeSha256 = "612d695e4c9b57d4e4fb10076879bcb9b306d034ff05ba67ad7706c0f22c12e8"
 $script:CcrPinnedVersionName = "0.2.0-alpha.5"
 $script:CcrPinnedVersionCode = 6
 $script:CcrPinnedMainActivityClass = "com.snowberried.ctcinereviewer.MainActivity"

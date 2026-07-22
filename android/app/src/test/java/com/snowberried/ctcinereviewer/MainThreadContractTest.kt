@@ -52,5 +52,14 @@ class MainThreadContractTest {
         assertFalse(source.contains("printStackTrace"))
     }
 
+    @Test
+    fun `batched codec supersede stages are classified as expected stale results`() {
+        val source = source("androidTest/java/com/snowberried/ctcinereviewer/gate/S24FrameAccuracyTest.kt")
+        val stages = source.substringAfter("EXPECTED_SUPERSEDED_STAGES = setOf(")
+            .substringBefore(")")
+        assertTrue(stages.contains("\"input-batch\""))
+        assertTrue(stages.contains("\"output-batch\""))
+    }
+
     private fun source(relative: String): String = File("src/$relative").readText()
 }

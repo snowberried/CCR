@@ -358,6 +358,18 @@ $summaryPath = Join-Path $context.OutputDirectory "alpha5-$($Stage.ToLowerInvari
 if ($Resume -and (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
   $existing = [System.IO.File]::ReadAllText($summaryPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
   $storedMaxMinutes = [int]$existing.maxMinutes
+  Assert-CcrAlpha5PreflightDomain $existing ([bool]$PreflightOnly) "ALPHA5_INSTRUMENTATION_RESUME_PREFLIGHT_DOMAIN_MISMATCH:$Stage"
+  if ($PreflightOnly) {
+    if ([string]$existing.kind -cne "alpha5-instrumentation-preflight" -or
+        [string]$existing.status -cne "PASS" -or [string]$existing.stage -cne $Stage -or
+        [int]$existing.deviceMutationCount -ne 0 -or
+        $storedMaxMinutes -lt 1 -or $storedMaxMinutes -gt 240) {
+      throw "ALPHA5_INSTRUMENTATION_PREFLIGHT_RESUME_IDENTITY_MISMATCH:$Stage"
+    }
+    Assert-CcrAlpha5IdentityRecord $existing.identity $context "ALPHA5_INSTRUMENTATION_PREFLIGHT_RESUME_IDENTITY_MISMATCH:$Stage" | Out-Null
+    Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath
+    return
+  }
   if ([string]$existing.status -cne "PASS" -or
       [string]$existing.stage -cne $Stage -or
       $storedMaxMinutes -lt 1 -or $storedMaxMinutes -gt 240) {
@@ -463,6 +475,7 @@ try {
   [System.IO.File]::SetAttributes($received.Path, [System.IO.FileAttributes]::ReadOnly)
   $summary = [ordered]@{
     schemaVersion = 1; kind = "alpha5-instrumentation-stage"; status = "PASS"; stage = $Stage
+    preflightOnly = $false
     completedAtUtc = [DateTime]::UtcNow.ToString("o"); maxMinutes = $MaxMinutes
     identity = New-CcrAlpha5IdentityRecord $context
     testClass = $spec.className; expectedKind = $spec.kind; runId = $runId
