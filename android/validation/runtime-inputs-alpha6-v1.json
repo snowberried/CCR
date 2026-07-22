@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "manifestKind": "ccr-android-runtime-inputs",
-  "runtimeSourceSha": "c9a7147d39d2d370916f325a108876c0947ddcb8",
+  "runtimeSourceSha": "c98264f2a10026a908e94c961bb13e4af2d59e60",
   "treeAlgorithm": "sha256(CCR_RUNTIME_INPUTS_V1\\0 + sorted(path\\0byteSize\\0fileSha256\\n))",
   "includePaths": [
     "android/app/src/main",
@@ -12,7 +12,7 @@
     "android/gradle.properties",
     "android/gradle/wrapper/gradle-wrapper.properties"
   ],
-  "runtimeInputsTreeSha256": "0eb249abadab7d89ba42a40772eb9a8610c193c87279c8633bb6275ac828fc0d",
+  "runtimeInputsTreeSha256": "3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468",
   "files": [
     {
       "path": "android/app/build.gradle.kts",
@@ -106,13 +106,13 @@
     },
     {
       "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/ExactFrameSession.kt",
-      "byteSize": 134705,
-      "sha256": "4f39a4a88a9ad3c8a6a44d87f6dacacc51593f6e8bd2c41265ee4ec71b793d58"
+      "byteSize": 134841,
+      "sha256": "f1393d652081190d837259a79ddc333f8215674f87c81d8d1a8de3f26aa60c98"
     },
     {
       "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/ForwardSequentialDecodeState.kt",
-      "byteSize": 3902,
-      "sha256": "79bdfaccfca34747874323a6ba3c36fd4ce290712d7a22b30deec81a6258c8e6"
+      "byteSize": 4131,
+      "sha256": "23fc165bd2720663080cf23a37d0030298e0d3de52c329319cfba670bc4d8abe"
     },
     {
       "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/FrameContracts.kt",
@@ -131,8 +131,8 @@
     },
     {
       "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/RandomSeekPlanner.kt",
-      "byteSize": 10804,
-      "sha256": "4764ce4de9c6d616fdfebf4545e9e589243ae5861a91f331b9dfdc3d73f91b6e"
+      "byteSize": 10773,
+      "sha256": "53aab14b3b0011329e8f0cb46d8e54a7750c2d14eba4009bc65196feeca5ab9d"
     },
     {
       "path": "android/app/src/main/java/com/snowberried/ctcinereviewer/media/ReverseRefillPolicy.kt",

@@ -17,7 +17,7 @@ Android SDK Platform 37.0, Build Tools 36.0.0, platform-tools가 필요하다.
 
 ```powershell
 $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
-$env:CCR_ANDROID_COMMIT_SHA = "c9a7147d39d2d370916f325a108876c0947ddcb8"
+$env:CCR_ANDROID_COMMIT_SHA = "c98264f2a10026a908e94c961bb13e4af2d59e60"
 .\gradlew.bat --version
 node .\tools\verify-frame-accuracy.mjs
 node .\tools\verify-representative-resolution-fixtures.mjs --manifest-only

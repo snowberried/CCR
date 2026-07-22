@@ -293,12 +293,12 @@ requireContract(
 requireContract(runtimeInputsAlpha5.files?.length >= 32, "Alpha 5 runtime-input manifest file count");
 requireContract(runtimeInputsAlpha6.schemaVersion === 1, "Alpha 6 runtime-input manifest schema");
 requireContract(
-  runtimeInputsAlpha6.runtimeSourceSha === "c9a7147d39d2d370916f325a108876c0947ddcb8",
+  runtimeInputsAlpha6.runtimeSourceSha === "c98264f2a10026a908e94c961bb13e4af2d59e60",
   "Alpha 6 runtime-input manifest source SHA",
 );
 requireContract(
   runtimeInputsAlpha6.runtimeInputsTreeSha256 ===
-    "0eb249abadab7d89ba42a40772eb9a8610c193c87279c8633bb6275ac828fc0d",
+    "3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468",
   "Alpha 6 runtime-input manifest tree SHA",
 );
 requireContract(runtimeInputsAlpha6.files?.length === 40, "Alpha 6 runtime-input manifest file count");

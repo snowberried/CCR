@@ -6,8 +6,8 @@
 
 - 시작 branch/head: `codex/android-bidirectional-navigation` / `e2ef88f40869d8991eeba59f1e79e5a075d572e2`
 - Alpha 6 branch: `codex/android-reverse-refill-smoothing`
-- runtime source: `c9a7147d39d2d370916f325a108876c0947ddcb8`
-- runtime input tree: `0eb249abadab7d89ba42a40772eb9a8610c193c87279c8633bb6275ac828fc0d`
+- runtime source: `c98264f2a10026a908e94c961bb13e4af2d59e60`
+- runtime input tree: `3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468`
 - version: `0.2.0-alpha.6` / versionCode `7`
 - artifact set: revision `4`
 - applicationId: `com.snowberried.ctcinereviewer.internal`
@@ -32,11 +32,28 @@ random 250 target은 전체 p50/p95/max 44.054/175.039/406.783 ms, same-GOP p95 
 - random report는 requested category, attempted/final selected plan, fallback reason, cursor/previous-sync frame, 예상/실제 output 수, seek/flush와 auxiliary 사용 여부를 분리한다. sequential continuation이 실행 중 exact seek로 fallback하면 최종 plan을 `PREVIOUS_SYNC`로 갱신한다.
 - auxiliary decoder는 구현하지 않았다. Stage 1 S24 tail Gate와 사용자 smoothness가 실패하기 전에는 추가하지 않는다.
 
+## 1차 동일-artifact S24 실패와 최소 수정
+
+첫 candidate runtime `c9a7147d39d2d370916f325a108876c0947ddcb8`, harness
+`6337853248f05b36b5c6d50f09c16fdf8a4a3e84`로 Stage 1 correctness를 실행했다. 17 fixture
+236 frame과 대표 7 fixture는 mismatch·write-open 0으로 통과했지만, forward HEVC Main8 12-frame
+fixture의 +1에서 `sequentialEntryCount == 0`이어서 correctness가 fail-closed했다. 마지막 frame의
+expected/actual FrameKey는 `(11, 916666, 0)`, texture timestamp는 `916666000 ns`로 일치했으며
+performance와 random은 실행하지 않았다.
+
+동일 APK를 재빌드하지 않은 단일 atrace 재현에서 HEVC frame 0의 첫 output 전에 정확히 13개
+`CCR.codec.feed` section이 확인됐다. 이는 12 sample과 입력 EOS가 모두 먼저 queue됐음을 뜻한다.
+기존 상태는 입력 EOS queue를 출력 EOS 도달로 취급해 buffered output continuation을 거부했다.
+runtime `c98264f2a10026a908e94c961bb13e4af2d59e60`은 입력 EOS와 실제 target output EOS를 분리하고,
+입력 EOS 이후에는 새 input을 넣지 않은 채 이미 queue된 output만 순차 drain한다. 새 동일-artifact
+Stage 1 재실행은 Pending이다. 첫 candidate APK·manifest·실패 보고서·atrace는 외부 보존 위치에
+그대로 유지한다.
+
 ## 호스트 검증
 
 현재 확인된 결과:
 
-- Android JVM: 160/160, failure/error/skip 0
+- Android JVM: 162/162, failure/error/skip 0
 - Android instrumentation Kotlin compile: PASS
 - Alpha 6 tail contract host test: 36 PASS
 - pinned artifact v4 host-negative test: 38 PASS
@@ -49,7 +66,8 @@ random 250 target은 전체 p50/p95/max 44.054/175.039/406.783 ms, same-GOP p95 
 
 ## S24 hard Gate — Pending
 
-실기기 측정은 이번 호스트 작업에서 실행하지 않았다. 따라서 아래 항목은 모두 `Pending — device run deferred`다.
+첫 candidate correctness는 위 HEVC 순차 mechanism 오류로 중단됐다. 아래 항목은 새 runtime
+동일-artifact 재실행 전까지 `Pending — corrected artifact not yet run`이다.
 
 - 기존 17 fixture와 대표 7 fixture exactness
 - forward +1/+5 및 reverse -1/-5 exactness
@@ -76,9 +94,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\android\scripts\run-s24-alpha6-stage1.ps1 `
   -ArtifactManifest <absolute-manifest-v4.json> `
   -ArtifactManifestSha256 <manifest-sha256> `
-  -RuntimeSourceSha c9a7147d39d2d370916f325a108876c0947ddcb8 `
+  -RuntimeSourceSha c98264f2a10026a908e94c961bb13e4af2d59e60 `
   -HarnessSourceSha <final-clean-head> `
-  -RuntimeInputsTreeSha256 0eb249abadab7d89ba42a40772eb9a8610c193c87279c8633bb6275ac828fc0d `
+  -RuntimeInputsTreeSha256 3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468 `
   -ExpectedDebugAppSha256 <debug-apk-sha256> `
   -OutputDirectory <absolute-external-output> `
   -RunId <unique-run-id> `
@@ -92,9 +110,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\android\scripts\run-s24-alpha6-random.ps1 `
   -ArtifactManifest <absolute-manifest-v4.json> `
   -ArtifactManifestSha256 <manifest-sha256> `
-  -RuntimeSourceSha c9a7147d39d2d370916f325a108876c0947ddcb8 `
+  -RuntimeSourceSha c98264f2a10026a908e94c961bb13e4af2d59e60 `
   -HarnessSourceSha <final-clean-head> `
-  -RuntimeInputsTreeSha256 0eb249abadab7d89ba42a40772eb9a8610c193c87279c8633bb6275ac828fc0d `
+  -RuntimeInputsTreeSha256 3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468 `
   -ExpectedDebugAppSha256 <debug-apk-sha256> `
   -OutputDirectory <absolute-external-output> `
   -RunId <unique-run-id> `
