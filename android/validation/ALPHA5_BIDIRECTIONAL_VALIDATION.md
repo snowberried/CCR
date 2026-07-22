@@ -31,6 +31,7 @@ random percentile은 보존 raw target 250개의 `acceptedToPublicationUs`를 ne
 - 근사 프레임과 software decoder fallback은 허용하지 않는다.
 - dual decoder는 single-decoder 결과가 기준을 충족하지 못하고 S24 end-to-end A/B와 10분 자원 회수에서 합격할 때만 검토한다.
 - Direction Gate가 의도적으로 만든 Surface 교체와 lifecycle stop은 in-flight reverse window를 각각 한 번 안전 폐기해야 한다. 두 결과는 `EXPECTED_SUPERSEDED`와 `reverse-window-build` 단계로 증명하며, stale-before-swap·오래된 publication·swap·surface·publication invariant 위반은 계속 0이어야 한다.
+- Full Gate의 burst/file 전환은 정확한 request token과 후속 generation 경계가 일치할 때만 actor의 세대 검사 지점(`before-decode`, `after-test-hook`, `decode-loop`, `input-batch`, `output-batch`, `TEXTURE_GENERATION_STALE`)을 정상 폐기로 인정한다.
 
 ## 선택적 dual decoder A/B
 

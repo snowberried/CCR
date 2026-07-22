@@ -738,6 +738,18 @@ try {
       "ALPHA5_FULL_GATE" -AllowExpectedSupersededStale
   }
 
+  foreach ($stage in @(
+    "before-decode", "after-test-hook", "decode-loop", "input-batch", "output-batch",
+    "TEXTURE_GENERATION_STALE"
+  )) {
+    $allowedStage = $stage
+    Invoke-HostTest "alpha5-full-expected-stale-stage-$allowedStage" {
+      $report = Copy-TestValue (New-Alpha5FullStaleDiscardReport)
+      $report.staleDiscardEvents[0].stage = $allowedStage
+      Assert-CcrAlpha5ExactGateCounters $report "ALPHA5_FULL_GATE" -AllowExpectedSupersededStale
+    }.GetNewClosure()
+  }
+
   $staleNegativeCases = @(
     @("unexpected", {
       param($r)
@@ -813,7 +825,8 @@ try {
       'report.bindFileSwitchPublicationBoundary(secondPublished)',
       'assertEquals("burst final publication acceptance", accepted.request, result.request)',
       'result.stage in EXPECTED_SUPERSEDED_STAGES',
-      '"before-decode"', '"decode-loop"', '"TEXTURE_GENERATION_STALE"',
+      '"before-decode"', '"after-test-hook"', '"decode-loop"', '"input-batch"',
+      '"output-batch"', '"TEXTURE_GENERATION_STALE"',
       'activity.awaitActorIdle()', 'activity.awaitMainCallbacks()',
       'report.endSupersedePhase("burst-supersede")',
       'report.endSupersedePhase("file-switch-supersede")'

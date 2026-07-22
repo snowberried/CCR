@@ -57,6 +57,7 @@ class MainThreadContractTest {
         val source = source("androidTest/java/com/snowberried/ctcinereviewer/gate/S24FrameAccuracyTest.kt")
         val stages = source.substringAfter("EXPECTED_SUPERSEDED_STAGES = setOf(")
             .substringBefore(")")
+        assertTrue(stages.contains("\"after-test-hook\""))
         assertTrue(stages.contains("\"input-batch\""))
         assertTrue(stages.contains("\"output-batch\""))
         assertFalse(stages.contains("\"reverse-window-build\""))

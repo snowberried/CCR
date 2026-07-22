@@ -70,7 +70,10 @@ function Assert-CcrAlpha5FullStaleDiscardContract {
           $phase -cnotin @("burst-supersede", "file-switch-supersede")) {
         throw "$Failure/expected-event-scope"
       }
-      if ([string]$event.stage -cnotin @("before-decode", "decode-loop", "TEXTURE_GENERATION_STALE")) {
+      if ([string]$event.stage -cnotin @(
+        "before-decode", "after-test-hook", "decode-loop", "input-batch", "output-batch",
+        "TEXTURE_GENERATION_STALE"
+      )) {
         throw "$Failure/expected-event-stage"
       }
       if ($phase -ceq "burst-supersede") {

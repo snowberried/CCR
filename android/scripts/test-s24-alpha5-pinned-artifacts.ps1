@@ -165,11 +165,16 @@ try {
     Assert-CcrAlpha5PreflightDomain ([PSCustomObject]@{}) $false "ALPHA5_TEST_PREFLIGHT_DOMAIN_MISSING"
   } "ALPHA5_TEST_PREFLIGHT_DOMAIN_MISSING"
   $quotedProcess = Invoke-CcrAlpha5TimedProcess $env:ComSpec @("/d", "/s", "/c", "echo alpha5 quoted argument") "ALPHA5_TEST_QUOTED_PROCESS_TIMEOUT"
-  Assert-Alpha5Test ($quotedProcess.exitCode -eq 0 -and $quotedProcess.output.Trim() -ceq "alpha5 quoted argument") "ALPHA5_TEST_WINDOWS_ARGUMENT_QUOTING_FAILED"
+  Assert-Alpha5Test ($quotedProcess.exitCode -eq 0 -and $quotedProcess.output.Trim() -ceq "alpha5 quoted argument" -and
+      $quotedProcess.stdout.Trim() -ceq "alpha5 quoted argument" -and [string]::IsNullOrWhiteSpace($quotedProcess.stderr)) "ALPHA5_TEST_WINDOWS_ARGUMENT_QUOTING_FAILED"
   $toolScript = Join-Path $root "alpha5 tool wrapper.cmd"
-  [System.IO.File]::WriteAllText($toolScript, "@echo alpha5 tool wrapper", [System.Text.Encoding]::ASCII)
+  [System.IO.File]::WriteAllText(
+    $toolScript,
+    "@echo alpha5 tool wrapper`r`n@echo alpha5 tool warning 1>&2",
+    [System.Text.Encoding]::ASCII
+  )
   $toolOutput = Invoke-CcrPinnedTool $toolScript @() "ALPHA5_TEST_TOOL_FAILED"
-  Assert-Alpha5Test ($toolOutput.Trim() -ceq "alpha5 tool wrapper") "ALPHA5_TEST_BATCH_TOOL_WRAPPER_FAILED"
+  Assert-Alpha5Test ($toolOutput.Trim() -ceq "alpha5 tool wrapper") "ALPHA5_TEST_BATCH_TOOL_STDERR_CONTAMINATION"
   [System.IO.File]::WriteAllText($toolScript, "@ping -n 6 127.0.0.1 >nul", [System.Text.Encoding]::ASCII)
   Set-CcrAlpha5ActiveDeadline ([DateTime]::UtcNow.AddMilliseconds(100))
   Assert-Alpha5Throws { Invoke-CcrPinnedTool $toolScript @() "ALPHA5_TEST_TOOL_FAILED" } "ALPHA5_APK_INSPECTION_DEADLINE_EXCEEDED"

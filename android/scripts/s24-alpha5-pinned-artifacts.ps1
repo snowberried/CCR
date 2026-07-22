@@ -125,9 +125,16 @@ function Invoke-CcrAlpha5TimedProcess {
       throw $TimeoutFailure
     }
     $process.WaitForExit()
-    $output = @($stdout.Result.TrimEnd(), $stderr.Result.TrimEnd()) |
+    $stdoutText = $stdout.Result.TrimEnd()
+    $stderrText = $stderr.Result.TrimEnd()
+    $output = @($stdoutText, $stderrText) |
       Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    return [PSCustomObject]@{ exitCode = [int]$process.ExitCode; output = ($output -join "`n").Trim() }
+    return [PSCustomObject]@{
+      exitCode = [int]$process.ExitCode
+      stdout = $stdoutText
+      stderr = $stderrText
+      output = ($output -join "`n").Trim()
+    }
   } finally { $process.Dispose() }
 }
 
@@ -143,7 +150,7 @@ function Invoke-CcrPinnedTool {
   }
   $result = Invoke-CcrAlpha5TimedProcess $target $processArguments "ALPHA5_APK_INSPECTION_DEADLINE_EXCEEDED:$Failure"
   if ($result.exitCode -ne 0) { throw "$Failure exit=$($result.exitCode) output=$($result.output)" }
-  return $result.output
+  return ([string]$result.stdout).Trim()
 }
 
 function Invoke-CcrPinnedAdbRaw {

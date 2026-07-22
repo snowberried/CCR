@@ -1280,6 +1280,7 @@ class S24FrameAccuracyTest {
         companion object {
             private val EXPECTED_SUPERSEDED_STAGES = setOf(
                 "before-decode",
+                "after-test-hook",
                 "decode-loop",
                 "input-batch",
                 "output-batch",
