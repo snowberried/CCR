@@ -41,6 +41,8 @@ import kotlin.math.ceil
 class CcrProductMacrobenchmark {
     private data class RequestStageTimestamps(
         val acceptedNs: Long,
+        val actorStartedNs: Long?,
+        val cachedNavigationStartedNs: Long?,
         val firstOutputNs: Long?,
         val targetOutputNs: Long?,
         val publishedNs: Long,
@@ -63,6 +65,20 @@ class CcrProductMacrobenchmark {
                            MIN(ts) AS accepted_ns
                     FROM slice
                     WHERE name GLOB '$REQUEST_ACCEPT_STAGE f=* r=* i=* p=*'
+                    GROUP BY request_key
+                ),
+                actor_started AS (
+                    SELECT substr(name, length('$ACTOR_START_STAGE') + 2) AS request_key,
+                           MIN(ts) AS actor_started_ns
+                    FROM slice
+                    WHERE name GLOB '$ACTOR_START_STAGE f=* r=* i=* p=*'
+                    GROUP BY request_key
+                ),
+                cached_navigation_started AS (
+                    SELECT substr(name, length('$CACHED_NAVIGATION_START_STAGE') + 2) AS request_key,
+                           MIN(ts) AS cached_navigation_started_ns
+                    FROM slice
+                    WHERE name GLOB '$CACHED_NAVIGATION_START_STAGE f=* r=* i=* p=*'
                     GROUP BY request_key
                 ),
                 first_output AS (
@@ -107,11 +123,16 @@ class CcrProductMacrobenchmark {
                     GROUP BY request_key
                 )
                 SELECT accepted.accepted_ns AS accepted_ns,
+                       actor_started.actor_started_ns AS actor_started_ns,
+                       cached_navigation_started.cached_navigation_started_ns
+                           AS cached_navigation_started_ns,
                        first_output.first_output_ns AS first_output_ns,
                        target_output.target_output_ns AS target_output_ns,
                        published.published_ns AS published_ns
                 FROM published
                 JOIN accepted USING (request_key)
+                LEFT JOIN actor_started USING (request_key)
+                LEFT JOIN cached_navigation_started USING (request_key)
                 LEFT JOIN first_output USING (request_key)
                 LEFT JOIN target_output USING (request_key)
                 ORDER BY published.published_ns
@@ -119,6 +140,8 @@ class CcrProductMacrobenchmark {
             ).map { row ->
                 RequestStageTimestamps(
                     acceptedNs = row.long("accepted_ns"),
+                    actorStartedNs = row.nullableLong("actor_started_ns"),
+                    cachedNavigationStartedNs = row.nullableLong("cached_navigation_started_ns"),
                     firstOutputNs = row.nullableLong("first_output_ns"),
                     targetOutputNs = row.nullableLong("target_output_ns"),
                     publishedNs = row.long("published_ns"),
@@ -157,10 +180,29 @@ class CcrProductMacrobenchmark {
 
             rows.forEach { row ->
                 check(row.acceptedNs <= row.publishedNs) { "CCR publication precedes request acceptance" }
+                check((row.actorStartedNs == null) != (row.cachedNavigationStartedNs == null)) {
+                    "CCR publication must have exactly one actor or cached-navigation start"
+                }
                 check((row.firstOutputNs == null) == (row.targetOutputNs == null)) {
                     "CCR request has only one decoder-output stage"
                 }
+                row.actorStartedNs?.let { actorStarted ->
+                    check(actorStarted in row.acceptedNs..row.publishedNs) {
+                        "CCR actor start is outside the request/publication interval"
+                    }
+                }
+                row.cachedNavigationStartedNs?.let { cachedStarted ->
+                    check(cachedStarted in row.acceptedNs..row.publishedNs) {
+                        "CCR cached-navigation start is outside the request/publication interval"
+                    }
+                    check(row.firstOutputNs == null && row.targetOutputNs == null) {
+                        "CCR cached-navigation publication touched decoder output"
+                    }
+                }
                 row.firstOutputNs?.let { first ->
+                    check(row.actorStartedNs != null) {
+                        "CCR decoded request has no media-actor start"
+                    }
                     check(first in row.acceptedNs..row.publishedNs) {
                         "CCR first decoder output is outside the request/publication interval"
                     }
@@ -176,9 +218,15 @@ class CcrProductMacrobenchmark {
             }
 
             val decodedRows = rows.filter { it.firstOutputNs != null }
-            check(decodedRows.isNotEmpty()) {
-                "CCR request-stage trace contains no decoded request; latency remains unavailable"
-            }
+            val actorRows = rows.filter { it.actorStartedNs != null }
+            val cachedOnlyRows = rows.filter { it.cachedNavigationStartedNs != null }
+            val acceptedToActorStartUs = actorRows.map {
+                (requireNotNull(it.actorStartedNs) - it.acceptedNs) / 1_000L
+            }.sorted()
+            val acceptedToExecutionStartUs = rows.map {
+                val startedNs = it.cachedNavigationStartedNs ?: requireNotNull(it.actorStartedNs)
+                (startedNs - it.acceptedNs) / 1_000L
+            }.sorted()
             val acceptedToFirstOutputUs = decodedRows.map {
                 (requireNotNull(it.firstOutputNs) - it.acceptedNs) / 1_000L
             }.sorted()
@@ -190,10 +238,20 @@ class CcrProductMacrobenchmark {
             }.sorted()
 
             return buildList {
-                addSeries("ccrAcceptedToFirstOutput", acceptedToFirstOutputUs)
-                addSeries("ccrAcceptedToTargetOutput", acceptedToTargetOutputUs)
+                addOptionalSeries("ccrAcceptedToActorStart", acceptedToActorStartUs)
+                addSeries("ccrAcceptedToExecutionStart", acceptedToExecutionStartUs)
+                addOptionalSeries("ccrAcceptedToFirstOutput", acceptedToFirstOutputUs)
+                addOptionalSeries("ccrAcceptedToTargetOutput", acceptedToTargetOutputUs)
                 addSeries("ccrAcceptedToSuccessfulPublication", acceptedToPublicationUs)
                 add(Metric.Measurement("ccrSuccessfulPublicationTraceCount", rows.size.toDouble()))
+                add(Metric.Measurement("ccrActorStartedPublicationTraceCount", actorRows.size.toDouble()))
+                add(
+                    Metric.Measurement(
+                        "ccrCacheOnlyActorBypassTraceCount",
+                        cachedOnlyRows.size.toDouble(),
+                    ),
+                )
+                add(Metric.Measurement("ccrCacheOnlyActorStartUs", 0.0))
                 add(Metric.Measurement("ccrDecoderOutputTraceCount", decodedRows.size.toDouble()))
                 add(
                     Metric.Measurement(
@@ -211,7 +269,22 @@ class CcrProductMacrobenchmark {
             check(sortedValuesUs.isNotEmpty()) { "CCR request-stage latency series is empty: $name" }
             add(Metric.Measurement("${name}P50Us", sortedValuesUs.percentile(0.50).toDouble()))
             add(Metric.Measurement("${name}P95Us", sortedValuesUs.percentile(0.95).toDouble()))
+            add(Metric.Measurement("${name}P99Us", sortedValuesUs.percentile(0.99).toDouble()))
             add(Metric.Measurement("${name}MaxUs", sortedValuesUs.last().toDouble()))
+        }
+
+        private fun MutableList<Metric.Measurement>.addOptionalSeries(
+            name: String,
+            sortedValuesUs: List<Long>,
+        ) {
+            add(Metric.Measurement("${name}Available", if (sortedValuesUs.isEmpty()) 0.0 else 1.0))
+            if (sortedValuesUs.isEmpty()) {
+                listOf("P50Us", "P95Us", "P99Us", "MaxUs").forEach { suffix ->
+                    add(Metric.Measurement("$name$suffix", 0.0))
+                }
+            } else {
+                addSeries(name, sortedValuesUs)
+            }
         }
 
         private fun List<Long>.percentile(fraction: Double): Long =
@@ -219,6 +292,8 @@ class CcrProductMacrobenchmark {
 
         private companion object {
             const val REQUEST_ACCEPT_STAGE = "CCR.request.accept"
+            const val ACTOR_START_STAGE = "CCR.actor.start"
+            const val CACHED_NAVIGATION_START_STAGE = "CCR.cached-navigation.start"
             const val OUTPUT_FIRST_STAGE = "CCR.output.first"
             const val OUTPUT_TARGET_STAGE = "CCR.output.target"
             const val PUBLISH_STAGE = "CCR.publish"
@@ -272,7 +347,26 @@ class CcrProductMacrobenchmark {
             val METRIC_NAMES = linkedMapOf(
                 "ccr.publication_interval_p50_us" to "ccrPublicationIntervalP50Us",
                 "ccr.publication_interval_p95_us" to "ccrPublicationIntervalP95Us",
+                "ccr.publication_interval_p99_us" to "ccrPublicationIntervalP99Us",
+                "ccr.publication_interval_p995_us" to "ccrPublicationIntervalP995Us",
                 "ccr.publication_interval_max_us" to "ccrPublicationIntervalMaxUs",
+                "ccr.publication_interval_cv_ppm" to "ccrPublicationIntervalCvPpm",
+                "ccr.publication_interval_over_1_5x_count" to
+                    "ccrPublicationIntervalOver1_5xCount",
+                "ccr.publication_interval_over_2x_count" to
+                    "ccrPublicationIntervalOver2xCount",
+                "ccr.publication_interval_longest_over_1_5x_run" to
+                    "ccrPublicationIntervalLongestOver1_5xRun",
+                "ccr.publication_interval_sample_count" to
+                    "ccrPublicationIntervalSampleCount",
+                "ccr.publication_interval_sequence_start_count" to
+                    "ccrPublicationIntervalSequenceStartCount",
+                "ccr.target_cadence_ns" to "ccrTargetCadenceNs",
+                "ccr.tail_metric_available" to "ccrTailMetricAvailable",
+                "ccr.measured_refill_associated_long_gap" to
+                    "ccrMeasuredRefillAssociatedLongGapCount",
+                "ccr.measured_window_build_associated_long_gap" to
+                    "ccrMeasuredWindowBuildAssociatedLongGapCount",
                 "ccr.published_fps_milli" to "ccrPublishedFpsMilli",
                 "ccr.publication_count" to "ccrPublicationCount",
                 "ccr.active_duration_ms" to "ccrActiveDurationMs",
@@ -588,6 +682,25 @@ class CcrProductMacrobenchmark {
                 "|fps=",
                 "|measurementTargetMs=",
                 "|intervalP50Us=",
+                "|intervalP95Us=",
+                "|intervalP99Us=",
+                "|intervalP995Us=",
+                "|intervalMaxUs=",
+                "|intervalCvPpm=",
+                "|intervalOver1_5xCount=",
+                "|intervalOver2xCount=",
+                "|intervalLongestOver1_5xRun=",
+                "|intervalSampleCount=",
+                "|intervalSequenceStartCount=",
+                "|targetCadenceNs=",
+                "|tailMetricAvailable=",
+                "|actorQueueDepth=",
+                "|cachedNavigationAttemptCount=",
+                "|cachedNavigationActorBypassCount=",
+                "|cachedNavigationMissFallbackCount=",
+                "|cachedNavigationStaleCount=",
+                "|cachedNavigationErrorCount=",
+                "|cachedNavigationQueueWaitMaxUs=",
                 "|lagMax=",
                 "|outstandingForegroundTargetDepthMax=",
                 "|acceptedTargetCount=",
@@ -605,6 +718,27 @@ class CcrProductMacrobenchmark {
                 "|reverseWindowRefillStallCount=",
                 "|reverseWindowRefillStallMaxUs=",
                 "|reverseWindowRefillStallOver250MsCount=",
+                "|reverseWindowRemainingTargetCount=",
+                "|reverseWindowStagedTargetCount=",
+                "|reverseWindowStagedReadyCount=",
+                "|reverseRefillGenerationCount=",
+                "|reverseRefillInProgress=",
+                "|reverseRefillInitialSeekCount=",
+                "|reverseRefillInitialFlushCount=",
+                "|reverseRefillResumedSliceCount=",
+                "|reverseRefillRestartCount=",
+                "|reverseRefillMaxSeekPerGeneration=",
+                "|reverseRefillMaxFlushPerGeneration=",
+                "|reverseRefillCachedTargetCount=",
+                "|reverseRefillConsumedDuringBuildCount=",
+                "|reverseLowWaterTriggerCount=",
+                "|reverseRefillStartedRemainingTargets=",
+                "|reversePartialAppendCount=",
+                "|reverseRefillCompletedBeforeDepletionCount=",
+                "|reverseDepletionBeforeRefillCount=",
+                "|reverseRefillAssociatedGapCount=",
+                "|measuredRefillAssociatedLongGapCount=",
+                "|measuredWindowBuildAssociatedLongGapCount=",
                 "|reverseWindowBuildCount=",
                 "|reverseWindowHitCount=",
                 "|reverseWindowSeekCount=",
@@ -691,6 +825,21 @@ class CcrProductMacrobenchmark {
                 check(required("acceptedTargetSequenceSha256").matches(SHA256_PATTERN)) {
                     "Accepted-target sequence digest is invalid"
                 }
+                check(required("tailMetricAvailable").toBooleanStrict()) {
+                    "Publication tail metrics are unavailable"
+                }
+                val targetCadenceNs = required("targetCadenceNs").toLong()
+                check(targetCadenceNs == expectedTargetCadenceNs(scenario)) {
+                    "Publication target cadence is invalid"
+                }
+                val intervalSampleCount = required("intervalSampleCount").toLong()
+                val intervalSequenceStartCount = required("intervalSequenceStartCount").toLong()
+                check(intervalSampleCount > 0L && intervalSequenceStartCount > 0L) {
+                    "Publication interval evidence is empty"
+                }
+                check(intervalSampleCount + intervalSequenceStartCount == required("published").toLong()) {
+                    "Publication interval coverage is incomplete"
+                }
             }
             val canonicalFrameBytes = required("canonicalFrameBytes").toLong()
             val cacheBudgetBytes = required("cacheBudgetBytes").toLong()
@@ -724,6 +873,15 @@ class CcrProductMacrobenchmark {
             check(required("gpuMetricAvailability") == "UNKNOWN") {
                 "Unexpected GPU metric availability value"
             }
+            check(required("reverseRefillMaxSeekPerGeneration").toLong() <= 1L) {
+                "Reverse refill generation performed more than one seek"
+            }
+            check(required("reverseRefillMaxFlushPerGeneration").toLong() <= 1L) {
+                "Reverse refill generation performed more than one flush"
+            }
+            check(required("reverseRefillRestartCount").toLong() == 0L) {
+                "Reverse refill generation restarted"
+            }
             val reverseWindowRefillCount = required("reverseWindowRefillCount").toLong()
             val reverseWindowInitialReadyCount = required("reverseWindowInitialReadyCount").toLong()
             val reverseWindowRollingAppendRefillCount =
@@ -745,7 +903,49 @@ class CcrProductMacrobenchmark {
                     .put("publishedFps", required("fps").toDouble())
                     .put("publicationIntervalP50Us", required("intervalP50Us").toLong())
                     .put("publicationIntervalP95Us", required("intervalP95Us").toLong())
+                    .put("publicationIntervalP99Us", required("intervalP99Us").toLong())
+                    .put("publicationIntervalP995Us", required("intervalP995Us").toLong())
                     .put("publicationIntervalMaxUs", required("intervalMaxUs").toLong())
+                    .put("longestConsecutivePublicationGapUs", required("intervalMaxUs").toLong())
+                    .put("publicationIntervalCvPpm", required("intervalCvPpm").toLong())
+                    .put(
+                        "publicationIntervalOver1_5xCadenceCount",
+                        required("intervalOver1_5xCount").toLong(),
+                    )
+                    .put(
+                        "publicationIntervalOver2xCadenceCount",
+                        required("intervalOver2xCount").toLong(),
+                    )
+                    .put(
+                        "longestConsecutiveOver1_5xCadenceRunCount",
+                        required("intervalLongestOver1_5xRun").toLong(),
+                    )
+                    .put("publicationIntervalSampleCount", required("intervalSampleCount").toLong())
+                    .put(
+                        "publicationIntervalSequenceStartCount",
+                        required("intervalSequenceStartCount").toLong(),
+                    )
+                    .put("targetCadenceNs", required("targetCadenceNs").toLong())
+                    .put("tailMetricAvailable", required("tailMetricAvailable").toBooleanStrict())
+                    .put("actorQueueDepth", required("actorQueueDepth").toLong())
+                    .put(
+                        "cachedNavigationAttemptCount",
+                        required("cachedNavigationAttemptCount").toLong(),
+                    )
+                    .put(
+                        "cachedNavigationActorBypassCount",
+                        required("cachedNavigationActorBypassCount").toLong(),
+                    )
+                    .put(
+                        "cachedNavigationMissFallbackCount",
+                        required("cachedNavigationMissFallbackCount").toLong(),
+                    )
+                    .put("cachedNavigationStaleCount", required("cachedNavigationStaleCount").toLong())
+                    .put("cachedNavigationErrorCount", required("cachedNavigationErrorCount").toLong())
+                    .put(
+                        "cachedNavigationQueueWaitMaxUs",
+                        required("cachedNavigationQueueWaitMaxUs").toLong(),
+                    )
                     .put("publicationGapMaxUs", required("gapMaxUs").toLong())
                     .put("rawLagP50", required("lagP50").toLong())
                     .put("rawLagP95", required("lagP95").toLong())
@@ -820,6 +1020,63 @@ class CcrProductMacrobenchmark {
                         "reverseWindowRefillStallOver250MsCount",
                         required("reverseWindowRefillStallOver250MsCount").toLong(),
                     )
+                    .put(
+                        "reverseWindowRemainingTargetCount",
+                        required("reverseWindowRemainingTargetCount").toLong(),
+                    )
+                    .put(
+                        "reverseWindowStagedTargetCount",
+                        required("reverseWindowStagedTargetCount").toLong(),
+                    )
+                    .put(
+                        "reverseWindowStagedReadyCount",
+                        required("reverseWindowStagedReadyCount").toLong(),
+                    )
+                    .put("reverseRefillGenerationCount", required("reverseRefillGenerationCount").toLong())
+                    .put("reverseRefillInProgress", required("reverseRefillInProgress").toBooleanStrict())
+                    .put("reverseRefillInitialSeekCount", required("reverseRefillInitialSeekCount").toLong())
+                    .put("reverseRefillInitialFlushCount", required("reverseRefillInitialFlushCount").toLong())
+                    .put("reverseRefillResumedSliceCount", required("reverseRefillResumedSliceCount").toLong())
+                    .put("reverseRefillRestartCount", required("reverseRefillRestartCount").toLong())
+                    .put(
+                        "reverseRefillMaxSeekPerGeneration",
+                        required("reverseRefillMaxSeekPerGeneration").toLong(),
+                    )
+                    .put(
+                        "reverseRefillMaxFlushPerGeneration",
+                        required("reverseRefillMaxFlushPerGeneration").toLong(),
+                    )
+                    .put("reverseRefillCachedTargetCount", required("reverseRefillCachedTargetCount").toLong())
+                    .put(
+                        "reverseRefillConsumedDuringBuildCount",
+                        required("reverseRefillConsumedDuringBuildCount").toLong(),
+                    )
+                    .put("reverseLowWaterTriggerCount", required("reverseLowWaterTriggerCount").toLong())
+                    .put(
+                        "reverseRefillStartedRemainingTargets",
+                        required("reverseRefillStartedRemainingTargets").toLong(),
+                    )
+                    .put("reversePartialAppendCount", required("reversePartialAppendCount").toLong())
+                    .put(
+                        "reverseRefillCompletedBeforeDepletionCount",
+                        required("reverseRefillCompletedBeforeDepletionCount").toLong(),
+                    )
+                    .put(
+                        "reverseDepletionBeforeRefillCount",
+                        required("reverseDepletionBeforeRefillCount").toLong(),
+                    )
+                    .put(
+                        "reverseRefillAssociatedGapCount",
+                        required("reverseRefillAssociatedGapCount").toLong(),
+                    )
+                    .put(
+                        "measuredRefillAssociatedLongGapCount",
+                        required("measuredRefillAssociatedLongGapCount").toLong(),
+                    )
+                    .put(
+                        "measuredWindowBuildAssociatedLongGapCount",
+                        required("measuredWindowBuildAssociatedLongGapCount").toLong(),
+                    )
                     .put("staleDiscardCount", required("staleDiscardCount").toLong())
                     .put("staleBeforeSwapCount", required("staleBeforeSwapCount").toLong())
                     .put("surfaceInvalidCount", required("surfaceInvalidCount").toLong())
@@ -859,6 +1116,17 @@ class CcrProductMacrobenchmark {
 
     private fun traceIdentity(scenario: String, iteration: Int): String =
         "${harnessIdentity.runId}.$scenario.$iteration"
+
+    private fun expectedTargetCadenceNs(scenario: String): Long = when (scenario) {
+        SCENARIO_HOLD_720_PLUS_ONE,
+        SCENARIO_HOLD_1080_PLUS_ONE,
+        SCENARIO_HOLD_1080_MINUS_ONE,
+        SCENARIO_REVERSE_1080 -> STRIDE_ONE_CADENCE_NS
+        SCENARIO_HOLD_720_PLUS_FIVE,
+        SCENARIO_HOLD_1080_PLUS_FIVE,
+        SCENARIO_HOLD_1080_MINUS_FIVE -> STRIDE_FIVE_CADENCE_NS
+        else -> error("No fixed publication cadence for scenario: $scenario")
+    }
 
     private fun readHarnessIdentity(): HarnessIdentity {
         val arguments = InstrumentationRegistry.getArguments()
@@ -973,9 +1241,11 @@ class CcrProductMacrobenchmark {
         private const val REPRESENTATIVE_ITERATIONS = 3
         private const val REPRESENTATIVE_SCENARIO_TIMEOUT_MS = 180_000L
         private const val EXPECTED_HOLD_ACTIVE_MS = 30_000L
+        private const val STRIDE_ONE_CADENCE_NS = 1_000_000_000L / 15L
+        private const val STRIDE_FIVE_CADENCE_NS = 1_000_000_000L / 12L
         private const val HOLD_HORIZON_TOLERANCE_MS = 2_000L
         private const val EXPECTED_CACHE_BUDGET_BYTES = 64L * 1_024L * 1_024L
-        private const val ARTIFACT_SET_REVISION = 3
+        private const val ARTIFACT_SET_REVISION = 4
         private const val EXPECTED_RUNTIME_SOURCE_SHA = "dabf11fa103179c4d81fe4448aba84ac340cf230"
         private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
             "612d695e4c9b57d4e4fb10076879bcb9b306d034ff05ba67ad7706c0f22c12e8"
