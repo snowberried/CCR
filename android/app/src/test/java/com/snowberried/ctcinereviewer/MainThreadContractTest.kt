@@ -59,6 +59,23 @@ class MainThreadContractTest {
             .substringBefore(")")
         assertTrue(stages.contains("\"input-batch\""))
         assertTrue(stages.contains("\"output-batch\""))
+        assertFalse(stages.contains("\"reverse-window-build\""))
+    }
+
+    @Test
+    fun `direction generation invalidation discards are evidenced without allowing stale publication`() {
+        val instrumentation = source(
+            "androidTest/java/com/snowberried/ctcinereviewer/gate/S24FrameAccuracyTest.kt",
+        )
+        val runner = File("../scripts/run-s24-alpha5-instrumentation.ps1").readText()
+        assertTrue(instrumentation.contains("surface-generation-supersede"))
+        assertTrue(instrumentation.contains("lifecycle-stop-supersede"))
+        assertTrue(instrumentation.contains("surfaceInvalidationResults.forEach(report::observeResult)"))
+        assertTrue(instrumentation.contains("lifecycleInvalidationResults.forEach(report::observeResult)"))
+        assertTrue(instrumentation.contains("result.stage == \"reverse-window-build\""))
+        assertTrue(runner.contains("AllowDirectionGenerationInvalidationStale"))
+        assertTrue(runner.contains("generation-invalidation-count"))
+        assertTrue(runner.contains("event.stage -cne \"reverse-window-build\""))
     }
 
     private fun source(relative: String): String = File("src/$relative").readText()

@@ -198,6 +198,60 @@ try {
   $instrumentation = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "run-s24-alpha5-instrumentation.ps1"), [System.Text.Encoding]::UTF8)
   $performance = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "run-s24-alpha5-navigation-perf.ps1"), [System.Text.Encoding]::UTF8)
   $random = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "run-s24-alpha5-random.ps1"), [System.Text.Encoding]::UTF8)
+  $tokens = $null
+  $parseErrors = $null
+  $instrumentationAst = [System.Management.Automation.Language.Parser]::ParseInput(
+    $instrumentation, [ref]$tokens, [ref]$parseErrors
+  )
+  Assert-Alpha5Test (@($parseErrors).Count -eq 0) "ALPHA5_TEST_INSTRUMENTATION_PARSE_FAILED"
+  $directionContract = $instrumentationAst.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -ceq "Assert-CcrAlpha5DirectionStaleDiscardContract"
+  }, $true)
+  Assert-Alpha5Test ($null -ne $directionContract) "ALPHA5_TEST_DIRECTION_STALE_CONTRACT_FUNCTION_MISSING"
+  Invoke-Expression $directionContract.Extent.Text
+  function New-Alpha5DirectionStaleReport {
+    $events = @(
+      [PSCustomObject]@{
+        phase = "surface-generation-supersede"; fixture = "h264-bframes.mp4"
+        fileGeneration = 1; requestGeneration = 10; requestedFrameIndex = 18
+        stage = "reverse-window-build"; supersedingRequestGeneration = $null
+        supersedingFileGeneration = $null; classification = "EXPECTED_SUPERSEDED"
+      },
+      [PSCustomObject]@{
+        phase = "lifecycle-stop-supersede"; fixture = "h264-bframes.mp4"
+        fileGeneration = 2; requestGeneration = 20; requestedFrameIndex = 18
+        stage = "reverse-window-build"; supersedingRequestGeneration = $null
+        supersedingFileGeneration = $null; classification = "EXPECTED_SUPERSEDED"
+      }
+    )
+    return [PSCustomObject]@{
+      staleDiscardAssessmentVersion = 1
+      staleDiscardEvents = $events
+      gateCounters = [PSCustomObject]@{
+        staleDiscard = 1; staleDiscardEventCount = 2
+        expectedSupersededDiscardCount = 2; unexpectedStaleViolationCount = 0
+      }
+    }
+  }
+  Assert-CcrAlpha5DirectionStaleDiscardContract (New-Alpha5DirectionStaleReport) "TEST_DIRECTION"
+  Assert-Alpha5Test $true "ALPHA5_TEST_DIRECTION_STALE_VALID"
+  foreach ($case in @(
+    [PSCustomObject]@{ Name = "raw-zero"; Expected = "generation-invalidation-count"; Mutate = { param($v) $v.gateCounters.staleDiscard = 0 } },
+    [PSCustomObject]@{ Name = "raw-exceeds-events"; Expected = "generation-invalidation-count"; Mutate = { param($v) $v.gateCounters.staleDiscard = 3 } },
+    [PSCustomObject]@{ Name = "unexpected"; Expected = "generation-invalidation-count"; Mutate = { param($v) $v.gateCounters.unexpectedStaleViolationCount = 1 } },
+    [PSCustomObject]@{ Name = "wrong-stage"; Expected = "generation-invalidation-event"; Mutate = { param($v) $v.staleDiscardEvents[0].stage = "output-batch" } },
+    [PSCustomObject]@{ Name = "wrong-phase"; Expected = "generation-invalidation-event"; Mutate = { param($v) $v.staleDiscardEvents[0].phase = "burst-supersede" } },
+    [PSCustomObject]@{ Name = "wrong-classification"; Expected = "generation-invalidation-event"; Mutate = { param($v) $v.staleDiscardEvents[0].classification = "UNEXPECTED" } },
+    [PSCustomObject]@{ Name = "duplicate-token"; Expected = "generation-invalidation-event"; Mutate = { param($v) $v.staleDiscardEvents[1].fileGeneration = 1; $v.staleDiscardEvents[1].requestGeneration = 10 } }
+  )) {
+    $value = New-Alpha5DirectionStaleReport
+    & $case.Mutate $value
+    Assert-Alpha5Throws {
+      Assert-CcrAlpha5DirectionStaleDiscardContract $value "TEST_DIRECTION"
+    } $case.Expected
+  }
   Assert-Alpha5Throws {
     & (Join-Path $PSScriptRoot "run-s24-alpha5-instrumentation.ps1") `
       -ArtifactManifest $manifestPath -ArtifactManifestSha256 $validSha -OutputDirectory (Join-Path $root "case-stage") -Stage full
@@ -229,6 +283,10 @@ try {
   Assert-Alpha5Test ($orchestrator -match 'PRIMARY=.*CLEANUP=' -and $orchestrator -match 'Assert-CcrAlpha5SettingsRestored') "ALPHA5_TEST_ORCHESTRATOR_CLEANUP_FAILURE_GUARD_MISSING"
   Assert-Alpha5Test ($orchestrator -match 'stay_on_while_plugged_in" "7"' -and $orchestrator -match 'screen_off_timeout" "1800000"' -and $orchestrator -match 'ALPHA5_ORCHESTRATOR_AWAKE_SETTING_MISMATCH' -and $orchestrator -match 'ALPHA5_PARTIAL_SETTING_RESTORE_FAILED') "ALPHA5_TEST_ORCHESTRATOR_AWAKE_GUARD_MISSING"
   Assert-Alpha5Test ($instrumentation -match 'FailureReportPath') "ALPHA5_TEST_INSTRUMENTATION_FAILURE_REPORT_MISSING"
+  Assert-Alpha5Test ($instrumentation -match 'AllowDirectionGenerationInvalidationStale' -and
+      $instrumentation -match 'generation-invalidation-count' -and
+      $instrumentation -match 'event\.stage -cne "reverse-window-build"' -and
+      $instrumentation -match '\$Stage -cin @\("Full", "Direction"\)') "ALPHA5_TEST_DIRECTION_GENERATION_INVALIDATION_CONTRACT_MISSING"
   Assert-Alpha5Test ($performance -match 'ALPHA5_PERF_TRACE_SHA_DUPLICATE' -and $performance -match 'minimumFps = 12\.0' -and $performance -match 'minimumFps = 10\.0' -and $performance -match 'maximumLagMax' -and $performance -match 'PERFORMANCE_MISS' -and $performance -notmatch 'throw "ALPHA5_REVERSE_PERFORMANCE_GATE_FAILED') "ALPHA5_TEST_PERF_PERFORMANCE_THRESHOLDS_MISSING"
   Assert-Alpha5Test ($performance.Contains('(@($benchmarks[0].metrics.ccrRunIteration.runs) | ForEach-Object { [int]$_ }) -join ","')) "ALPHA5_TEST_PERF_RUN_ITERATION_INTEGER_NORMALIZATION_MISSING"
   Assert-Alpha5Test ($performance -match 'Assert-CcrPinnedBenchmarkEvidence' -and $instrumentation -match 'Assert-CcrPinnedReport' -and $random -match 'Assert-CcrPinnedReport') "ALPHA5_TEST_RESUME_FULL_REPORT_IDENTITY_GUARD_MISSING"

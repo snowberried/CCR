@@ -30,6 +30,7 @@ random percentile은 보존 raw target 250개의 `acceptedToPublicationUs`를 ne
 - direct/timeline seek는 no-op, cache, history, reverse window, sequential ahead, same GOP, previous sync 순서로 exact 비용을 비교한다.
 - 근사 프레임과 software decoder fallback은 허용하지 않는다.
 - dual decoder는 single-decoder 결과가 기준을 충족하지 못하고 S24 end-to-end A/B와 10분 자원 회수에서 합격할 때만 검토한다.
+- Direction Gate가 의도적으로 만든 Surface 교체와 lifecycle stop은 in-flight reverse window를 각각 한 번 안전 폐기해야 한다. 두 결과는 `EXPECTED_SUPERSEDED`와 `reverse-window-build` 단계로 증명하며, stale-before-swap·오래된 publication·swap·surface·publication invariant 위반은 계속 0이어야 한다.
 
 ## 선택적 dual decoder A/B
 

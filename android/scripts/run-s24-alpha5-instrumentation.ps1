@@ -111,8 +111,54 @@ function Assert-CcrAlpha5FullStaleDiscardContract {
   if ($unexpectedCount -ne 0L) { throw "$Failure/unexpected" }
 }
 
+function Assert-CcrAlpha5DirectionStaleDiscardContract {
+  param([object]$Report, [string]$Failure)
+  if ([long](Get-CcrPinnedRequiredProperty $Report "staleDiscardAssessmentVersion") -ne 1L) {
+    throw "$Failure/assessment-version"
+  }
+  $gate = Get-CcrPinnedRequiredProperty $Report "gateCounters"
+  $events = @((Get-CcrPinnedRequiredProperty $Report "staleDiscardEvents"))
+  $rawCount = [long](Get-CcrPinnedRequiredProperty $gate "staleDiscard")
+  $eventCount = [long](Get-CcrPinnedRequiredProperty $gate "staleDiscardEventCount")
+  $expectedCount = [long](Get-CcrPinnedRequiredProperty $gate "expectedSupersededDiscardCount")
+  $unexpectedCount = [long](Get-CcrPinnedRequiredProperty $gate "unexpectedStaleViolationCount")
+  if ($rawCount -lt 1L -or $rawCount -gt 2L -or $eventCount -ne 2L -or
+      $expectedCount -ne 2L -or $unexpectedCount -ne 0L -or $events.Count -ne 2) {
+    throw "$Failure/generation-invalidation-count"
+  }
+  $phases = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+  $tokens = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+  foreach ($event in $events) {
+    foreach ($field in @(
+      "phase", "fixture", "fileGeneration", "requestGeneration", "requestedFrameIndex", "stage",
+      "supersedingRequestGeneration", "supersedingFileGeneration", "classification"
+    )) {
+      if (-not (Test-CcrPinnedProperty $event $field)) { throw "$Failure/event-missing-$field" }
+    }
+    $phase = [string]$event.phase
+    if ($phase -cnotin @("surface-generation-supersede", "lifecycle-stop-supersede") -or
+        -not $phases.Add($phase) -or [string]$event.fixture -cne "h264-bframes.mp4" -or
+        [string]$event.classification -cne "EXPECTED_SUPERSEDED" -or
+        [string]$event.stage -cne "reverse-window-build" -or
+        $null -ne $event.supersedingRequestGeneration -or $null -ne $event.supersedingFileGeneration -or
+        [long]$event.fileGeneration -lt 1L -or [long]$event.requestGeneration -lt 1L -or
+        [long]$event.requestedFrameIndex -lt 0L -or
+        -not $tokens.Add("$([long]$event.fileGeneration)/$([long]$event.requestGeneration)")) {
+      throw "$Failure/generation-invalidation-event"
+    }
+  }
+}
+
 function Assert-CcrAlpha5ExactGateCounters {
-  param([object]$Report, [string]$Failure, [switch]$AllowExpectedSupersededStale)
+  param(
+    [object]$Report,
+    [string]$Failure,
+    [switch]$AllowExpectedSupersededStale,
+    [switch]$AllowDirectionGenerationInvalidationStale
+  )
+  if ($AllowExpectedSupersededStale -and $AllowDirectionGenerationInvalidationStale) {
+    throw "$Failure/stale-contract-ambiguous"
+  }
   if ([long](Get-CcrPinnedRequiredProperty $Report "staleDiscardAssessmentVersion") -ne 1L) {
     throw "$Failure/assessment-version"
   }
@@ -124,6 +170,8 @@ function Assert-CcrAlpha5ExactGateCounters {
   )) { Assert-CcrAlpha5RequiredZero $gate $field $Failure }
   if ($AllowExpectedSupersededStale) {
     Assert-CcrAlpha5FullStaleDiscardContract $Report $Failure
+  } elseif ($AllowDirectionGenerationInvalidationStale) {
+    Assert-CcrAlpha5DirectionStaleDiscardContract $Report $Failure
   } else {
     Assert-CcrAlpha5RequiredZero $gate "staleDiscard" $Failure
     Assert-CcrAlpha5RequiredZero $gate "staleDiscardEventCount" $Failure
@@ -225,7 +273,7 @@ function Assert-CcrAlpha5StageReport {
     "Direction" {
       Assert-CcrAlpha5RequiredZero $Report "mismatchCount" "ALPHA5_DIRECTION_COUNTER"
       Assert-CcrAlpha5RequiredZero $Report "writeOpenCount" "ALPHA5_DIRECTION_COUNTER"
-      Assert-CcrAlpha5ExactGateCounters $Report "ALPHA5_DIRECTION_GATE"
+      Assert-CcrAlpha5ExactGateCounters $Report "ALPHA5_DIRECTION_GATE" -AllowDirectionGenerationInvalidationStale
       $events = @((Get-CcrPinnedRequiredProperty (Get-CcrPinnedRequiredProperty $Report "decoder") "publicationEventHistory"))
       if ($events.Count -lt 1) { throw "ALPHA5_DIRECTION_PUBLICATION_EVIDENCE_EMPTY" }
     }
@@ -447,7 +495,7 @@ try {
       "publicationInvariantViolations", "cacheRejectionCount", "cacheThrashCount",
       "textureDoubleReleaseCount"
     )) {
-      if ($Stage -ceq "Full" -and $field -ceq "staleDiscard") { continue }
+      if ($Stage -cin @("Full", "Direction") -and $field -ceq "staleDiscard") { continue }
       if ((Test-CcrPinnedProperty $report.gateCounters $field) -and [long]$report.gateCounters.$field -ne 0) {
         throw "ALPHA5_INSTRUMENTATION_GATE_COUNTER_NONZERO:$Stage/$field"
       }

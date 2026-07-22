@@ -323,12 +323,20 @@ class S24FrameAccuracyTest {
             openAndAwait(gate, h264)
             requestAndValidate(gate, h264, anchor)
             val replacementReady = AtomicReference<CountDownLatch>()
+            val surfaceInvalidationAcceptance = AtomicReference<RequestAcceptance>()
             assertTrue("reverse build barrier was already armed", gate.armReverseWindowBuildBarrier())
             try {
                 onMain(gate) {
                     val gesture = gate.beginHoldGesture()
-                    checkNotNull(gate.requestReverseSequentialFrame(anchor - 1, -1, gesture))
+                    surfaceInvalidationAcceptance.set(
+                        checkNotNull(gate.requestReverseSequentialFrame(anchor - 1, -1, gesture)),
+                    )
                 }
+                report.expectGenerationInvalidationDiscard(
+                    phase = "surface-generation-supersede",
+                    fixture = h264.fixture,
+                    acceptance = surfaceInvalidationAcceptance.get(),
+                )
                 assertTrue(
                     "reverse window did not enter cache-only build",
                     gate.awaitReverseWindowBuildBarrierEntry(5_000),
@@ -343,8 +351,11 @@ class S24FrameAccuracyTest {
             }
             assertTrue("actor did not settle after Surface replacement", gate.awaitActorIdle(10_000))
             assertTrue("main callbacks did not settle after Surface replacement", gate.awaitMainCallbacks(10_000))
-            val oldGenerationPublications = gate.drainResults().count { it.result is FrameResult.Published }
+            val surfaceInvalidationResults = gate.drainResults()
+            surfaceInvalidationResults.forEach(report::observeResult)
+            val oldGenerationPublications = surfaceInvalidationResults.count { it.result is FrameResult.Published }
             assertEquals("old Surface generation published a frame", 0, oldGenerationPublications)
+            report.endSupersedePhase("surface-generation-supersede")
             gate.clearResults()
             requestAndValidate(gate, h264, anchor - 3)
 
@@ -356,12 +367,20 @@ class S24FrameAccuracyTest {
             requestAndValidate(gate, h264, anchor)
             gate.clearResults()
             val surfaceGenerationBeforeStop = gate.surfaceAvailabilityGeneration()
+            val lifecycleInvalidationAcceptance = AtomicReference<RequestAcceptance>()
             assertTrue("lifecycle reverse build barrier was already armed", gate.armReverseWindowBuildBarrier())
             try {
                 onMain(gate) {
                     val gesture = gate.beginHoldGesture()
-                    checkNotNull(gate.requestReverseSequentialFrame(anchor - 1, -1, gesture))
+                    lifecycleInvalidationAcceptance.set(
+                        checkNotNull(gate.requestReverseSequentialFrame(anchor - 1, -1, gesture)),
+                    )
                 }
+                report.expectGenerationInvalidationDiscard(
+                    phase = "lifecycle-stop-supersede",
+                    fixture = h264.fixture,
+                    acceptance = lifecycleInvalidationAcceptance.get(),
+                )
                 assertTrue(
                     "lifecycle reverse window did not enter cache-only build",
                     gate.awaitReverseWindowBuildBarrierEntry(5_000),
@@ -376,11 +395,14 @@ class S24FrameAccuracyTest {
             }
             assertTrue("actor did not settle after lifecycle stop", gate.awaitActorIdle(10_000))
             assertTrue("main callbacks did not settle after lifecycle stop", gate.awaitMainCallbacks(10_000))
+            val lifecycleInvalidationResults = gate.drainResults()
+            lifecycleInvalidationResults.forEach(report::observeResult)
             assertEquals(
                 "stopped lifecycle published an in-flight reverse frame",
                 0,
-                gate.drainResults().count { it.result is FrameResult.Published },
+                lifecycleInvalidationResults.count { it.result is FrameResult.Published },
             )
+            report.endSupersedePhase("lifecycle-stop-supersede")
             val surfaceGenerationBeforeResume = gate.surfaceAvailabilityGeneration()
             scenario.moveToState(Lifecycle.State.RESUMED)
             assertTrue(
@@ -397,6 +419,8 @@ class S24FrameAccuracyTest {
 
             assertEquals("source was opened for write", 0, ReadOnlyFixtureProvider.writeOpenCount.get())
             assertEquals("exactness mismatch", 0, mismatchCount)
+            assertEquals("generation invalidation stale evidence", 2L, report.expectedStaleDiscardCount())
+            assertEquals("unexpected stale discard", 0L, report.unexpectedStaleViolationCount())
             assertEquals(0L, lastDiagnostics.staleBeforeSwapCount)
             assertEquals(0L, lastDiagnostics.swapFailureCount)
             assertEquals(0L, lastDiagnostics.surfaceInvalidCount)
@@ -1012,13 +1036,35 @@ class S24FrameAccuracyTest {
             ) { "duplicate expected stale token: $token" }
         }
 
+        fun expectGenerationInvalidationDiscard(
+            phase: String,
+            fixture: String,
+            acceptance: RequestAcceptance,
+        ) {
+            check(phase == "surface-generation-supersede" || phase == "lifecycle-stop-supersede") {
+                "unsupported generation invalidation phase: $phase"
+            }
+            val token = acceptance.request.token
+            check(
+                expectedSupersededDiscards.put(
+                    token.fileGeneration to token.requestGeneration,
+                    ExpectedSupersededDiscard(phase, fixture, acceptance, null, null),
+                ) == null,
+            ) { "duplicate expected stale token: $token" }
+        }
+
         fun observeResult(observed: GateActivity.ObservedResult) {
             observeDiagnostics(observed.diagnostics)
             val result = observed.result as? FrameResult.DiscardedStale ?: return
             val token = result.request.token
             val expected = expectedSupersededDiscards.remove(token.fileGeneration to token.requestGeneration)
+            val expectedStage = when (expected?.phase) {
+                "surface-generation-supersede", "lifecycle-stop-supersede" ->
+                    result.stage == "reverse-window-build"
+                else -> result.stage in EXPECTED_SUPERSEDED_STAGES
+            }
             val expectedMatch = expected?.acceptance?.request == result.request &&
-                result.stage in EXPECTED_SUPERSEDED_STAGES
+                expectedStage
             val classification = if (expectedMatch) "EXPECTED_SUPERSEDED" else "UNEXPECTED"
             if (expectedMatch) expectedSupersededDiscardCount += 1 else observedUnexpectedStaleCount += 1
             staleDiscardEvents += JSONObject()
@@ -1075,6 +1121,8 @@ class S24FrameAccuracyTest {
         }
 
         fun unexpectedStaleViolationCount(): Long = observedUnexpectedStaleCount
+
+        fun expectedStaleDiscardCount(): Long = expectedSupersededDiscardCount
 
         fun finish(
             status: String,
