@@ -896,8 +896,18 @@ class ExactFrameSession(
                     return
                 }
 
-                when (val outputIndex = current.codec.dequeueOutputBuffer(info, 10_000)) {
-                    MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+                var outputBatchCount = 0
+                outputDrain@ while (outputBatchCount < FOREGROUND_OUTPUT_BATCH_SIZE) {
+                    if (!isCurrent(request.token)) {
+                        forwardSequentialState.invalidate()
+                        cancelPrefetch(prefetch)
+                        diagnostics = diagnostics.copy(staleDiscardCount = diagnostics.staleDiscardCount + 1)
+                        report(FrameResult.DiscardedStale(request, "output-batch"))
+                        return
+                    }
+                    val outputTimeoutUs = if (outputBatchCount == 0) 10_000L else 0L
+                    when (val outputIndex = current.codec.dequeueOutputBuffer(info, outputTimeoutUs)) {
+                    MediaCodec.INFO_TRY_AGAIN_LATER -> break@outputDrain
                     MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         when (val support = applyDecodedOutputFormat(current, prefetch)) {
                             VideoSupport.Supported -> {
@@ -916,6 +926,7 @@ class ExactFrameSession(
                         }
                     }
                     else -> if (outputIndex >= 0) {
+                        outputBatchCount += 1
                         if (!outputFirstTraced) {
                             CcrTrace.section(CcrTrace.requestLabel(CcrTrace.CODEC_FIRST_OUTPUT, request)) {
                                 CcrTrace.section(CcrTrace.requestLabel(CcrTrace.OUTPUT_FIRST, request)) { Unit }
@@ -986,7 +997,7 @@ class ExactFrameSession(
                                 }
                                 if (!markPrefetchStarted(prefetch, outputFrame.key.displayFrameIndex)) {
                                     current.codec.releaseOutputBuffer(outputIndex, false)
-                                    continue
+                                    continue@decodeLoop
                                 }
                                 when (cacheDecodedOutput(current, request, outputFrame, outputIndex, prefetch).status) {
                                     EglFrameRenderer.AckStatus.CACHED -> if (
@@ -1175,6 +1186,7 @@ class ExactFrameSession(
                             report(FrameResult.Error(request, "EOS_BEFORE_TARGET"))
                             return
                         }
+                    }
                     }
                 }
             }
@@ -2355,6 +2367,7 @@ class ExactFrameSession(
         private const val NO_GESTURE = Long.MIN_VALUE
         private const val NO_REVERSE_STRIDE = Long.MIN_VALUE
         private const val FOREGROUND_INPUT_BATCH_SIZE = 8
+        private const val FOREGROUND_OUTPUT_BATCH_SIZE = 8
         private const val REFILL_MIN_FREE_SLOTS = 2
         private const val REFILL_BATCH_TARGETS = 2
         private const val REFILL_YIELD_DELAY_MS = 1L
