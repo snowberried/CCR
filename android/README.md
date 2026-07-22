@@ -1,4 +1,4 @@
-# CCR Android 0.2.0-alpha.5 Internal Viewer
+# CCR Android 0.2.0-alpha.6 Internal Viewer
 
 데스크톱과 독립된 Android 내부 파일럿 앱이다. 의료기기나 공식 진단 프로그램이 아니며, 원본 MP4를 SAF 읽기 전용으로 연다. Gate 3 정확 프레임 기준선은 `android-v0.1.0-gate3-pass`로 동결되어 있다.
 
@@ -9,7 +9,7 @@
 - Android Gradle Plugin 9.3.0
 - minSdk 34, compileSdk/targetSdk 37
 - application ID `com.snowberried.ctcinereviewer.internal`
-- versionName `0.2.0-alpha.5`, versionCode `6`
+- versionName `0.2.0-alpha.6`, versionCode `7`
 - `internalDebug`는 표준 Android debug key 사용
 - GitHub Release와 desktop Latest Release를 만들지 않음
 
@@ -17,6 +17,7 @@ Android SDK Platform 37.0, Build Tools 36.0.0, platform-tools가 필요하다.
 
 ```powershell
 $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+$env:CCR_ANDROID_COMMIT_SHA = "c9a7147d39d2d370916f325a108876c0947ddcb8"
 .\gradlew.bat --version
 node .\tools\verify-frame-accuracy.mjs
 node .\tools\verify-representative-resolution-fixtures.mjs --manifest-only
@@ -136,7 +137,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-batter
 - 환자명, 등록번호, 검사번호, 전체 로컬 경로 기록
 - 환자 영상 screenshot 또는 screen recording을 저장소에 추가
 
-실제 비식별 MP4 20-frame 비교와 분리 내구 시험이 끝나기 전 Gate 4A 판정은 `자동 정확성 Gate PASS / 장기 내구·수동 파일럿 Pending`이다.
+Alpha 2 시점의 Gate 4A 판정은 실제 비식별 MP4 20-frame 비교와 분리 내구 시험이 끝나기 전 `자동 정확성 Gate PASS / 장기 내구·수동 파일럿 Pending`이었다. 이 문장은 Alpha 6 S24 합격을 뜻하지 않는다.
 
 ## 2026-07-16 alpha.3 S24 Ultra 실측 기준선
 
@@ -163,4 +164,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-batter
 
 ## 개인정보 및 제외 범위
 
-Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. 프로젝트 저장, DICOM/PACS, AI, cloud, 주석, 비교 보기, PNG export, 필터, zoom/pan, Play 배포는 Android 0.2.0-alpha.5 범위 밖이다. alpha.5 정확성·성능 Gate와 사용자 체감 합격 전에는 tag를 만들지 않는다.
+Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. 프로젝트 저장, DICOM/PACS, AI, cloud, 주석, 비교 보기, PNG export, 필터, zoom/pan, Play 배포는 Android 0.2.0-alpha.6 범위 밖이다. alpha.6 정확성·성능 Gate와 사용자 체감 합격 전에는 tag를 만들지 않는다.
+
+## Alpha 6 검증 상태
+
+renderer cache-hit 게시와 single-decoder rolling reverse refill, random 최종 실행 plan 진단, pinned artifact v4 host runner를 구현했다. 실기기 측정은 보류 상태이므로 S24 exactness·tail·random·사용자 smoothness와 장기 Gate는 모두 Pending이며 release 합격으로 간주하지 않는다. 구조와 동일-artifact 실행 순서는 [ALPHA6_REVERSE_REFILL_VALIDATION.md](validation/ALPHA6_REVERSE_REFILL_VALIDATION.md)에 기록한다.
