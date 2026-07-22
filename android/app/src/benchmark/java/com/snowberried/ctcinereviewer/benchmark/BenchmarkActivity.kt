@@ -23,6 +23,7 @@ import com.snowberried.ctcinereviewer.CcrSpikeApp
 import com.snowberried.ctcinereviewer.ViewerUiState
 import com.snowberried.ctcinereviewer.ViewerViewModel
 import com.snowberried.ctcinereviewer.media.DecoderDiagnostics
+import com.snowberried.ctcinereviewer.media.PublicationEvent
 import com.snowberried.ctcinereviewer.media.PublicationResult
 import androidx.metrics.performance.JankStats
 import java.io.File
@@ -675,6 +676,7 @@ class BenchmarkActivity : ComponentActivity() {
         for (event in events) {
             lastObservedPublicationSequence = maxOf(lastObservedPublicationSequence, event.eventSequence)
             if (!measurementActive || event.result != PublicationResult.PUBLISHED) continue
+            traceSuccessfulPublication(event)
             val previousPublicationNs = lastPublicationNs
             if (previousPublicationNs == null) {
                 publicationGapMaxNs = maxOf(
@@ -692,6 +694,15 @@ class BenchmarkActivity : ComponentActivity() {
         if (measurementActive) {
             accumulateCounters(state.diagnostics)
         }
+    }
+
+    private fun traceSuccessfulPublication(event: PublicationEvent) {
+        val label = (
+            "$TRACE_SUCCESSFUL_PUBLICATION f=${event.fileGeneration} r=${event.requestGeneration} " +
+                "i=${event.requestedFrameIndex} p=${event.expectedKey.ptsUs}"
+            ).take(127)
+        Trace.beginSection(label)
+        Trace.endSection()
     }
 
     private fun recordLag(state: ViewerUiState) {
@@ -1311,6 +1322,7 @@ class BenchmarkActivity : ComponentActivity() {
         const val TRACE_FIXTURE_ENTRY = "ccr.fixture_entry"
         const val TRACE_BACKGROUND_TO_FIRST_FRAME = "ccr.background_to_first_frame"
         const val TRACE_REPRESENTATIVE_SMOOTHNESS = "ccr.representative_smoothness"
+        const val TRACE_SUCCESSFUL_PUBLICATION = "CCR.publish.success"
         const val TRACE_RUN_IDENTITY_PREFIX = "ccr.run_identity"
 
         private const val H264_FIXTURE = "burst.mp4"

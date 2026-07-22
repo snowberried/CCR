@@ -691,6 +691,50 @@ try {
     if (-not $perfSource.Contains("-FailureReportPath")) {
       throw "Alpha 5 performance failure report path missing"
     }
+    $macroSource = [System.IO.File]::ReadAllText((Join-Path $repoRoot `
+      "android/macrobenchmark/src/main/java/com/snowberried/ctcinereviewer/macrobenchmark/CcrProductMacrobenchmark.kt"))
+    foreach ($contract in @(
+      "traceSuccessfulPublication(event)",
+      'TRACE_SUCCESSFUL_PUBLICATION = "CCR.publish.success"'
+    )) {
+      if (-not $benchmarkSource.Contains($contract)) {
+        throw "successful publication marker contract missing: $contract"
+      }
+    }
+    $successBranchStart = $benchmarkSource.IndexOf(
+      "if (!measurementActive || event.result != PublicationResult.PUBLISHED) continue",
+      [StringComparison]::Ordinal)
+    $successCount = $benchmarkSource.IndexOf(
+      "publicationCount += 1",
+      $successBranchStart,
+      [StringComparison]::Ordinal)
+    if ($successBranchStart -lt 0 -or $successCount -le $successBranchStart) {
+      throw "successful publication counting branch unavailable"
+    }
+    $successBranch = $benchmarkSource.Substring(
+      $successBranchStart,
+      $successCount - $successBranchStart)
+    if (-not $successBranch.Contains("traceSuccessfulPublication(event)")) {
+      throw "successful publication marker is outside the counted success branch"
+    }
+    foreach ($contract in @(
+      "successful_publication AS (",
+      "FROM successful_publication AS success",
+      "success.request_key ="
+    )) {
+      if (-not $macroSource.Contains($contract)) {
+        throw "successful publication metric filter missing: $contract"
+      }
+    }
+    $publishedCteStart = $macroSource.IndexOf("published AS (", [StringComparison]::Ordinal)
+    $publishedCteEnd = $macroSource.IndexOf("GROUP BY request_key", $publishedCteStart, [StringComparison]::Ordinal)
+    if ($publishedCteStart -lt 0 -or $publishedCteEnd -le $publishedCteStart) {
+      throw "published CTE source unavailable"
+    }
+    $publishedCte = $macroSource.Substring($publishedCteStart, $publishedCteEnd - $publishedCteStart)
+    if ($publishedCte.Contains("FROM measurement_window")) {
+      throw "renderer publish timestamp still defines the measurement window"
+    }
     $horizonStart = $benchmarkSource.IndexOf("if (activeNs >= holdActiveTargetNs)", [StringComparison]::Ordinal)
     $horizonEnd = $benchmarkSource.IndexOf("if (scenario == SCENARIO_REVERSE_1080", $horizonStart, [StringComparison]::Ordinal)
     if ($horizonStart -lt 0 -or $horizonEnd -le $horizonStart) { throw "hold horizon source unavailable" }

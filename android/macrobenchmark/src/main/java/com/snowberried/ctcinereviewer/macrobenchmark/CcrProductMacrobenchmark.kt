@@ -79,6 +79,19 @@ class CcrProductMacrobenchmark {
                     WHERE name GLOB '$OUTPUT_TARGET_STAGE f=* r=* i=* p=*'
                     GROUP BY request_key
                 ),
+                successful_publication AS (
+                    SELECT DISTINCT substr(success.name, length('$SUCCESSFUL_PUBLICATION_STAGE') + 2)
+                        AS request_key
+                    FROM slice AS success
+                    WHERE success.name GLOB '$SUCCESSFUL_PUBLICATION_STAGE f=* r=* i=* p=*'
+                      AND success.dur >= 0
+                      AND EXISTS (
+                          SELECT 1
+                          FROM measurement_window
+                          WHERE success.ts + success.dur
+                              BETWEEN measurement_window.start_ns AND measurement_window.end_ns
+                      )
+                ),
                 published AS (
                     SELECT substr(publication.name, length('$PUBLISH_STAGE') + 2) AS request_key,
                            MIN(publication.ts + publication.dur) AS published_ns
@@ -87,9 +100,9 @@ class CcrProductMacrobenchmark {
                       AND publication.dur >= 0
                       AND EXISTS (
                           SELECT 1
-                          FROM measurement_window
-                          WHERE publication.ts + publication.dur
-                              BETWEEN measurement_window.start_ns AND measurement_window.end_ns
+                          FROM successful_publication AS success
+                          WHERE success.request_key =
+                              substr(publication.name, length('$PUBLISH_STAGE') + 2)
                       )
                     GROUP BY request_key
                 )
@@ -209,6 +222,7 @@ class CcrProductMacrobenchmark {
             const val OUTPUT_FIRST_STAGE = "CCR.output.first"
             const val OUTPUT_TARGET_STAGE = "CCR.output.target"
             const val PUBLISH_STAGE = "CCR.publish"
+            const val SUCCESSFUL_PUBLICATION_STAGE = "CCR.publish.success"
             val EXPECTED_COUNTERS = setOf(
                 "ccr.publication_count",
                 "ccr.measurement_swap_failure",
