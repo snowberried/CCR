@@ -30,6 +30,9 @@ class RandomSeekPlannerTest {
         assertEquals(RandomSeekPlanKind.REVERSE_WINDOW, windowPlan.kind)
         assertEquals(0, windowPlan.actualDecodeOutputCount)
         assertFalse(windowPlan.flushRequired)
+        assertEquals(RandomSeekFallbackReason.NONE, windowPlan.fallbackReason)
+        assertEquals(0, windowPlan.previousSyncFrameIndex)
+        assertFalse(windowPlan.auxiliaryUsed)
     }
 
     @Test
@@ -58,6 +61,9 @@ class RandomSeekPlannerTest {
         assertFalse(result.flushRequired)
         assertEquals(RandomSeekCacheExpectation.CACHE_MISS, result.expectedCacheResult)
         assertEquals(TOKEN, result.generation)
+        assertEquals(RandomSeekFallbackReason.NONE, result.fallbackReason)
+        assertEquals(1, result.observedDecoderCursorFrameIndex)
+        assertEquals(0, result.previousSyncFrameIndex)
     }
 
     @Test
@@ -88,6 +94,9 @@ class RandomSeekPlannerTest {
         assertEquals(2, result.estimatedDecodeOutputCount)
         assertTrue(result.flushRequired)
         assertEquals(7, result.withActualDecodeOutputCount(7).actualDecodeOutputCount)
+        assertEquals(RandomSeekFallbackReason.PREVIOUS_SYNC_LOWER_COST, result.fallbackReason)
+        assertEquals(1, result.observedDecoderCursorFrameIndex)
+        assertEquals(8, result.previousSyncFrameIndex)
     }
 
     @Test
@@ -103,10 +112,25 @@ class RandomSeekPlannerTest {
             video.frames[2].copy(sampleOrdinal = 999),
         )
 
-        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, plan(video, target, cursor = stale).kind)
-        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, plan(video, target, cursor = wrongCodec).kind)
-        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, plan(video, target, cursor = unavailable).kind)
-        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, plan(video, target, cursor = malformed).kind)
+        listOf(stale, wrongCodec, unavailable, malformed).forEach { cursor ->
+            val result = plan(video, target, cursor = cursor)
+            assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, result.kind)
+            assertEquals(RandomSeekFallbackReason.CURSOR_STALE, result.fallbackReason)
+            assertEquals(2, result.observedDecoderCursorFrameIndex)
+        }
+    }
+
+    @Test
+    fun `missing or backward cursor records a canonical fallback reason`() {
+        val video = video()
+        val missing = plan(video, video.frames[3].key)
+        assertEquals(RandomSeekFallbackReason.CURSOR_UNAVAILABLE, missing.fallbackReason)
+        assertNull(missing.observedDecoderCursorFrameIndex)
+
+        val backward = plan(video, video.frames[2].key, cursor = cursor(video, 4))
+        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, backward.kind)
+        assertEquals(RandomSeekFallbackReason.TARGET_NOT_AHEAD, backward.fallbackReason)
+        assertEquals(4, backward.observedDecoderCursorFrameIndex)
     }
 
     private fun plan(

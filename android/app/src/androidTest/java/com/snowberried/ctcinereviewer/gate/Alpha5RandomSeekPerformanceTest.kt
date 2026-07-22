@@ -32,7 +32,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
-class Alpha5RandomSeekPerformanceTest {
+class Alpha6RandomSeekPerformanceTest {
     private data class FixtureSpec(val privateAssetId: String, val publicId: String, val seed: Long)
 
     private data class GoldenFrame(
@@ -64,9 +64,9 @@ class Alpha5RandomSeekPerformanceTest {
     private var mismatchCount = 0
 
     @Test
-    fun deterministicCostAwareRandomSeekAlpha5() {
+    fun deterministicCostAwareRandomSeekAlpha6() {
         assumeTrue(
-            "Alpha 5 random performance gate requires Samsung SM-S928*",
+            "Alpha 6 random performance gate requires Samsung SM-S928*",
             Build.MANUFACTURER.equals("samsung", true) && Build.MODEL.startsWith("SM-S928"),
         )
         identity = ValidationHarnessV2.requireIdentity(context, instrumentation.context)
@@ -181,6 +181,17 @@ class Alpha5RandomSeekPerformanceTest {
                     .put("seekCount", delta(before.seekCount, observed.diagnostics.seekCount))
                     .put("flushCount", delta(before.flushCount, observed.diagnostics.flushCount))
                     .put("seekPlanKind", observed.diagnostics.lastRandomSeekPlanKind ?: JSONObject.NULL)
+                    .put("planFallbackReason", observed.diagnostics.lastRandomSeekFallbackReason ?: JSONObject.NULL)
+                    .put(
+                        "decoderCursorFrame",
+                        observed.diagnostics.lastRandomSeekDecoderCursorFrameIndex ?: JSONObject.NULL,
+                    )
+                    .put(
+                        "actualPreviousSyncFrame",
+                        observed.diagnostics.lastRandomSeekPreviousSyncFrameIndex ?: JSONObject.NULL,
+                    )
+                    .put("auxiliaryUsed", observed.diagnostics.lastRandomSeekAuxiliaryUsed)
+                    .put("cacheSource", observed.diagnostics.lastRandomSeekCacheSource ?: JSONObject.NULL)
                     .put(
                         "estimatedDecodeOutputCount",
                         observed.diagnostics.lastRandomSeekEstimatedOutputCount ?: JSONObject.NULL,
@@ -435,7 +446,7 @@ class Alpha5RandomSeekPerformanceTest {
         val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
         val report = JSONObject()
             .put("schemaVersion", Alpha4RandomSeekBaselinePlan.SCHEMA_VERSION)
-            .put("kind", "alpha5-cost-aware-random-performance")
+            .put("kind", "alpha6-cost-aware-random-performance")
             .put("status", if (outcome.isSuccess) "PASS" else "FAIL")
             .put("baselineCompleteness", "PENDING_TRACE_MERGE")
             .put("renderMode", "PILOT_SOURCE_EQUIVALENT")
@@ -528,7 +539,7 @@ class Alpha5RandomSeekPerformanceTest {
     private fun delta(before: Long, after: Long): Long = if (after >= before) after - before else after
 
     companion object {
-        const val REPORT_FILE = "s24-alpha5-random-performance-v1.json"
+        const val REPORT_FILE = "s24-alpha6-random-performance-v1.json"
         private const val ASSET_DIRECTORY = "representative-resolution"
         private const val RESULT_TIMEOUT_MS = 30_000L
         private const val REQUIRED_CACHE_BUDGET_BYTES = 64L * 1024L * 1024L
