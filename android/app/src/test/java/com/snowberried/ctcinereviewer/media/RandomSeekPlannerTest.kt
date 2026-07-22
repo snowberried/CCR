@@ -155,6 +155,20 @@ class RandomSeekPlannerTest {
     }
 
     @Test
+    fun `queued input eos still drains an available buffered continuation`() {
+        val video = video()
+        val result = plan(
+            video = video,
+            target = video.frames[3].key,
+            cursor = cursor(video, 2).copy(inputEos = true),
+        )
+
+        assertEquals(RandomSeekPlanKind.SEQUENTIAL_AHEAD, result.kind)
+        assertTrue(requireNotNull(result.sourceDecoderCursor).inputEos)
+        assertFalse(result.flushRequired)
+    }
+
+    @Test
     fun `missing or backward cursor records a canonical fallback reason`() {
         val video = video()
         val missing = plan(video, video.frames[3].key)

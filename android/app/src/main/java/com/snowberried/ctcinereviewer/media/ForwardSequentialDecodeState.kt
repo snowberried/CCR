@@ -15,6 +15,7 @@ internal data class ForwardSequentialDecision(
     val enter: Boolean,
     val fallbackReason: ForwardSequentialFallbackReason,
     val duplicateCounts: Map<Long, Int> = emptyMap(),
+    val inputEos: Boolean = false,
 )
 
 /**
@@ -29,6 +30,7 @@ internal class ForwardSequentialDecodeState {
         val lastOutputFrameIndex: Int,
         val duplicateCounts: Map<Long, Int>,
         val inputEos: Boolean,
+        val outputEos: Boolean,
     )
 
     private var cursor: Cursor? = null
@@ -55,7 +57,7 @@ internal class ForwardSequentialDecodeState {
         val reason = when {
             current.fileGeneration != fileGeneration -> ForwardSequentialFallbackReason.FILE_CHANGED
             current.codecGeneration != codecGeneration -> ForwardSequentialFallbackReason.CODEC_CHANGED
-            current.inputEos -> ForwardSequentialFallbackReason.EOS_REACHED
+            current.outputEos -> ForwardSequentialFallbackReason.EOS_REACHED
             targetFrameIndex != current.lastOutputFrameIndex + stride ->
                 ForwardSequentialFallbackReason.TARGET_NOT_NEXT
             else -> ForwardSequentialFallbackReason.NONE
@@ -68,6 +70,7 @@ internal class ForwardSequentialDecodeState {
             enter = true,
             fallbackReason = ForwardSequentialFallbackReason.NONE,
             duplicateCounts = current.duplicateCounts,
+            inputEos = current.inputEos,
         )
     }
 
@@ -78,6 +81,7 @@ internal class ForwardSequentialDecodeState {
         outputFrameIndex: Int,
         duplicateCounts: Map<Long, Int>,
         inputEos: Boolean,
+        outputEos: Boolean,
     ) {
         cursor = Cursor(
             fileGeneration = fileGeneration,
@@ -85,6 +89,7 @@ internal class ForwardSequentialDecodeState {
             lastOutputFrameIndex = outputFrameIndex,
             duplicateCounts = duplicateCounts.toMap(),
             inputEos = inputEos,
+            outputEos = outputEos,
         )
     }
 
@@ -98,7 +103,7 @@ internal class ForwardSequentialDecodeState {
         if (
             current.fileGeneration != fileGeneration ||
             current.codecGeneration != codecGeneration ||
-            current.inputEos
+            current.outputEos
         ) return null
         val frame = video.frames.getOrNull(current.lastOutputFrameIndex) ?: return null
         return RandomSeekDecoderCursor(
@@ -107,6 +112,7 @@ internal class ForwardSequentialDecodeState {
             frame = frame,
             duplicateCounts = current.duplicateCounts,
             inputEos = current.inputEos,
+            continuationAvailable = !current.outputEos,
         )
     }
 

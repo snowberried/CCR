@@ -212,7 +212,6 @@ internal class RandomSeekPlanner(
             ?: return CursorEvaluation(null, RandomSeekFallbackReason.CURSOR_UNAVAILABLE)
         if (
             !cursor.continuationAvailable ||
-            cursor.inputEos ||
             cursor.fileGeneration != input.video.fileGeneration ||
             cursor.codecGeneration != input.codecGeneration
         ) return CursorEvaluation(null, RandomSeekFallbackReason.CURSOR_STALE)

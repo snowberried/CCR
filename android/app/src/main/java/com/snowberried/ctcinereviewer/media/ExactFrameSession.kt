@@ -935,7 +935,7 @@ class ExactFrameSession(
                 if (sequentialRequested && !sequentialActive) 1 else 0,
         )
         var duplicateCounts = sequentialDecision.duplicateCounts.toMutableMap()
-        var inputEos = randomContinuation?.sourceDecoderCursor?.inputEos ?: false
+        var inputEos = randomContinuation?.sourceDecoderCursor?.inputEos ?: sequentialDecision.inputEos
         var inputFirstTraced = false
         var outputFirstTraced = false
         var publishedCursorRecorded = false
@@ -1306,6 +1306,7 @@ class ExactFrameSession(
                                             outputFrameIndex = target.key.displayFrameIndex,
                                             duplicateCounts = duplicateCounts,
                                             inputEos = inputEos,
+                                            outputEos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0,
                                         )
                                         publishedCursorRecorded = true
                                     }
