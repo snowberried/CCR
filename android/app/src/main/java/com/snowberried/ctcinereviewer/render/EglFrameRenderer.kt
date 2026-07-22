@@ -14,8 +14,9 @@ import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
 import com.snowberried.ctcinereviewer.cache.DirectionalByteCache
-import com.snowberried.ctcinereviewer.media.ContainerMetadata
+import com.snowberried.ctcinereviewer.media.BackwardHistoryRing
 import com.snowberried.ctcinereviewer.media.CcrTrace
+import com.snowberried.ctcinereviewer.media.ContainerMetadata
 import com.snowberried.ctcinereviewer.media.DecodedOutputMetadata
 import com.snowberried.ctcinereviewer.media.DirectionalPrefetchDirection
 import com.snowberried.ctcinereviewer.media.FrameImageProbe
@@ -26,6 +27,7 @@ import com.snowberried.ctcinereviewer.media.PublicationEvent
 import com.snowberried.ctcinereviewer.media.PublicationGate
 import com.snowberried.ctcinereviewer.media.PublicationResult
 import com.snowberried.ctcinereviewer.media.PrefetchBudgetDecision
+import com.snowberried.ctcinereviewer.media.canonicalFrameBytes
 import com.snowberried.ctcinereviewer.media.prefetchBudgetDecision
 import com.snowberried.ctcinereviewer.media.rendererCacheByteBudget
 import java.nio.ByteBuffer
@@ -71,6 +73,7 @@ class EglFrameRenderer(
     renderMode: FrameRenderMode,
 ) : AutoCloseable {
     enum class AckStatus { PUBLISHED, CACHED, STALE, ERROR }
+    enum class CacheTargetKind { PREFETCH, REVERSE_WINDOW }
 
     data class RenderAck(
         val status: AckStatus,
@@ -93,6 +96,7 @@ class EglFrameRenderer(
         val cacheRejectionCount: Long,
         val cacheThrashCount: Long,
         val cacheBytes: Long,
+        val peakCacheBytes: Long,
         val cacheRequestHitCount: Long,
         val cacheRequestMissCount: Long,
         val textureCreatedCount: Long,
@@ -101,6 +105,15 @@ class EglFrameRenderer(
         val peakLiveTextureCount: Int,
         val textureDoubleReleaseCount: Long,
         val fullFrameReadbackCount: Long,
+        val protectedTextureCount: Int,
+        val backwardHistoryCapacity: Int,
+        val backwardHistoryDepth: Int,
+        val backwardHistoryKeys: Set<FrameKey>,
+        val backwardHistoryHitCount: Long,
+        val reverseWindowReadyCount: Int,
+        val reverseWindowKeys: Set<FrameKey>,
+        val reverseWindowHitCount: Long,
+        val lastPublishedKey: FrameKey?,
     )
 
     class TargetHandle internal constructor(val request: FrameRequest) {
@@ -148,6 +161,9 @@ class EglFrameRenderer(
         val expectedKey: FrameKey,
         val publicationRequest: FrameRequest?,
         val cacheRetentionAllowed: (() -> Boolean)?,
+        val cacheTargetKind: CacheTargetKind?,
+        val cacheMaximumByteSize: Long?,
+        val requireCurrentRequest: Boolean,
         val complete: (RenderAck) -> Unit,
     )
 
@@ -189,16 +205,20 @@ class EglFrameRenderer(
     private var pendingTarget: PendingTarget? = null
     private var lastPublishedKey: FrameKey? = null
     private val prefetchedKeys = mutableSetOf<FrameKey>()
+    private val reverseWindowKeys = mutableSetOf<FrameKey>()
     private var prefetchCacheHitCount = 0L
     private var prefetchEvictedBeforeUseCount = 0L
     private var prefetchWastedCount = 0L
     private var prefetchRejectedCount = 0L
+    private var backwardHistoryHitCount = 0L
+    private var reverseWindowHitCount = 0L
     private var nextTextureAllocationId = 0L
     private val textureLifetimeTracker = TextureLifetimeTracker()
     private val probePolicy = FrameProbePolicy(renderMode)
     private val surfaceLeases = SurfaceLeaseTracker()
 
     private val byteBudget = rendererCacheByteBudget(Runtime.getRuntime().maxMemory())
+    private val backwardHistory = BackwardHistoryRing(byteBudget)
     private val cache = DirectionalByteCache<FrameKey, CachedTexture>(
         byteBudget = byteBudget,
         frameIndex = { it.displayFrameIndex },
@@ -210,6 +230,8 @@ class EglFrameRenderer(
                 prefetchEvictedBeforeUseCount += 1
                 prefetchWastedCount += 1
             }
+            backwardHistory.remove(key)
+            reverseWindowKeys.remove(key)
             if (lastPublishedKey == key) lastPublishedKey = null
         },
     )
@@ -269,13 +291,17 @@ class EglFrameRenderer(
             pendingTarget?.complete?.invoke(RenderAck(AckStatus.STALE, 0, "FILE_CHANGED"))
             pendingTarget = null
             cache.clear()
+            backwardHistory.reset()
             rebindDecoderInputSurface()
             lastPublishedKey = null
             prefetchedKeys.clear()
+            reverseWindowKeys.clear()
             prefetchCacheHitCount = 0
             prefetchEvictedBeforeUseCount = 0
             prefetchWastedCount = 0
             prefetchRejectedCount = 0
+            backwardHistoryHitCount = 0
+            reverseWindowHitCount = 0
             true
         }
     }
@@ -304,6 +330,7 @@ class EglFrameRenderer(
             )
             if (nextSourceWidth != sourceWidth || nextSourceHeight != sourceHeight || nextGeometry != canonicalGeometry) {
                 if (display != EGL14.EGL_NO_DISPLAY) cache.clear()
+                backwardHistory.reset()
                 lastPublishedKey = null
                 sourceWidth = nextSourceWidth
                 sourceHeight = nextSourceHeight
@@ -326,13 +353,20 @@ class EglFrameRenderer(
                 return@callOnRenderer RenderAck(AckStatus.STALE, 0, "CACHE_GENERATION_STALE")
             }
             cache.recordRequest(request.requestedFrameIndex)
+            val backwardHistoryHit = backwardHistory.contains(request.expectedKey)
+            val prefetched = request.expectedKey in prefetchedKeys
+            val reverseWindow = request.expectedKey in reverseWindowKeys
             val cached = cache.get(request.expectedKey) ?: return@callOnRenderer null
-            if (prefetchedKeys.remove(request.expectedKey)) prefetchCacheHitCount += 1
             CcrTrace.section(CcrTrace.requestLabel(CcrTrace.DRAW, request)) {
                 drawTextureToWindow(cached)
             }
             val event = publish(request, cached.timestampNs)
-            if (event.result == PublicationResult.PUBLISHED) lastPublishedKey = request.expectedKey
+            if (event.result == PublicationResult.PUBLISHED) {
+                if (backwardHistoryHit) backwardHistoryHitCount += 1
+                if (prefetched && prefetchedKeys.remove(request.expectedKey)) prefetchCacheHitCount += 1
+                if (reverseWindow && reverseWindowKeys.remove(request.expectedKey)) reverseWindowHitCount += 1
+                recordPublished(request.expectedKey)
+            }
             renderAckFor(
                 event,
                 cacheHit = true,
@@ -353,6 +387,9 @@ class EglFrameRenderer(
                         expectedKey = request.expectedKey,
                         publicationRequest = request,
                         cacheRetentionAllowed = null,
+                        cacheTargetKind = null,
+                        cacheMaximumByteSize = null,
+                        requireCurrentRequest = true,
                         complete = it::complete,
                     )
                     cache.recordRequest(request.requestedFrameIndex)
@@ -367,6 +404,9 @@ class EglFrameRenderer(
         token: GenerationToken,
         expectedKey: FrameKey,
         cacheRetentionAllowed: () -> Boolean,
+        kind: CacheTargetKind = CacheTargetKind.PREFETCH,
+        maximumByteSize: Long? = null,
+        requireCurrentRequest: Boolean = true,
     ): CacheTargetHandle? {
         if (unavailable()) return null
         return callOnRenderer<CacheTargetHandle?>(2_000, null) {
@@ -375,7 +415,7 @@ class EglFrameRenderer(
                 pendingTarget == null &&
                 display != EGL14.EGL_NO_DISPLAY &&
                 token.fileGeneration == fileGeneration &&
-                publicationGate.isCurrent(token)
+                (!requireCurrentRequest || publicationGate.isCurrent(token))
             ) {
                 CacheTargetHandle(token, expectedKey).also {
                     pendingTarget = PendingTarget(
@@ -384,6 +424,9 @@ class EglFrameRenderer(
                         expectedKey = expectedKey,
                         publicationRequest = null,
                         cacheRetentionAllowed = cacheRetentionAllowed,
+                        cacheTargetKind = kind,
+                        cacheMaximumByteSize = maximumByteSize,
+                        requireCurrentRequest = requireCurrentRequest,
                         complete = it::complete,
                     )
                 }
@@ -420,6 +463,38 @@ class EglFrameRenderer(
         cache.remove(key)
     }
 
+    fun invalidateReverseWindow(preserveCachedKey: FrameKey? = null): Int = callOnRenderer(1_000, 0) {
+        val keys = reverseWindowKeys.toList()
+        keys.filterNot { it == preserveCachedKey }.forEach(cache::remove)
+        reverseWindowKeys.clear()
+        keys.count { it != preserveCachedKey }
+    }
+
+    fun discardReverseWindowKeys(keys: Collection<FrameKey>): Int = callOnRenderer(1_000, 0) {
+        keys.count { key ->
+            if (reverseWindowKeys.remove(key)) {
+                cache.remove(key)
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    fun preemptReverseWindowCacheTarget() {
+        if (unavailable()) return
+        handler.post {
+            val pending = pendingTarget
+            if (
+                pending?.publicationRequest == null &&
+                pending?.cacheTargetKind == CacheTargetKind.REVERSE_WINDOW
+            ) {
+                pendingTarget = null
+                pending.complete(RenderAck(AckStatus.STALE, 0, "FOREGROUND_PREEMPTED"))
+            }
+        }
+    }
+
     fun awaitTarget(handle: TargetHandle, timeoutMs: Long): RenderAck {
         val waited = handle.await(timeoutMs)
         if (waited.code != "RENDER_TIMEOUT") return waited
@@ -429,11 +504,15 @@ class EglFrameRenderer(
         return handle.completedResult() ?: waited
     }
 
-    fun awaitCacheTarget(handle: CacheTargetHandle, timeoutMs: Long): RenderAck {
+    fun awaitCacheTarget(
+        handle: CacheTargetHandle,
+        timeoutMs: Long,
+        invalidateRequestOnTimeout: Boolean = true,
+    ): RenderAck {
         val waited = handle.await(timeoutMs)
         if (waited.code != "CACHE_TIMEOUT") return waited
         handle.completedResult()?.let { return it }
-        publicationGate.tryInvalidateIfCurrent(handle.token)
+        if (invalidateRequestOnTimeout) publicationGate.tryInvalidateIfCurrent(handle.token)
         cancelPendingTarget(handle, "CACHE_TIMEOUT")
         return handle.completedResult() ?: waited
     }
@@ -464,32 +543,44 @@ class EglFrameRenderer(
                 return@post
             }
             result.set(
-                PrefetchSnapshot(
-                    budget = prefetchBudgetDecision(
-                        width = canonicalGeometry.width,
-                        height = canonicalGeometry.height,
-                        cacheBudgetBytes = byteBudget,
-                    ),
-                    cachedFrameKeys = frameKeys.filterTo(mutableSetOf(), cache::containsKey),
-                    cacheHitCount = prefetchCacheHitCount,
-                    evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
-                    wastedCount = prefetchWastedCount,
-                    currentDepth = prefetchedKeys.size,
-                    cacheEntryCount = cache.size,
-                    peakCacheEntryCount = cache.peakSize,
-                    cacheEvictionCount = cache.evictionCount,
-                    cacheRejectionCount = cache.rejectionCount,
-                    cacheThrashCount = prefetchEvictedBeforeUseCount + prefetchRejectedCount,
-                    cacheBytes = cache.byteSize,
-                    cacheRequestHitCount = cache.hitCount,
-                    cacheRequestMissCount = cache.missCount,
-                    textureCreatedCount = textureLifetimeTracker.createdCount,
-                    textureReleasedCount = textureLifetimeTracker.releasedCount,
-                    liveTextureCount = textureLifetimeTracker.liveCount,
-                    peakLiveTextureCount = textureLifetimeTracker.peakLiveCount,
-                    textureDoubleReleaseCount = textureLifetimeTracker.doubleReleaseCount,
-                    fullFrameReadbackCount = probePolicy.readbackCount(),
-                ),
+                backwardHistory.snapshot().let { history ->
+                    PrefetchSnapshot(
+                        budget = prefetchBudgetDecision(
+                            width = canonicalGeometry.width,
+                            height = canonicalGeometry.height,
+                            cacheBudgetBytes = byteBudget,
+                        ),
+                        cachedFrameKeys = frameKeys.filterTo(mutableSetOf(), cache::containsKey),
+                        cacheHitCount = prefetchCacheHitCount,
+                        evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
+                        wastedCount = prefetchWastedCount,
+                        currentDepth = prefetchedKeys.size,
+                        cacheEntryCount = cache.size,
+                        peakCacheEntryCount = cache.peakSize,
+                        cacheEvictionCount = cache.evictionCount,
+                        cacheRejectionCount = cache.rejectionCount,
+                        cacheThrashCount = prefetchEvictedBeforeUseCount + prefetchRejectedCount,
+                        cacheBytes = cache.byteSize,
+                        peakCacheBytes = cache.peakByteSize,
+                        cacheRequestHitCount = cache.hitCount,
+                        cacheRequestMissCount = cache.missCount,
+                        textureCreatedCount = textureLifetimeTracker.createdCount,
+                        textureReleasedCount = textureLifetimeTracker.releasedCount,
+                        liveTextureCount = textureLifetimeTracker.liveCount,
+                        peakLiveTextureCount = textureLifetimeTracker.peakLiveCount,
+                        textureDoubleReleaseCount = textureLifetimeTracker.doubleReleaseCount,
+                        fullFrameReadbackCount = probePolicy.readbackCount(),
+                        protectedTextureCount = protectedCacheKeys().count(cache::containsKey),
+                        backwardHistoryCapacity = history.capacity,
+                        backwardHistoryDepth = history.depth,
+                        backwardHistoryKeys = history.keys.toSet(),
+                        backwardHistoryHitCount = backwardHistoryHitCount,
+                        reverseWindowReadyCount = if (reverseWindowKeys.isEmpty()) 0 else 1,
+                        reverseWindowKeys = reverseWindowKeys.toSet(),
+                        reverseWindowHitCount = reverseWindowHitCount,
+                        lastPublishedKey = lastPublishedKey,
+                    )
+                },
             )
             latch.countDown()
         }
@@ -505,7 +596,11 @@ class EglFrameRenderer(
         handler.post {
             if (unavailable()) return@post
             val targetBytes = cacheTargetBytes(level, byteBudget)
-            if (targetBytes == 0L) cache.clear() else cache.trimToBytes(targetBytes)
+            cache.trimToBytes(targetBytes, protectedCacheKeys())
+            backwardHistory.configure(
+                canonicalFrameBytes = backwardHistory.snapshot().frameBytes,
+                availableBudgetBytes = targetBytes,
+            )
         }
     }
 
@@ -597,16 +692,32 @@ class EglFrameRenderer(
             handle.complete(RenderAck(AckStatus.ERROR, timestampNs, "TEXTURE_TIMESTAMP_MISMATCH"))
             return
         }
-        if (handle.token.fileGeneration != fileGeneration || !publicationGate.isCurrent(handle.token)) {
+        if (
+            handle.token.fileGeneration != fileGeneration ||
+            (handle.requireCurrentRequest && !publicationGate.isCurrent(handle.token))
+        ) {
             handle.complete(RenderAck(AckStatus.STALE, timestampNs, "TEXTURE_GENERATION_STALE"))
             return
         }
 
+        val expectedFrameBytes = canonicalFrameBytes(canonicalGeometry.width, canonicalGeometry.height)
+        val residentTargetBytes = residentCacheTargetBytes(byteBudget, expectedFrameBytes)
+        if (
+            expectedFrameBytes <= 0 ||
+            !cache.trimToBytes(residentTargetBytes, protectedCacheKeys())
+        ) {
+            handle.complete(RenderAck(AckStatus.ERROR, timestampNs, "IN_FLIGHT_CACHE_BUDGET_EXCEEDED"))
+            return
+        }
+        backwardHistory.configure(expectedFrameBytes)
+
         val textureMatrix = FloatArray(16)
         source.getTransformMatrix(textureMatrix)
         val cached = try {
-            CcrTrace.section(CcrTrace.frameLabel(CcrTrace.CANONICAL_COPY, handle.token, handle.expectedKey)) {
-                copyExternalTexture(textureMatrix, canonicalGeometry.rotationDegrees, timestampNs)
+            CcrTrace.section(CcrTrace.frameLabel(CcrTrace.TEXTURE_COPY, handle.token, handle.expectedKey)) {
+                CcrTrace.section(CcrTrace.frameLabel(CcrTrace.CANONICAL_COPY, handle.token, handle.expectedKey)) {
+                    copyExternalTexture(textureMatrix, canonicalGeometry.rotationDegrees, timestampNs)
+                }
             }
         } catch (_: Throwable) {
             handle.complete(RenderAck(AckStatus.ERROR, timestampNs, "TEXTURE_COPY_FAILED"))
@@ -619,31 +730,41 @@ class EglFrameRenderer(
         }
         val prefetchBudget = prefetchBudgetDecision(cached.width, cached.height, byteBudget)
         val frameBytes = prefetchBudget.canonicalFrameBytes
+        check(frameBytes == expectedFrameBytes)
         val retentionAllowed = handle.publicationRequest != null || handle.cacheRetentionAllowed?.invoke() == true
         var cacheAdmissionAttempted = false
         val retained = retentionAllowed && frameBytes > 0 && CcrTrace.section(
             CcrTrace.frameLabel(CcrTrace.CACHE_PUT, handle.token, handle.expectedKey),
         ) {
-            publicationGate.runIfCurrent(handle.token) {
+            val put = {
                 cacheAdmissionAttempted = true
                 cache.put(
                     key = handle.expectedKey,
                     value = cached,
                     bytes = frameBytes,
-                    protectedKeys = setOfNotNull(lastPublishedKey),
-                    maximumByteSize = if (handle.publicationRequest == null) {
+                    protectedKeys = protectedCacheKeys(),
+                    maximumByteSize = handle.cacheMaximumByteSize ?: if (handle.publicationRequest == null) {
                         prefetchBudget.availablePrefetchBytes + frameBytes
                     } else {
                         byteBudget
                     },
                 )
-            } == true
+            }
+            if (handle.requireCurrentRequest) {
+                publicationGate.runIfCurrent(handle.token, put) == true
+            } else {
+                handle.token.fileGeneration == fileGeneration && handle.cacheRetentionAllowed?.invoke() == true && put()
+            }
         }
         completeCachedTextureTarget(
             publicationRequest = handle.publicationRequest,
             onCacheOnly = {
                 if (retained) {
-                    prefetchedKeys += handle.expectedKey
+                    when (handle.cacheTargetKind) {
+                        CacheTargetKind.PREFETCH -> prefetchedKeys += handle.expectedKey
+                        CacheTargetKind.REVERSE_WINDOW -> reverseWindowKeys += handle.expectedKey
+                        null -> Unit
+                    }
                     handle.complete(RenderAck(AckStatus.CACHED, timestampNs, imageProbe = cached.imageProbe))
                 } else {
                     if (cacheAdmissionAttempted) prefetchRejectedCount += 1
@@ -662,7 +783,7 @@ class EglFrameRenderer(
                     drawTextureToWindow(cached)
                 }
                 val event = publish(publicationRequest, timestampNs)
-                if (event.result == PublicationResult.PUBLISHED) lastPublishedKey = handle.expectedKey
+                if (event.result == PublicationResult.PUBLISHED) recordPublished(handle.expectedKey)
                 handle.complete(renderAckFor(event, imageProbe = cached.imageProbe))
                 if (!retained) releaseCachedTexture(cached)
             },
@@ -960,6 +1081,7 @@ class EglFrameRenderer(
         if (display != EGL14.EGL_NO_DISPLAY) {
             runCatching { EGL14.eglMakeCurrent(display, eglWindowSurface, eglWindowSurface, context) }
             cache.clear()
+            backwardHistory.reset()
             lastPublishedKey = null
             if (oesProgram != 0) GLES30.glDeleteProgram(oesProgram)
             if (textureProgram != 0) GLES30.glDeleteProgram(textureProgram)
@@ -1017,28 +1139,52 @@ class EglFrameRenderer(
 
     private fun unavailable(): Boolean = closed || terminalFailure
 
-    private fun emptyPrefetchSnapshot(): PrefetchSnapshot = PrefetchSnapshot(
-        budget = prefetchBudgetDecision(0, 0, byteBudget),
-        cachedFrameKeys = emptySet(),
-        cacheHitCount = prefetchCacheHitCount,
-        evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
-        wastedCount = prefetchWastedCount,
-        currentDepth = prefetchedKeys.size,
-        cacheEntryCount = cache.size,
-        peakCacheEntryCount = cache.peakSize,
-        cacheEvictionCount = cache.evictionCount,
-        cacheRejectionCount = cache.rejectionCount,
-        cacheThrashCount = prefetchEvictedBeforeUseCount + prefetchRejectedCount,
-        cacheBytes = cache.byteSize,
-        cacheRequestHitCount = cache.hitCount,
-        cacheRequestMissCount = cache.missCount,
-        textureCreatedCount = textureLifetimeTracker.createdCount,
-        textureReleasedCount = textureLifetimeTracker.releasedCount,
-        liveTextureCount = textureLifetimeTracker.liveCount,
-        peakLiveTextureCount = textureLifetimeTracker.peakLiveCount,
-        textureDoubleReleaseCount = textureLifetimeTracker.doubleReleaseCount,
-        fullFrameReadbackCount = probePolicy.readbackCount(),
-    )
+    private fun emptyPrefetchSnapshot(): PrefetchSnapshot = backwardHistory.snapshot().let { history ->
+        PrefetchSnapshot(
+            budget = prefetchBudgetDecision(0, 0, byteBudget),
+            cachedFrameKeys = emptySet(),
+            cacheHitCount = prefetchCacheHitCount,
+            evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
+            wastedCount = prefetchWastedCount,
+            currentDepth = prefetchedKeys.size,
+            cacheEntryCount = cache.size,
+            peakCacheEntryCount = cache.peakSize,
+            cacheEvictionCount = cache.evictionCount,
+            cacheRejectionCount = cache.rejectionCount,
+            cacheThrashCount = prefetchEvictedBeforeUseCount + prefetchRejectedCount,
+            cacheBytes = cache.byteSize,
+            peakCacheBytes = cache.peakByteSize,
+            cacheRequestHitCount = cache.hitCount,
+            cacheRequestMissCount = cache.missCount,
+            textureCreatedCount = textureLifetimeTracker.createdCount,
+            textureReleasedCount = textureLifetimeTracker.releasedCount,
+            liveTextureCount = textureLifetimeTracker.liveCount,
+            peakLiveTextureCount = textureLifetimeTracker.peakLiveCount,
+            textureDoubleReleaseCount = textureLifetimeTracker.doubleReleaseCount,
+            fullFrameReadbackCount = probePolicy.readbackCount(),
+            protectedTextureCount = protectedCacheKeys().count(cache::containsKey),
+            backwardHistoryCapacity = history.capacity,
+            backwardHistoryDepth = history.depth,
+            backwardHistoryKeys = history.keys.toSet(),
+            backwardHistoryHitCount = backwardHistoryHitCount,
+            reverseWindowReadyCount = if (reverseWindowKeys.isEmpty()) 0 else 1,
+            reverseWindowKeys = reverseWindowKeys.toSet(),
+            reverseWindowHitCount = reverseWindowHitCount,
+            lastPublishedKey = lastPublishedKey,
+        )
+    }
+
+    private fun protectedCacheKeys(): Set<FrameKey> = buildSet {
+        lastPublishedKey?.let(::add)
+        pendingTarget?.expectedKey?.let(::add)
+        addAll(reverseWindowKeys)
+    }
+
+    private fun recordPublished(key: FrameKey) {
+        val previous = lastPublishedKey?.takeIf(cache::containsKey)
+        backwardHistory.recordPublished(previous, key)
+        lastPublishedKey = key
+    }
 
     companion object {
         private const val COMMAND_PENDING = 0
@@ -1109,4 +1255,10 @@ internal fun cacheTargetBytes(level: Int, byteBudget: Long): Long = when {
     level >= 10 -> byteBudget / 2L
     level >= 5 -> byteBudget * 3L / 4L
     else -> byteBudget
+}
+
+internal fun residentCacheTargetBytes(byteBudget: Long, incomingFrameBytes: Long): Long {
+    require(byteBudget >= 0)
+    require(incomingFrameBytes >= 0)
+    return (byteBudget - incomingFrameBytes).coerceAtLeast(0)
 }

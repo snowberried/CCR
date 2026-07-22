@@ -478,6 +478,18 @@ private fun DiagnosticPanel(
         Text("swap 성공/실패/invalid: ${diagnostics.publishedSwapCount}/${diagnostics.swapFailureCount}/${diagnostics.surfaceInvalidCount}")
         Text("publication invariant violation: ${diagnostics.publicationInvariantViolationCount}")
         Text("full-frame readback: ${diagnostics.fullFrameReadbackCount}")
+        Text(
+            "보호/history: ${diagnostics.protectedTextureCount} · " +
+                "${diagnostics.backwardHistoryDepth}/${diagnostics.backwardHistoryCapacity} · " +
+                "hit ${diagnostics.backwardHistoryHitCount}",
+        )
+        Text(
+            "reverse window: ready ${diagnostics.reverseWindowReadyCount} · " +
+                "hit ${diagnostics.reverseWindowHitCount} · build ${diagnostics.reverseWindowBuildCount} · " +
+                "fallback ${diagnostics.reverseWindowFallbackCount} · " +
+                "stall ${diagnostics.reverseWindowRefillStallCount}/" +
+                "${diagnostics.reverseWindowRefillStallMaxUs}us",
+        )
         Text("복구: ${state.restoreState} · surface=${state.surfaceAvailable}")
         Text("세대: ${state.activeFileGeneration ?: "-"}/${state.activeRequestGeneration ?: "-"}")
         if (BuildConfig.DEBUG) {

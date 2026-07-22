@@ -3,6 +3,7 @@ package com.snowberried.ctcinereviewer.benchmark
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Debug
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -22,8 +23,10 @@ import com.snowberried.ctcinereviewer.CcrSpikeApp
 import com.snowberried.ctcinereviewer.ViewerUiState
 import com.snowberried.ctcinereviewer.ViewerViewModel
 import com.snowberried.ctcinereviewer.media.DecoderDiagnostics
+import com.snowberried.ctcinereviewer.media.PublicationEvent
 import com.snowberried.ctcinereviewer.media.PublicationResult
 import androidx.metrics.performance.JankStats
+import java.io.File
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Locale
@@ -105,6 +108,7 @@ class BenchmarkActivity : ComponentActivity() {
     private val publicationIntervalsNs = mutableListOf<Long>()
     private var publicationGapMaxNs = 0L
     private val requestedDisplayedLag = mutableListOf<Long>()
+    private val acceptedTargetSequence = mutableListOf<Int>()
     private var issuedRequestCount = 0L
     private var coalescedRequestCount = 0L
     private var jankFrameCount = 0L
@@ -134,6 +138,8 @@ class BenchmarkActivity : ComponentActivity() {
     private lateinit var runtimeSourceSha: String
     private lateinit var harnessSourceSha: String
     private lateinit var runtimeInputsTreeSha256: String
+    private lateinit var appApkSha256: String
+    private lateinit var testApkSha256: String
     private lateinit var traceIdentity: String
     private var runIteration = 0
     private var identityTraceCookie: Long? = null
@@ -147,6 +153,8 @@ class BenchmarkActivity : ComponentActivity() {
     private var releaseGraceComplete = false
     private var counterObservationComplete = true
     private var counterCompleteness = false
+    private var representativeCompletionStarted = false
+    private var finalDiagnostics: DecoderDiagnostics? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -355,6 +363,8 @@ class BenchmarkActivity : ComponentActivity() {
                     SCENARIO_HOLD_720_PLUS_FIVE,
                     SCENARIO_HOLD_1080_PLUS_ONE,
                     SCENARIO_HOLD_1080_PLUS_FIVE -> startRepresentativeHold()
+                    SCENARIO_HOLD_1080_MINUS_ONE -> preparePureReverseHold(state, -1)
+                    SCENARIO_HOLD_1080_MINUS_FIVE -> preparePureReverseHold(state, -5)
                     SCENARIO_REVERSE_1080 -> prepareRepresentativeReverse(state)
                     SCENARIO_SEEK_1080 -> startRepresentativeSeek(state)
                     SCENARIO_SWITCH_1080_H264_HEVC,
@@ -406,6 +416,20 @@ class BenchmarkActivity : ComponentActivity() {
         holdAccumulatedNs = 0L
         beginRepresentativeSegment(resetMetrics = true)
         scheduleHoldTick()
+    }
+
+    private fun preparePureReverseHold(state: ViewerUiState, delta: Int) {
+        val lastIndex = (state.metadata?.frameCount ?: return) - 1
+        phase = Phase.REPRESENTATIVE_RESET
+        expectedTargetIndex = lastIndex
+        representativeResetAction = {
+            holdDelta = delta
+            holdActiveTargetNs = REPRESENTATIVE_HOLD_ACTIVE_NS
+            holdAccumulatedNs = 0L
+            beginRepresentativeSegment(resetMetrics = true)
+            scheduleHoldTick()
+        }
+        viewer.requestFrame(lastIndex)
     }
 
     private fun prepareRepresentativeReverse(state: ViewerUiState) {
@@ -482,6 +506,14 @@ class BenchmarkActivity : ComponentActivity() {
         val lastIndex = (state.metadata?.frameCount ?: 1) - 1
         val next = state.requestedFrameIndex + holdDelta
         if (next !in 0..lastIndex) {
+            if (
+                state.currentDecodeTarget != null ||
+                state.latestPendingRequest != null ||
+                state.displayedFrameIndex != state.requestedFrameIndex
+            ) {
+                scheduleHoldTick()
+                return
+            }
             pauseRepresentativeSegment()
             val resetIndex = if (holdDelta > 0) 0 else lastIndex
             phase = Phase.REPRESENTATIVE_RESET
@@ -498,7 +530,6 @@ class BenchmarkActivity : ComponentActivity() {
             latestRequestedFrameIndex = state.requestedFrameIndex
             Trace.setCounter("ccr.requested_frame", state.requestedFrameIndex.toLong())
         }
-        recordLag(viewer.uiState)
         scheduleHoldTick()
     }
 
@@ -507,23 +538,38 @@ class BenchmarkActivity : ComponentActivity() {
     }
 
     private fun finishRepresentativeAfterSettled() {
-        stopActiveMeasurementSegment(verifyRelease = true)
         phase = Phase.REPRESENTATIVE_SETTLING
+        holdGestureGeneration?.let(viewer::endNavigationGesture)
+        holdGestureGeneration = null
+        releaseRequestGeneration = viewer.uiState.activeRequestGeneration
+        releaseVerificationActive = true
+        observeReleaseAcceptance(viewer.uiState)
         val settleDeadline = SystemClock.elapsedRealtime() + REPRESENTATIVE_SETTLE_TIMEOUT_MS
-        val releaseGraceDeadline = SystemClock.elapsedRealtime() + RELEASE_ACCEPTANCE_GRACE_MS
+        var settledObservedAtMs: Long? = null
         fun poll() {
             val state = viewer.uiState
             observeReleaseAcceptance(state)
             val settled = state.currentDecodeTarget == null &&
                 state.latestPendingRequest == null &&
                 state.displayedFrameIndex == state.requestedFrameIndex
+            val publicationObserved = handledPublication?.third == state.diagnostics.publishedSwapCount
             val now = SystemClock.elapsedRealtime()
-            if (settled && now >= releaseGraceDeadline) {
+            if (settled && publicationObserved) {
+                if (measurementActive) stopActiveMeasurementSegment()
+                if (settledObservedAtMs == null) settledObservedAtMs = now
+            } else {
+                settledObservedAtMs = null
+            }
+            if (
+                settledObservedAtMs?.let { now - it >= RELEASE_ACCEPTANCE_GRACE_MS } == true &&
+                !measurementActive
+            ) {
                 releaseGraceComplete = true
                 releaseVerificationActive = false
                 finishRepresentativeNow()
             } else if (now >= settleDeadline) {
                 releaseVerificationActive = false
+                stopActiveMeasurementSegment()
                 fail("REPRESENTATIVE_SETTLE_TIMEOUT")
             } else {
                 mainHandler.postDelayed(::poll, REPRESENTATIVE_SETTLE_POLL_MS)
@@ -537,12 +583,27 @@ class BenchmarkActivity : ComponentActivity() {
             complete()
             return
         }
+        if (representativeCompletionStarted) return
         stopActiveMeasurementSegment()
-        emitRepresentativeTraceCounters()
-        complete()
+        representativeCompletionStarted = true
+        Thread({
+            val diagnostics = viewer.diagnosticsSnapshotForTest()
+            runOnUiThread {
+                if (failed) return@runOnUiThread
+                if (diagnostics == null) {
+                    fail("REPRESENTATIVE_DIAGNOSTICS_SNAPSHOT_TIMEOUT")
+                    return@runOnUiThread
+                }
+                finalDiagnostics = diagnostics
+                accumulateCounters(diagnostics)
+                counterPrevious = null
+                emitRepresentativeTraceCounters(diagnostics)
+                complete()
+            }
+        }, "ccr-benchmark-final-diagnostics").start()
     }
 
-    private fun stopActiveMeasurementSegment(verifyRelease: Boolean = false) {
+    private fun stopActiveMeasurementSegment() {
         if (!measurementActive) return
         val endedAtNs = SystemClock.elapsedRealtimeNanos()
         observeForegroundTargetMetrics(viewer.uiState)
@@ -553,15 +614,9 @@ class BenchmarkActivity : ComponentActivity() {
         if (isSegmentedHoldScenario()) holdAccumulatedNs += segmentDurationNs
         measurementActive = false
         jankMeasurementActive = false
-        counterPrevious = null
         lastPublicationNs = null
         holdGestureGeneration?.let(viewer::endNavigationGesture)
         holdGestureGeneration = null
-        if (verifyRelease && isSegmentedHoldScenario()) {
-            releaseRequestGeneration = viewer.uiState.activeRequestGeneration
-            releaseVerificationActive = true
-            observeReleaseAcceptance(viewer.uiState)
-        }
         requestTraceCookie?.let { endAsync(TRACE_REPRESENTATIVE_SMOOTHNESS, it) }
         requestTraceCookie = null
     }
@@ -579,6 +634,7 @@ class BenchmarkActivity : ComponentActivity() {
         publicationIntervalsNs.clear()
         publicationGapMaxNs = 0L
         requestedDisplayedLag.clear()
+        acceptedTargetSequence.clear()
         issuedRequestCount = 0L
         coalescedRequestCount = 0L
         jankFrameCount = 0L
@@ -607,6 +663,8 @@ class BenchmarkActivity : ComponentActivity() {
         releaseGraceComplete = false
         counterObservationComplete = true
         counterCompleteness = false
+        representativeCompletionStarted = false
+        finalDiagnostics = null
     }
 
     private fun observeMeasurement(state: ViewerUiState) {
@@ -618,6 +676,7 @@ class BenchmarkActivity : ComponentActivity() {
         for (event in events) {
             lastObservedPublicationSequence = maxOf(lastObservedPublicationSequence, event.eventSequence)
             if (!measurementActive || event.result != PublicationResult.PUBLISHED) continue
+            traceSuccessfulPublication(event)
             val previousPublicationNs = lastPublicationNs
             if (previousPublicationNs == null) {
                 publicationGapMaxNs = maxOf(
@@ -635,6 +694,15 @@ class BenchmarkActivity : ComponentActivity() {
         if (measurementActive) {
             accumulateCounters(state.diagnostics)
         }
+    }
+
+    private fun traceSuccessfulPublication(event: PublicationEvent) {
+        val label = (
+            "$TRACE_SUCCESSFUL_PUBLICATION f=${event.fileGeneration} r=${event.requestGeneration} " +
+                "i=${event.requestedFrameIndex} p=${event.expectedKey.ptsUs}"
+            ).take(127)
+        Trace.beginSection(label)
+        Trace.endSection()
     }
 
     private fun recordLag(state: ViewerUiState) {
@@ -655,7 +723,14 @@ class BenchmarkActivity : ComponentActivity() {
             if (currentGeneration < previousGeneration) {
                 counterObservationComplete = false
             } else {
-                acceptedTargetCount += currentGeneration - previousGeneration
+                val acceptedDelta = currentGeneration - previousGeneration
+                acceptedTargetCount += acceptedDelta
+                if (acceptedDelta > 1L) {
+                    counterObservationComplete = false
+                } else if (acceptedDelta == 1L) {
+                    acceptedTargetSequence += state.requestedFrameIndex
+                    recordLag(state)
+                }
             }
         }
         lastAcceptedRequestGeneration = currentGeneration
@@ -716,7 +791,7 @@ class BenchmarkActivity : ComponentActivity() {
         swapFailure = value.swapFailureCount,
     )
 
-    private fun emitRepresentativeTraceCounters() {
+    private fun emitRepresentativeTraceCounters(diagnostics: DecoderDiagnostics) {
         val activeNs = activeMetricDurationNs
         val activeSeconds = activeNs / 1_000_000_000.0
         val intervalsUs = publicationIntervalsNs.map { it / 1_000L }.sorted()
@@ -733,7 +808,9 @@ class BenchmarkActivity : ComponentActivity() {
             requestedDisplayedLag.isNotEmpty() &&
             (!isSegmentedHoldScenario() || (
                 acceptedTargetCount > 0L &&
-                    outstandingForegroundTargetSampleCount > 0L &&
+                    requestedDisplayedLag.size.toLong() == acceptedTargetCount &&
+                    acceptedTargetSequence.size.toLong() == acceptedTargetCount &&
+                    outstandingForegroundTargetSampleCount >= acceptedTargetCount &&
                     releaseGraceComplete
                 ))
         Trace.setCounter("ccr.publication_interval_p50_us", intervalsUs.percentile(0.50))
@@ -764,6 +841,9 @@ class BenchmarkActivity : ComponentActivity() {
         Trace.setCounter("ccr.jank_ratio_ppm", jankRatioPpm)
         Trace.setCounter("ccr.outstanding_foreground_target_depth_max", outstandingForegroundTargetDepthMax.toLong())
         Trace.setCounter("ccr.accepted_target_count", acceptedTargetCount)
+        Trace.setCounter("ccr.accepted_target_sequence_count", acceptedTargetSequence.size.toLong())
+        Trace.setCounter("ccr.raw_lag_sample_count", requestedDisplayedLag.size.toLong())
+        Trace.setCounter("ccr.outstanding_foreground_target_sample_count", outstandingForegroundTargetSampleCount)
         Trace.setCounter("ccr.release_after_accepted_target_count", releaseAfterAcceptedTargetCount)
         Trace.setCounter("ccr.raw_lag_max", lags.maxOrNull() ?: 0L)
         Trace.setCounter("ccr.hold_prefetch_started", prefetchStartedCount)
@@ -772,12 +852,22 @@ class BenchmarkActivity : ComponentActivity() {
         Trace.setCounter("ccr.run_iteration", runIteration.toLong())
         Trace.setCounter("ccr.publication_count", publicationCount)
         Trace.setCounter("ccr.active_duration_ms", activeMetricDurationNs / 1_000_000L)
+        Trace.setCounter("ccr.measurement_target_ms", holdActiveTargetNs / 1_000_000L)
         Trace.setCounter("ccr.valid_trace_identity", 1L)
         Trace.setCounter("ccr.run_id_hash53", identityHash53(runId))
         Trace.setCounter("ccr.trace_identity_hash53", identityHash53(traceIdentity))
         Trace.setCounter("ccr.runtime_source_hash53", identityHash53(runtimeSourceSha))
         Trace.setCounter("ccr.harness_source_hash53", identityHash53(harnessSourceSha))
         Trace.setCounter("ccr.runtime_inputs_tree_hash53", identityHash53(runtimeInputsTreeSha256))
+        Trace.setCounter("ccr.app_apk_hash53", identityHash53(appApkSha256))
+        Trace.setCounter("ccr.test_apk_hash53", identityHash53(testApkSha256))
+        Trace.setCounter("ccr.cache_bytes", diagnostics.cacheBytes)
+        Trace.setCounter("ccr.cache_peak_bytes", diagnostics.peakCacheBytes)
+        Trace.setCounter("ccr.reverse_window_refill_stall", diagnostics.reverseWindowRefillStallCount)
+        Trace.setCounter("ccr.reverse_window_refill_stall_max_us", diagnostics.reverseWindowRefillStallMaxUs)
+        Trace.setCounter("ccr.swap_failure", diagnostics.swapFailureCount)
+        Trace.setCounter("ccr.stale_discard", diagnostics.staleDiscardCount)
+        Trace.setCounter("ccr.invariant_violation", diagnostics.publicationInvariantViolationCount)
     }
 
     private fun metricStatusSuffix(): String {
@@ -786,6 +876,9 @@ class BenchmarkActivity : ComponentActivity() {
             append("|runtimeSourceSha=").append(runtimeSourceSha)
             append("|harnessSourceSha=").append(harnessSourceSha)
             append("|runtimeInputsTreeSha256=").append(runtimeInputsTreeSha256)
+            append("|appApkSha256=").append(appApkSha256)
+            append("|testApkSha256=").append(testApkSha256)
+            append("|status=PASS")
             append("|runId=").append(runId)
             append("|traceIdentity=").append(traceIdentity)
             append("|runIteration=").append(runIteration)
@@ -797,9 +890,14 @@ class BenchmarkActivity : ComponentActivity() {
         val activeSeconds = activeNs / 1_000_000_000.0
         val fps = if (activeSeconds > 0.0) publicationCount / activeSeconds else 0.0
         val ratio = if (jankFrameCount > 0) jankCount.toDouble() / jankFrameCount else 0.0
+        val metadata = viewer.uiState.metadata
+        val diagnostics = finalDiagnostics ?: viewer.uiState.diagnostics
+        val runtime = Runtime.getRuntime()
+        val memory = Debug.MemoryInfo().also(Debug::getMemoryInfo)
         return identity + buildString {
             append("|segmented=").append(isSegmentedHoldScenario())
             append("|activeMs=").append(activeNs / 1_000_000L)
+            append("|measurementTargetMs=").append(holdActiveTargetNs / 1_000_000L)
             append("|published=").append(publicationCount)
             append("|fps=").append(String.format(Locale.ROOT, "%.3f", fps))
             append("|intervalP50Us=").append(intervalsUs.percentile(0.50))
@@ -829,28 +927,92 @@ class BenchmarkActivity : ComponentActivity() {
             append("|jankRatio=").append(String.format(Locale.ROOT, "%.6f", ratio))
             append("|outstandingForegroundTargetDepthMax=").append(outstandingForegroundTargetDepthMax)
             append("|acceptedTargetCount=").append(acceptedTargetCount)
+            append("|acceptedTargetSequenceCount=").append(acceptedTargetSequence.size)
+            append("|acceptedTargetSequenceSha256=").append(acceptedTargetSequenceSha256())
+            append("|rawLagSampleCount=").append(requestedDisplayedLag.size)
+            append("|outstandingForegroundTargetSampleCount=")
+                .append(outstandingForegroundTargetSampleCount)
             append("|releaseAfterAcceptedTargetCount=").append(releaseAfterAcceptedTargetCount)
             append("|holdPrefetchStarted=").append(prefetchStartedCount)
             append("|holdPrefetchCompleted=").append(prefetchCompletedCount)
+            append("|codecComponent=").append(safeMetricToken(metadata?.codecComponent))
+            append("|hardwareAccelerated=").append(metadata?.hardwareAccelerated == true)
+            append("|canonicalFrameBytes=").append(diagnostics.canonicalFrameBytes)
+            append("|cacheBudgetBytes=").append(diagnostics.cacheBudgetBytes)
+            append("|cacheBytes=").append(diagnostics.cacheBytes)
+            append("|peakCacheBytes=").append(diagnostics.peakCacheBytes)
+            append("|cacheEntryCount=").append(diagnostics.cacheEntryCount)
+            append("|peakCacheEntryCount=").append(diagnostics.peakCacheEntryCount)
+            append("|cacheRejectionCount=").append(diagnostics.cacheRejectionCount)
+            append("|cacheThrashCount=").append(diagnostics.cacheThrashCount)
+            append("|liveTextureCount=").append(diagnostics.liveTextureCount)
+            append("|peakLiveTextureCount=").append(diagnostics.peakLiveTextureCount)
+            append("|textureDoubleReleaseCount=").append(diagnostics.textureDoubleReleaseCount)
+            append("|reverseWindowBuildCount=").append(diagnostics.reverseWindowBuildCount)
+            append("|reverseWindowHitCount=").append(diagnostics.reverseWindowHitCount)
+            append("|reverseWindowSeekCount=").append(diagnostics.reverseWindowSeekCount)
+            append("|reverseWindowRefillCount=").append(diagnostics.reverseWindowRefillCount)
+            append("|reverseWindowInitialReadyCount=").append(diagnostics.reverseWindowInitialReadyCount)
+            append("|reverseWindowRollingAppendRefillCount=")
+                .append(diagnostics.reverseWindowRollingAppendRefillCount)
+            append("|reverseWindowRefillNeeded=").append(diagnostics.reverseWindowRefillNeeded)
+            append("|reverseWindowRefillStallCount=").append(diagnostics.reverseWindowRefillStallCount)
+            append("|reverseWindowRefillStallMaxUs=").append(diagnostics.reverseWindowRefillStallMaxUs)
+            append("|reverseWindowRefillStallOver250MsCount=")
+                .append(diagnostics.reverseWindowRefillStallOver250MsCount)
+            append("|staleDiscardCount=").append(diagnostics.staleDiscardCount)
+            append("|staleBeforeSwapCount=").append(diagnostics.staleBeforeSwapCount)
+            append("|surfaceInvalidCount=").append(diagnostics.surfaceInvalidCount)
+            append("|publicationInvariantViolationCount=")
+                .append(diagnostics.publicationInvariantViolationCount)
+            append("|decoderRecreateCount=").append(diagnostics.decoderRecreateCount)
+            append("|javaUsedBytes=").append(runtime.totalMemory() - runtime.freeMemory())
+            append("|nativeAllocatedBytes=").append(Debug.getNativeHeapAllocatedSize())
+            append("|totalPssBytes=").append(memory.totalPss.toLong() * 1_024L)
+            append("|gpuMetricAvailability=UNKNOWN")
             append("|counterComplete=").append(counterCompleteness)
         }
     }
+
+    private fun safeMetricToken(value: String?): String = value
+        ?.takeIf { it.matches(SAFE_METRIC_TOKEN_PATTERN) }
+        ?: "UNKNOWN"
 
     private fun readHarnessIdentity(source: Intent): Boolean {
         runId = source.getStringExtra(EXTRA_RUN_ID).orEmpty()
         runtimeSourceSha = source.getStringExtra(EXTRA_RUNTIME_SOURCE_SHA).orEmpty()
         harnessSourceSha = source.getStringExtra(EXTRA_HARNESS_SOURCE_SHA).orEmpty()
         runtimeInputsTreeSha256 = source.getStringExtra(EXTRA_RUNTIME_INPUTS_TREE_SHA256).orEmpty()
+        appApkSha256 = source.getStringExtra(EXTRA_APP_APK_SHA256).orEmpty()
+        testApkSha256 = source.getStringExtra(EXTRA_TEST_APK_SHA256).orEmpty()
         traceIdentity = source.getStringExtra(EXTRA_TRACE_IDENTITY).orEmpty()
         runIteration = source.getIntExtra(EXTRA_RUN_ITERATION, 0)
+        val installedAppSha256 = runCatching { sha256(File(applicationInfo.sourceDir)) }.getOrNull()
         return source.getIntExtra(EXTRA_ARTIFACT_SET_REVISION, 0) == ARTIFACT_SET_REVISION &&
             runId.matches(RUN_ID_PATTERN) &&
             runtimeSourceSha == EXPECTED_RUNTIME_SOURCE_SHA &&
             BuildConfig.COMMIT_SHA == EXPECTED_RUNTIME_SOURCE_SHA &&
             harnessSourceSha.matches(GIT_SHA_PATTERN) &&
             runtimeInputsTreeSha256.matches(SHA256_PATTERN) &&
+            runtimeInputsTreeSha256 == EXPECTED_RUNTIME_INPUTS_TREE_SHA256 &&
+            appApkSha256.matches(SHA256_PATTERN) &&
+            testApkSha256.matches(SHA256_PATTERN) &&
+            installedAppSha256 == appApkSha256 &&
             traceIdentity.matches(TRACE_IDENTITY_PATTERN) &&
             runIteration > 0
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and 0xff) }
     }
 
     private fun identityHash53(value: String): Long {
@@ -860,6 +1022,10 @@ class BenchmarkActivity : ComponentActivity() {
         repeat(7) { index -> prefix = (prefix shl 8) or (digest[index].toLong() and 0xffL) }
         return prefix ushr 3
     }
+
+    private fun acceptedTargetSequenceSha256(): String = MessageDigest.getInstance("SHA-256")
+        .digest(acceptedTargetSequence.joinToString(",").toByteArray(StandardCharsets.US_ASCII))
+        .joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and 0xff) }
 
     private fun List<Long>.percentile(fraction: Double): Long {
         if (isEmpty()) return 0L
@@ -1013,6 +1179,9 @@ class BenchmarkActivity : ComponentActivity() {
         Trace.setCounter("ccr.prefetch_wasted", diagnostics.prefetchWasted)
         Trace.setCounter("ccr.prefetch_evicted_before_use_total", diagnostics.prefetchEvictedBeforeUse)
         Trace.setCounter("ccr.cache_bytes", diagnostics.cacheBytes)
+        Trace.setCounter("ccr.cache_peak_bytes", diagnostics.peakCacheBytes)
+        Trace.setCounter("ccr.reverse_window_refill_stall", diagnostics.reverseWindowRefillStallCount)
+        Trace.setCounter("ccr.reverse_window_refill_stall_max_us", diagnostics.reverseWindowRefillStallMaxUs)
         Trace.setCounter("ccr.seek_total", diagnostics.seekCount)
         Trace.setCounter("ccr.flush_total", diagnostics.flushCount)
         Trace.setCounter("ccr.sequential_entry_total", diagnostics.sequentialEntryCount)
@@ -1071,6 +1240,8 @@ class BenchmarkActivity : ComponentActivity() {
         SCENARIO_HOLD_720_PLUS_FIVE -> REPRESENTATIVE_720_H264_BFRAMES
         SCENARIO_HOLD_1080_PLUS_ONE,
         SCENARIO_HOLD_1080_PLUS_FIVE,
+        SCENARIO_HOLD_1080_MINUS_ONE,
+        SCENARIO_HOLD_1080_MINUS_FIVE,
         SCENARIO_REVERSE_1080,
         SCENARIO_SEEK_1080 -> REPRESENTATIVE_1080_H264_BFRAMES
         SCENARIO_SWITCH_1080_HEVC_H264 -> REPRESENTATIVE_1080_SWITCH_HEVC
@@ -1110,6 +1281,8 @@ class BenchmarkActivity : ComponentActivity() {
         const val EXTRA_RUNTIME_SOURCE_SHA = "benchmark-runtime-source-sha"
         const val EXTRA_HARNESS_SOURCE_SHA = "benchmark-harness-source-sha"
         const val EXTRA_RUNTIME_INPUTS_TREE_SHA256 = "benchmark-runtime-inputs-tree-sha256"
+        const val EXTRA_APP_APK_SHA256 = "benchmark-app-apk-sha256"
+        const val EXTRA_TEST_APK_SHA256 = "benchmark-test-apk-sha256"
         const val EXTRA_TRACE_IDENTITY = "benchmark-trace-identity"
         const val EXTRA_RUN_ITERATION = "benchmark-run-iteration"
         const val EXTRA_ARTIFACT_SET_REVISION = "benchmark-artifact-set-revision"
@@ -1135,6 +1308,8 @@ class BenchmarkActivity : ComponentActivity() {
         const val SCENARIO_HOLD_720_PLUS_FIVE = "720p-hold-plus-five"
         const val SCENARIO_HOLD_1080_PLUS_ONE = "1080p-hold-plus-one"
         const val SCENARIO_HOLD_1080_PLUS_FIVE = "1080p-hold-plus-five"
+        const val SCENARIO_HOLD_1080_MINUS_ONE = "1080p-hold-minus-one"
+        const val SCENARIO_HOLD_1080_MINUS_FIVE = "1080p-hold-minus-five"
         const val SCENARIO_REVERSE_1080 = "1080p-direction-reverse"
         const val SCENARIO_SEEK_1080 = "1080p-distant-seek"
         const val SCENARIO_SWITCH_1080_H264_HEVC = "1080p-switch-h264-hevc"
@@ -1147,6 +1322,7 @@ class BenchmarkActivity : ComponentActivity() {
         const val TRACE_FIXTURE_ENTRY = "ccr.fixture_entry"
         const val TRACE_BACKGROUND_TO_FIRST_FRAME = "ccr.background_to_first_frame"
         const val TRACE_REPRESENTATIVE_SMOOTHNESS = "ccr.representative_smoothness"
+        const val TRACE_SUCCESSFUL_PUBLICATION = "CCR.publish.success"
         const val TRACE_RUN_IDENTITY_PREFIX = "ccr.run_identity"
 
         private const val H264_FIXTURE = "burst.mp4"
@@ -1162,24 +1338,29 @@ class BenchmarkActivity : ComponentActivity() {
         private const val LONG_PRESS_LAST_FRAME = 30
         private const val DISTANT_FRAME = 36
         private const val REPEAT_INTERVAL_MS = 50L
-        private const val REPRESENTATIVE_HOLD_ACTIVE_NS = 60_000_000_000L
+        private const val REPRESENTATIVE_HOLD_ACTIVE_NS = 30_000_000_000L
         private const val REPRESENTATIVE_REVERSE_ACTIVE_NS = 30_000_000_000L
         private const val REVERSE_DIRECTION_INTERVAL_MS = 5_000L
         private const val REPRESENTATIVE_SETTLE_TIMEOUT_MS = 10_000L
         private const val REPRESENTATIVE_SETTLE_POLL_MS = 50L
         private const val RELEASE_ACCEPTANCE_GRACE_MS = 500L
         private const val ENTRY_TRACE_COOKIE = 1L
-        private const val ARTIFACT_SET_REVISION = 2
-        private const val EXPECTED_RUNTIME_SOURCE_SHA = "189e6e1edb8419f0c2be449e6ab9fd9b54bf5b1e"
+        private const val ARTIFACT_SET_REVISION = 3
+        private const val EXPECTED_RUNTIME_SOURCE_SHA = "dabf11fa103179c4d81fe4448aba84ac340cf230"
+        private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
+            "612d695e4c9b57d4e4fb10076879bcb9b306d034ff05ba67ad7706c0f22c12e8"
         private val RUN_ID_PATTERN = Regex("[A-Za-z0-9._:-]{1,80}")
         private val TRACE_IDENTITY_PATTERN = Regex("[A-Za-z0-9._:-]{1,120}")
         private val GIT_SHA_PATTERN = Regex("[0-9a-f]{40}")
+        private val SAFE_METRIC_TOKEN_PATTERN = Regex("[A-Za-z0-9._-]{1,96}")
         private val SHA256_PATTERN = Regex("[0-9a-f]{64}")
         private val REPRESENTATIVE_HOLD_SCENARIOS = setOf(
             SCENARIO_HOLD_720_PLUS_ONE,
             SCENARIO_HOLD_720_PLUS_FIVE,
             SCENARIO_HOLD_1080_PLUS_ONE,
             SCENARIO_HOLD_1080_PLUS_FIVE,
+            SCENARIO_HOLD_1080_MINUS_ONE,
+            SCENARIO_HOLD_1080_MINUS_FIVE,
             SCENARIO_REVERSE_1080,
         )
         private val REPRESENTATIVE_SCENARIOS = REPRESENTATIVE_HOLD_SCENARIOS + setOf(

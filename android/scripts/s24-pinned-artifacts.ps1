@@ -466,6 +466,48 @@ function Get-CcrPinnedDeviceElapsedRealtimeNs {
   return [long]($seconds * 1000000000)
 }
 
+function Write-CcrPinnedInstrumentationFailureReport {
+  param(
+    [Parameter(Mandatory = $true)][object]$Context,
+    [Parameter(Mandatory = $true)][ValidateSet("debugTest", "macrobenchmarkTest")][string]$TestRole,
+    [Parameter(Mandatory = $true)][string]$ClassName,
+    [Parameter(Mandatory = $true)][string]$RunId,
+    [Parameter(Mandatory = $true)][int]$ExpectedTestCount,
+    [Parameter(Mandatory = $true)][int]$ExitCode,
+    [AllowEmptyString()][string]$Output,
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $outputRoot = [System.IO.Path]::GetFullPath([string]$Context.OutputDirectory)
+  if (-not (Test-CcrPinnedPathWithin $fullPath $outputRoot)) {
+    throw "PINNED_INSTRUMENTATION_FAILURE_REPORT_PATH_FORBIDDEN"
+  }
+  if (Test-Path -LiteralPath $fullPath) {
+    throw "PINNED_INSTRUMENTATION_FAILURE_REPORT_ALREADY_EXISTS"
+  }
+  $parent = Split-Path -Parent $fullPath
+  if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+    throw "PINNED_INSTRUMENTATION_FAILURE_REPORT_PARENT_MISSING"
+  }
+  $report = [ordered]@{
+    schemaVersion = 1
+    kind = "pinned-instrumentation-failure"
+    testRole = $TestRole
+    className = $ClassName
+    runId = $RunId
+    expectedTestCount = $ExpectedTestCount
+    exitCode = $ExitCode
+    output = [string]$Output
+  }
+  [System.IO.File]::WriteAllText(
+    $fullPath,
+    (($report | ConvertTo-Json -Depth 5) + "`n"),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  (Get-Item -LiteralPath $fullPath).IsReadOnly = $true
+  return $fullPath
+}
+
 function Invoke-CcrPinnedInstrumentation {
   param(
     [Parameter(Mandatory = $true)][object]$Context,
@@ -473,7 +515,8 @@ function Invoke-CcrPinnedInstrumentation {
     [Parameter(Mandatory = $true)][string]$ClassName,
     [Parameter(Mandatory = $true)][string]$RunId,
     [int]$ExpectedTestCount = 1,
-    [hashtable]$AdditionalArguments = @{}
+    [hashtable]$AdditionalArguments = @{},
+    [string]$FailureReportPath
   )
   Assert-CcrPinnedRunId $RunId | Out-Null
   if ($ExpectedTestCount -lt 1) { throw "PINNED_EXPECTED_TEST_COUNT_INVALID" }
@@ -499,6 +542,12 @@ function Invoke-CcrPinnedInstrumentation {
   $minimumStartedAt = Get-CcrPinnedDeviceElapsedRealtimeNs $Context
   $result = Invoke-CcrPinnedAdb $Context $args
   if ($result.exitCode -ne 0 -or $result.output -notmatch "OK \($ExpectedTestCount tests?\)") {
+    if (-not [string]::IsNullOrWhiteSpace($FailureReportPath)) {
+      Write-CcrPinnedInstrumentationFailureReport `
+        -Context $Context -TestRole $TestRole -ClassName $ClassName -RunId $RunId `
+        -ExpectedTestCount $ExpectedTestCount -ExitCode $result.exitCode `
+        -Output ([string]$result.output) -Path $FailureReportPath | Out-Null
+    }
     throw "PINNED_INSTRUMENTATION_FAILED:$TestRole"
   }
   return [PSCustomObject]@{ RunId = $RunId; MinimumStartedAtElapsedRealtimeNs = $minimumStartedAt; Output = $result.output }

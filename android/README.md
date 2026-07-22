@@ -1,4 +1,4 @@
-# CCR Android 0.2.0-alpha.4 Internal Viewer
+# CCR Android 0.2.0-alpha.5 Internal Viewer
 
 데스크톱과 독립된 Android 내부 파일럿 앱이다. 의료기기나 공식 진단 프로그램이 아니며, 원본 MP4를 SAF 읽기 전용으로 연다. Gate 3 정확 프레임 기준선은 `android-v0.1.0-gate3-pass`로 동결되어 있다.
 
@@ -9,7 +9,7 @@
 - Android Gradle Plugin 9.3.0
 - minSdk 34, compileSdk/targetSdk 37
 - application ID `com.snowberried.ctcinereviewer.internal`
-- versionName `0.2.0-alpha.4`, versionCode `5`
+- versionName `0.2.0-alpha.5`, versionCode `6`
 - `internalDebug`는 표준 Android debug key 사용
 - GitHub Release와 desktop Latest Release를 만들지 않음
 
@@ -163,4 +163,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-batter
 
 ## 개인정보 및 제외 범위
 
-Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. 프로젝트 저장, DICOM/PACS, AI, cloud, 주석, 비교 보기, PNG export, 필터, zoom/pan, Play 배포는 Android 0.2.0-alpha.4 범위 밖이다. alpha.4 성능 Gate와 사용자 체감 합격 전에는 `android-v0.2.0-alpha.4` tag를 만들지 않는다.
+Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. 프로젝트 저장, DICOM/PACS, AI, cloud, 주석, 비교 보기, PNG export, 필터, zoom/pan, Play 배포는 Android 0.2.0-alpha.5 범위 밖이다. alpha.5 정확성·성능 Gate와 사용자 체감 합격 전에는 tag를 만들지 않는다.

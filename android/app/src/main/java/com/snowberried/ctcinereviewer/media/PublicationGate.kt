@@ -240,6 +240,8 @@ class LatestRequestSlot<T> {
         value
     }
 
+    fun hasPending(): Boolean = synchronized(lock) { pending != null }
+
     fun clear() = synchronized(lock) {
         pending = null
     }

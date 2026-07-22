@@ -10,6 +10,7 @@ import android.os.SystemClock
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.lifecycle.Lifecycle
 import com.snowberried.ctcinereviewer.BuildConfig
 import com.snowberried.ctcinereviewer.media.DecoderDiagnostics
 import com.snowberried.ctcinereviewer.media.ContainerMetadata
@@ -151,6 +152,7 @@ class S24FrameAccuracyTest {
             exercisePrefetchContract(gate, loadGolden("burst"), loadGolden("switch-a"), loadGolden("switch-b"))
             exerciseBurst(gate, loadGolden("burst"))
             exerciseFileSwitch(gate, loadGolden("switch-a"), loadGolden("switch-b"))
+            assertEquals("unexpected stale discard", 0L, report.unexpectedStaleViolationCount())
             assertEquals("source was opened for write", 0, ReadOnlyFixtureProvider.writeOpenCount.get())
             assertEquals("exactness mismatch", 0, mismatchCount)
         }
@@ -222,7 +224,231 @@ class S24FrameAccuracyTest {
         reportOutcome.getOrThrow()
     }
 
+    @Test
+    fun reverseWindowStrideMinusOneAndFiveRemainExactOnS24Ultra() {
+        assumeTrue(
+            "S24 Ultra Gate requires Samsung SM-S928*",
+            Build.MANUFACTURER.equals("samsung", true) && Build.MODEL.startsWith("SM-S928"),
+        )
+        report.bind(ValidationHarnessV2.requireIdentity(targetContext, instrumentation.context))
+        ReadOnlyFixtureProvider.writeOpenCount.set(0)
+        val scenario = ActivityScenario.launch(GateActivity::class.java)
+        val activity = AtomicReference<GateActivity>()
+        val ready = CountDownLatch(1)
+        scenario.onActivity {
+            activity.set(it)
+            ready.countDown()
+        }
+        assertTrue("GateActivity unavailable", ready.await(5, TimeUnit.SECONDS))
+        val gate = activity.get()
+        assertTrue("EGL Surface was not created", gate.awaitSurface())
+
+        val outcome = runCatching {
+            SEQUENTIAL_FIXTURES.forEach { name ->
+                val golden = loadGolden(name)
+                assertEquals(golden.sourceSha256, assetSha256(golden.fixture))
+                exerciseReverseSequential(gate, golden, stride = -1)
+                exerciseReverseSequential(gate, golden, stride = -5)
+            }
+            assertEquals("source was opened for write", 0, ReadOnlyFixtureProvider.writeOpenCount.get())
+            assertEquals("exactness mismatch", 0, mismatchCount)
+        }
+        val reportOutcome = runCatching {
+            report.finish(
+                status = if (outcome.isSuccess) "PASS" else "FAIL",
+                failure = outcome.exceptionOrNull(),
+                latencyMs = emptyList(),
+                diagnostics = lastDiagnostics,
+                writeOpenCount = ReadOnlyFixtureProvider.writeOpenCount.get(),
+                mismatchCount = mismatchCount,
+                fileName = REVERSE_REPORT_FILE,
+            )
+        }
+        scenario.close()
+        outcome.exceptionOrNull()?.let { failure ->
+            reportOutcome.exceptionOrNull()?.let(failure::addSuppressed)
+            throw failure
+        }
+        reportOutcome.getOrThrow()
+    }
+
+    @Test
+    fun directionReversalAndGenerationInvalidationRemainExactOnS24Ultra() {
+        assumeTrue(
+            "S24 Ultra Gate requires Samsung SM-S928*",
+            Build.MANUFACTURER.equals("samsung", true) && Build.MODEL.startsWith("SM-S928"),
+        )
+        report.bind(ValidationHarnessV2.requireIdentity(targetContext, instrumentation.context))
+        ReadOnlyFixtureProvider.writeOpenCount.set(0)
+        val scenario = ActivityScenario.launch(GateActivity::class.java)
+        val activity = AtomicReference<GateActivity>()
+        val ready = CountDownLatch(1)
+        scenario.onActivity {
+            activity.set(it)
+            ready.countDown()
+        }
+        assertTrue("GateActivity unavailable", ready.await(5, TimeUnit.SECONDS))
+        val gate = activity.get()
+        assertTrue("EGL Surface was not created", gate.awaitSurface())
+
+        val outcome = runCatching {
+            val h264 = loadGolden("h264-bframes")
+            val hevc = loadGolden("hevc-main8")
+            openAndAwait(gate, h264)
+            val anchor = minOf(20, h264.frames.lastIndex)
+            requestAndValidate(gate, h264, anchor)
+
+            val firstGesture = AtomicReference<Long>()
+            onMain(gate) {
+                firstGesture.set(gate.beginHoldGesture())
+                checkNotNull(gate.requestReverseSequentialFrame(anchor - 1, -1, firstGesture.get()))
+            }
+            awaitPublished(gate, h264, anchor - 1)
+            val reversePlanCountBeforeDirect = lastDiagnostics.randomSeekReverseWindowPlanCount
+            requestAndValidate(gate, h264, anchor - 2)
+            assertTrue(
+                "direct seek did not reuse an exact reverse-window texture",
+                lastDiagnostics.randomSeekReverseWindowPlanCount > reversePlanCountBeforeDirect,
+            )
+
+            onMain(gate) {
+                gate.endHoldGesture(firstGesture.get())
+                checkNotNull(gate.requestForwardSequentialFrame(anchor - 1, 1))
+            }
+            awaitPublished(gate, h264, anchor - 1)
+
+            // Reopen to clear generic/reverse textures, then stop the actor at the first
+            // cache-only reverse-window output. This makes the Surface-generation race
+            // deterministic instead of merely replacing the Surface near a build.
+            openAndAwait(gate, h264)
+            requestAndValidate(gate, h264, anchor)
+            val replacementReady = AtomicReference<CountDownLatch>()
+            val surfaceInvalidationAcceptance = AtomicReference<RequestAcceptance>()
+            assertTrue("reverse build barrier was already armed", gate.armReverseWindowBuildBarrier())
+            try {
+                onMain(gate) {
+                    val gesture = gate.beginHoldGesture()
+                    surfaceInvalidationAcceptance.set(
+                        checkNotNull(gate.requestReverseSequentialFrame(anchor - 1, -1, gesture)),
+                    )
+                }
+                report.expectGenerationInvalidationDiscard(
+                    phase = "surface-generation-supersede",
+                    fixture = h264.fixture,
+                    acceptance = surfaceInvalidationAcceptance.get(),
+                )
+                assertTrue(
+                    "reverse window did not enter cache-only build",
+                    gate.awaitReverseWindowBuildBarrierEntry(5_000),
+                )
+                onMain(gate) { replacementReady.set(gate.replaceSurfaceForTest()) }
+                assertTrue(
+                    "replacement Surface was not ready",
+                    replacementReady.get().await(10, TimeUnit.SECONDS),
+                )
+            } finally {
+                gate.releaseReverseWindowBuildBarrier()
+            }
+            assertTrue("actor did not settle after Surface replacement", gate.awaitActorIdle(10_000))
+            assertTrue("main callbacks did not settle after Surface replacement", gate.awaitMainCallbacks(10_000))
+            val surfaceInvalidationResults = gate.drainResults()
+            surfaceInvalidationResults.forEach(report::observeResult)
+            val oldGenerationPublications = surfaceInvalidationResults.count { it.result is FrameResult.Published }
+            assertEquals("old Surface generation published a frame", 0, oldGenerationPublications)
+            report.endSupersedePhase("surface-generation-supersede")
+            gate.clearResults()
+            requestAndValidate(gate, h264, anchor - 3)
+
+            // Prove lifecycle stop invalidation with the exactness renderer. The UI
+            // lifecycle test verifies requested/displayed state restoration; this
+            // companion also verifies the restored texture timestamp, embedded ID,
+            // and canonical signature against the frozen golden vector.
+            openAndAwait(gate, h264)
+            requestAndValidate(gate, h264, anchor)
+            gate.clearResults()
+            val surfaceGenerationBeforeStop = gate.surfaceAvailabilityGeneration()
+            val lifecycleInvalidationAcceptance = AtomicReference<RequestAcceptance>()
+            assertTrue("lifecycle reverse build barrier was already armed", gate.armReverseWindowBuildBarrier())
+            try {
+                onMain(gate) {
+                    val gesture = gate.beginHoldGesture()
+                    lifecycleInvalidationAcceptance.set(
+                        checkNotNull(gate.requestReverseSequentialFrame(anchor - 1, -1, gesture)),
+                    )
+                }
+                report.expectGenerationInvalidationDiscard(
+                    phase = "lifecycle-stop-supersede",
+                    fixture = h264.fixture,
+                    acceptance = lifecycleInvalidationAcceptance.get(),
+                )
+                assertTrue(
+                    "lifecycle reverse window did not enter cache-only build",
+                    gate.awaitReverseWindowBuildBarrierEntry(5_000),
+                )
+                scenario.moveToState(Lifecycle.State.CREATED)
+                assertTrue(
+                    "lifecycle stop did not invalidate the decoder Surface",
+                    gate.awaitSurfaceAvailabilityAfter(surfaceGenerationBeforeStop, false, 10_000),
+                )
+            } finally {
+                gate.releaseReverseWindowBuildBarrier()
+            }
+            assertTrue("actor did not settle after lifecycle stop", gate.awaitActorIdle(10_000))
+            assertTrue("main callbacks did not settle after lifecycle stop", gate.awaitMainCallbacks(10_000))
+            val lifecycleInvalidationResults = gate.drainResults()
+            lifecycleInvalidationResults.forEach(report::observeResult)
+            assertEquals(
+                "stopped lifecycle published an in-flight reverse frame",
+                0,
+                lifecycleInvalidationResults.count { it.result is FrameResult.Published },
+            )
+            report.endSupersedePhase("lifecycle-stop-supersede")
+            val surfaceGenerationBeforeResume = gate.surfaceAvailabilityGeneration()
+            scenario.moveToState(Lifecycle.State.RESUMED)
+            assertTrue(
+                "resumed exactness Surface was not ready",
+                gate.awaitSurfaceAvailabilityAfter(surfaceGenerationBeforeResume, true, 10_000),
+            )
+            gate.clearResults()
+            requestAndValidate(gate, h264, anchor - 1)
+
+            openAndAwait(gate, hevc)
+            requestAndValidate(gate, hevc, minOf(hevc.frames.lastIndex, 8))
+            openAndAwait(gate, h264)
+            requestAndValidate(gate, h264, minOf(h264.frames.lastIndex, 8))
+
+            assertEquals("source was opened for write", 0, ReadOnlyFixtureProvider.writeOpenCount.get())
+            assertEquals("exactness mismatch", 0, mismatchCount)
+            assertEquals("generation invalidation stale evidence", 2L, report.expectedStaleDiscardCount())
+            assertEquals("unexpected stale discard", 0L, report.unexpectedStaleViolationCount())
+            assertEquals(0L, lastDiagnostics.staleBeforeSwapCount)
+            assertEquals(0L, lastDiagnostics.swapFailureCount)
+            assertEquals(0L, lastDiagnostics.surfaceInvalidCount)
+            assertEquals(0L, lastDiagnostics.publicationInvariantViolationCount)
+            assertTrue(lastDiagnostics.peakCacheBytes <= lastDiagnostics.cacheBudgetBytes)
+            assertEquals(0L, lastDiagnostics.textureDoubleReleaseCount)
+        }
+        val reportOutcome = runCatching {
+            report.finish(
+                status = if (outcome.isSuccess) "PASS" else "FAIL",
+                failure = outcome.exceptionOrNull(),
+                latencyMs = emptyList(),
+                diagnostics = lastDiagnostics,
+                writeOpenCount = ReadOnlyFixtureProvider.writeOpenCount.get(),
+                mismatchCount = mismatchCount,
+                fileName = DIRECTION_REPORT_FILE,
+            )
+        }
+        scenario.close()
+        outcome.exceptionOrNull()?.let { failure ->
+            reportOutcome.exceptionOrNull()?.let(failure::addSuppressed)
+            throw failure
+        }
+        reportOutcome.getOrThrow()
+    }
+
     private fun exerciseEveryFrame(activity: GateActivity, golden: Golden): ContainerMetadata {
+        report.currentPhase = "every-frame"
         report.currentFixture = golden.fixture
         report.currentFrameIndex = 0
         val openedAt = SystemClock.elapsedRealtimeNanos()
@@ -242,6 +468,7 @@ class S24FrameAccuracyTest {
     }
 
     private fun exerciseNavigation(activity: GateActivity, golden: Golden) {
+        report.currentPhase = "navigation"
         report.currentFixture = golden.fixture
         openAndAwait(activity, golden)
         val middle = golden.frames.size / 2
@@ -250,6 +477,7 @@ class S24FrameAccuracyTest {
     }
 
     private fun exerciseForwardSequential(activity: GateActivity, golden: Golden, stride: Int) {
+        report.currentPhase = "forward-sequential"
         report.currentFixture = golden.fixture
         val mismatchBefore = mismatchCount
         val metadata = openAndAwait(activity, golden)
@@ -314,25 +542,114 @@ class S24FrameAccuracyTest {
             .put("sequentialOutputCount", diagnostics.sequentialOutputCount)
     }
 
+    private fun exerciseReverseSequential(activity: GateActivity, golden: Golden, stride: Int) {
+        report.currentPhase = "reverse-sequential"
+        report.currentFixture = golden.fixture
+        val mismatchBefore = mismatchCount
+        openAndAwait(activity, golden)
+        requestAndValidate(activity, golden, golden.frames.lastIndex)
+        val gesture = activity.beginHoldGesture()
+        var diagnostics = lastDiagnostics
+        var requestCount = 0
+        var index = golden.frames.lastIndex + stride
+        while (index >= 0) {
+            report.currentFrameIndex = index
+            activity.clearResults()
+            val acceptance = AtomicReference<RequestAcceptance>()
+            onMain(activity) {
+                activity.requestReverseSequentialFrame(index, stride, gesture)?.let(acceptance::set)
+            }
+            assertNotNull("${golden.fixture}[$index]: reverse request was not accepted", acceptance.get())
+            diagnostics = awaitPublished(activity, golden, index).diagnostics
+            lastDiagnostics = diagnostics
+            requestCount += 1
+            index += stride
+        }
+        onMain(activity) { activity.endHoldGesture(gesture) }
+        assertEquals("${golden.fixture}: stride $stride exactness mismatch", mismatchBefore, mismatchCount)
+        assertTrue("${golden.fixture}: stride $stride built no reverse window", diagnostics.reverseWindowBuildCount > 0)
+        assertTrue(
+            "${golden.fixture}: stride $stride repeated exact seek per target",
+            diagnostics.reverseWindowSeekCount < requestCount,
+        )
+        assertEquals("${golden.fixture}: stride $stride stale result", 0L, diagnostics.staleDiscardCount)
+        assertEquals("${golden.fixture}: stride $stride stale swap", 0L, diagnostics.staleBeforeSwapCount)
+        assertEquals("${golden.fixture}: stride $stride swap failure", 0L, diagnostics.swapFailureCount)
+        assertEquals("${golden.fixture}: stride $stride invalid surface", 0L, diagnostics.surfaceInvalidCount)
+        assertEquals(
+            "${golden.fixture}: stride $stride publication invariant",
+            0L,
+            diagnostics.publicationInvariantViolationCount,
+        )
+        assertEquals("${golden.fixture}: stride $stride texture double release", 0L, diagnostics.textureDoubleReleaseCount)
+        assertTrue(
+            "${golden.fixture}: stride $stride cache exceeded byte budget",
+            diagnostics.cacheBytes <= diagnostics.cacheBudgetBytes,
+        )
+        assertEquals("${golden.fixture}: stride $stride unexpectedly started prefetch", 0L, diagnostics.prefetchStarted)
+        report.sequentialRuns += JSONObject()
+            .put("fixture", golden.fixture)
+            .put("sourceSha256", golden.sourceSha256)
+            .put("stride", stride)
+            .put("requestCount", requestCount)
+            .put("mismatchCount", mismatchCount - mismatchBefore)
+            .put("reverseWindowBuildCount", diagnostics.reverseWindowBuildCount)
+            .put("reverseWindowRefillCount", diagnostics.reverseWindowRefillCount)
+            .put("reverseWindowInitialReadyCount", diagnostics.reverseWindowInitialReadyCount)
+            .put("reverseWindowRollingAppendRefillCount", diagnostics.reverseWindowRollingAppendRefillCount)
+            .put("reverseWindowRefillNeeded", diagnostics.reverseWindowRefillNeeded)
+            .put("reverseWindowSeekCount", diagnostics.reverseWindowSeekCount)
+            .put("reverseWindowHitCount", diagnostics.reverseWindowHitCount)
+    }
+
     private fun exerciseBurst(activity: GateActivity, golden: Golden) {
+        report.currentPhase = "burst-supersede"
         report.currentFixture = golden.fixture
         openAndAwait(activity, golden)
         activity.clearResults()
         val sequence = listOf(1, 6, 12, 24, golden.frames.lastIndex)
-        val lastAcceptance = AtomicReference<RequestAcceptance>()
+        val acceptances = mutableListOf<RequestAcceptance>()
         onMain(activity) {
-            sequence.forEach { index -> activity.requestFrame(index)?.let(lastAcceptance::set) }
+            sequence.forEach { index -> activity.requestFrame(index)?.let(acceptances::add) }
+        }
+        assertEquals("burst accepted request count", sequence.size, acceptances.size)
+        val accepted = requireNotNull(acceptances.lastOrNull()) { "burst final request was not accepted" }
+        assertEquals("burst final accepted target", sequence.last(), accepted.request.requestedFrameIndex)
+        acceptances.dropLast(1).forEach { acceptance ->
+            report.expectSupersededDiscard(
+                phase = "burst-supersede",
+                fixture = golden.fixture,
+                acceptance = acceptance,
+                supersedingAcceptance = accepted,
+            )
         }
         var finalPublished = false
         val deadline = SystemClock.elapsedRealtime() + 20_000
         while (SystemClock.elapsedRealtime() < deadline && !finalPublished) {
             val observed = activity.awaitResult(2) ?: continue
             lastDiagnostics = observed.diagnostics
-            report.observeDiagnostics(observed.diagnostics)
+            report.observeResult(observed)
+            assertEquals(
+                "${golden.fixture}: cache budget changed",
+                REQUIRED_CACHE_BUDGET_BYTES,
+                observed.diagnostics.cacheBudgetBytes,
+            )
+            assertTrue(
+                "${golden.fixture}: cache bytes exceeded the hard cap",
+                observed.diagnostics.cacheBytes in 0L..observed.diagnostics.cacheBudgetBytes,
+            )
+            assertTrue(
+                "${golden.fixture}: peak cache bytes exceeded the hard cap",
+                observed.diagnostics.peakCacheBytes in
+                    observed.diagnostics.cacheBytes..observed.diagnostics.cacheBudgetBytes,
+            )
             when (val result = observed.result) {
                 is FrameResult.Published -> {
                     validatePublished(golden, result)
-                    finalPublished = result.request.requestedFrameIndex == golden.frames.lastIndex
+                    if (result.request.requestedFrameIndex == golden.frames.lastIndex) {
+                        assertEquals("burst final publication acceptance", accepted.request, result.request)
+                        finalPublished = true
+                    }
                 }
                 is FrameResult.DiscardedStale -> Unit
                 is FrameResult.Error -> error("burst error: ${result.code}")
@@ -340,8 +657,9 @@ class S24FrameAccuracyTest {
             }
         }
         assertTrue("burst final frame was not published", finalPublished)
-        val accepted = requireNotNull(lastAcceptance.get())
         Thread.sleep(100)
+        assertTrue("burst actor did not settle", activity.awaitActorIdle())
+        assertTrue("burst main callbacks did not settle", activity.awaitMainCallbacks())
         val invalidSuccessfulSwap = activity.drainPublicationEvents().any { event ->
             event.eventSequence > accepted.eventSequence &&
                 event.result == PublicationResult.PUBLISHED &&
@@ -350,6 +668,8 @@ class S24FrameAccuracyTest {
         }
         assertEquals("old generation swapped after final request acceptance", false, invalidSuccessfulSwap)
         assertEquals("publication invariant violation", 0L, lastDiagnostics.publicationInvariantViolationCount)
+        activity.drainResults().forEach(report::observeResult)
+        report.endSupersedePhase("burst-supersede")
     }
 
     private fun exercisePrefetchContract(
@@ -358,6 +678,7 @@ class S24FrameAccuracyTest {
         first: Golden,
         second: Golden,
     ) {
+        report.currentPhase = "prefetch-contract"
         report.currentFixture = golden.fixture
         openAndAwait(activity, golden)
         assertTrue("initial frame actor did not become idle", activity.awaitActorIdle())
@@ -399,23 +720,44 @@ class S24FrameAccuracyTest {
     }
 
     private fun exerciseFileSwitch(activity: GateActivity, first: Golden, second: Golden) {
+        report.currentPhase = "file-switch-supersede"
         report.currentFixture = first.fixture
         openAndAwait(activity, first)
         activity.clearResults()
+        val superseded = AtomicReference<RequestAcceptance>()
         onMain(activity) {
-            activity.requestFrame(first.frames.lastIndex)
+            activity.requestFrame(first.frames.lastIndex)?.let(superseded::set)
             report.currentFixture = second.fixture
             report.currentFrameIndex = 0
             activity.openFixture(uri(second.fixture))
         }
         val secondIndex = requireNotNull(activity.awaitIndex()) { "switch B index timeout" }
         val secondMetadata = requireNotNull(activity.awaitMetadata()) { "switch B metadata timeout" }
+        report.expectSupersededDiscard(
+            phase = "file-switch-supersede",
+            fixture = first.fixture,
+            acceptance = requireNotNull(superseded.get()) { "switch A request was not accepted" },
+            supersedingFileGeneration = secondMetadata.fileGeneration,
+        )
         validateIndex(second, secondIndex)
         validateMetadata(second, secondMetadata)
         val published = awaitPublished(activity, second, 0)
-        assertEquals(secondMetadata.fileGeneration, (published.result as FrameResult.Published).request.token.fileGeneration)
+        val secondPublished = published.result as FrameResult.Published
+        assertEquals(secondMetadata.fileGeneration, secondPublished.request.token.fileGeneration)
+        report.bindFileSwitchPublicationBoundary(secondPublished)
         Thread.sleep(500)
-        val lateA = activity.drainResults().map(GateActivity.ObservedResult::result).filterIsInstance<FrameResult.Published>()
+        assertTrue("file switch actor did not settle", activity.awaitActorIdle())
+        assertTrue("file switch main callbacks did not settle", activity.awaitMainCallbacks())
+        val stalePublication = activity.drainPublicationEvents().any { event ->
+            event.result == PublicationResult.PUBLISHED &&
+                event.fileGeneration != secondMetadata.fileGeneration &&
+                event.currentFileGeneration == secondMetadata.fileGeneration
+        }
+        assertEquals("A frame swapped after B file generation", false, stalePublication)
+        val lateResults = activity.drainResults()
+        lateResults.forEach(report::observeResult)
+        report.endSupersedePhase("file-switch-supersede")
+        val lateA = lateResults.map(GateActivity.ObservedResult::result).filterIsInstance<FrameResult.Published>()
             .count { it.request.token.fileGeneration != secondMetadata.fileGeneration }
         assertEquals("A frame published after B file generation", 0, lateA)
     }
@@ -452,7 +794,21 @@ class S24FrameAccuracyTest {
         while (SystemClock.elapsedRealtime() < deadline) {
             val observed = activity.awaitResult(2) ?: continue
             lastDiagnostics = observed.diagnostics
-            report.observeDiagnostics(observed.diagnostics)
+            report.observeResult(observed)
+            assertEquals(
+                "${golden.fixture}: cache budget changed",
+                REQUIRED_CACHE_BUDGET_BYTES,
+                observed.diagnostics.cacheBudgetBytes,
+            )
+            assertTrue(
+                "${golden.fixture}: cache bytes exceeded the hard cap",
+                observed.diagnostics.cacheBytes in 0L..observed.diagnostics.cacheBudgetBytes,
+            )
+            assertTrue(
+                "${golden.fixture}: peak cache bytes exceeded the hard cap",
+                observed.diagnostics.peakCacheBytes in
+                    observed.diagnostics.cacheBytes..observed.diagnostics.cacheBudgetBytes,
+            )
             when (val result = observed.result) {
                 is FrameResult.Published -> {
                     validatePublished(golden, result)
@@ -591,6 +947,7 @@ class S24FrameAccuracyTest {
         val fixtures = mutableListOf<JSONObject>()
         val sequentialRuns = mutableListOf<JSONObject>()
         val codecComponents = linkedSetOf<String>()
+        var currentPhase = "unclassified"
         var currentFixture: String? = null
         var currentFrameIndex: Int? = null
         private var expectedFrameKey: FrameKey? = null
@@ -607,6 +964,10 @@ class S24FrameAccuracyTest {
         private var cacheRejectionCount = 0L
         private var cacheThrashCount = 0L
         private var textureDoubleReleaseCount = 0L
+        private val expectedSupersededDiscards = mutableMapOf<Pair<Long, Long>, ExpectedSupersededDiscard>()
+        private val staleDiscardEvents = mutableListOf<JSONObject>()
+        private var expectedSupersededDiscardCount = 0L
+        private var observedUnexpectedStaleCount = 0L
         private lateinit var identity: ValidationHarnessIdentity
         private var startedAtElapsedRealtimeNs = 0L
 
@@ -634,7 +995,118 @@ class S24FrameAccuracyTest {
             textureTimestampNs = timestampNs
         }
 
-        fun observeDiagnostics(value: DecoderDiagnostics) {
+        fun expectSupersededDiscard(
+            phase: String,
+            fixture: String,
+            acceptance: RequestAcceptance,
+            supersedingAcceptance: RequestAcceptance? = null,
+            supersedingFileGeneration: Long? = null,
+        ) {
+            check(phase == "burst-supersede" || phase == "file-switch-supersede") {
+                "unsupported expected stale phase: $phase"
+            }
+            val token = acceptance.request.token
+            if (phase == "file-switch-supersede") {
+                check(supersedingAcceptance == null) { "file switch must not bind a request boundary" }
+                checkNotNull(supersedingFileGeneration) { "file switch boundary generation is required" }
+                check(supersedingFileGeneration == token.fileGeneration + 1L) {
+                    "file switch boundary did not advance: $token -> $supersedingFileGeneration"
+                }
+            } else {
+                val supersedingRequest = checkNotNull(supersedingAcceptance) {
+                    "burst final acceptance boundary is required"
+                }.request
+                check(supersedingRequest.token.fileGeneration == token.fileGeneration &&
+                    supersedingRequest.token.requestGeneration > token.requestGeneration) {
+                    "burst acceptance boundary did not advance: $token -> ${supersedingRequest.token}"
+                }
+                check(supersedingFileGeneration == null) { "burst must not bind a file generation boundary" }
+            }
+            check(
+                expectedSupersededDiscards.put(
+                    token.fileGeneration to token.requestGeneration,
+                    ExpectedSupersededDiscard(
+                        phase,
+                        fixture,
+                        acceptance,
+                        supersedingAcceptance?.request?.token?.requestGeneration,
+                        supersedingAcceptance?.request?.token?.fileGeneration ?: supersedingFileGeneration,
+                    ),
+                ) == null,
+            ) { "duplicate expected stale token: $token" }
+        }
+
+        fun expectGenerationInvalidationDiscard(
+            phase: String,
+            fixture: String,
+            acceptance: RequestAcceptance,
+        ) {
+            check(phase == "surface-generation-supersede" || phase == "lifecycle-stop-supersede") {
+                "unsupported generation invalidation phase: $phase"
+            }
+            val token = acceptance.request.token
+            check(
+                expectedSupersededDiscards.put(
+                    token.fileGeneration to token.requestGeneration,
+                    ExpectedSupersededDiscard(phase, fixture, acceptance, null, null),
+                ) == null,
+            ) { "duplicate expected stale token: $token" }
+        }
+
+        fun observeResult(observed: GateActivity.ObservedResult) {
+            observeDiagnostics(observed.diagnostics)
+            val result = observed.result as? FrameResult.DiscardedStale ?: return
+            val token = result.request.token
+            val expected = expectedSupersededDiscards.remove(token.fileGeneration to token.requestGeneration)
+            val expectedStage = when (expected?.phase) {
+                "surface-generation-supersede", "lifecycle-stop-supersede" ->
+                    result.stage == "reverse-window-build"
+                else -> result.stage in EXPECTED_SUPERSEDED_STAGES
+            }
+            val expectedMatch = expected?.acceptance?.request == result.request &&
+                expectedStage
+            val classification = if (expectedMatch) "EXPECTED_SUPERSEDED" else "UNEXPECTED"
+            if (expectedMatch) expectedSupersededDiscardCount += 1 else observedUnexpectedStaleCount += 1
+            staleDiscardEvents += JSONObject()
+                .put("phase", expected?.phase ?: currentPhase)
+                .put("fixture", expected?.fixture ?: currentFixture ?: "unknown")
+                .put("observedWhileFixture", currentFixture ?: JSONObject.NULL)
+                .put("fileGeneration", token.fileGeneration)
+                .put("requestGeneration", token.requestGeneration)
+                .put("requestedFrameIndex", result.request.requestedFrameIndex)
+                .put("stage", result.stage)
+                .put("supersedingRequestGeneration", expected?.supersedingRequestGeneration ?: JSONObject.NULL)
+                .put("supersedingFileGeneration", expected?.supersedingFileGeneration ?: JSONObject.NULL)
+                .put("classification", classification)
+        }
+
+        fun endSupersedePhase(phase: String) {
+            expectedSupersededDiscards.entries.removeAll { (_, expected) -> expected.phase == phase }
+        }
+
+        fun bindFileSwitchPublicationBoundary(published: FrameResult.Published) {
+            val token = published.request.token
+            expectedSupersededDiscards.entries.forEach { entry ->
+                val expected = entry.value
+                if (expected.phase != "file-switch-supersede") return@forEach
+                check(token.fileGeneration == expected.supersedingFileGeneration &&
+                    token.requestGeneration > expected.acceptance.request.token.requestGeneration) {
+                    "file switch publication boundary did not advance: ${expected.acceptance.request.token} -> $token"
+                }
+                entry.setValue(expected.copy(supersedingRequestGeneration = token.requestGeneration))
+            }
+            staleDiscardEvents.forEach { event ->
+                if (event.optString("phase") == "file-switch-supersede") {
+                    check(token.fileGeneration == event.getLong("supersedingFileGeneration") &&
+                        token.requestGeneration > event.getLong("requestGeneration")) {
+                        "observed file switch publication boundary did not advance"
+                    }
+                    event.put("supersedingRequestGeneration", token.requestGeneration)
+                }
+            }
+        }
+
+        private fun observeDiagnostics(value: DecoderDiagnostics) {
             staleDiscardCount = maxOf(staleDiscardCount, value.staleDiscardCount)
             staleBeforeSwapCount = maxOf(staleBeforeSwapCount, value.staleBeforeSwapCount)
             swapFailureCount = maxOf(swapFailureCount, value.swapFailureCount)
@@ -647,6 +1119,10 @@ class S24FrameAccuracyTest {
             cacheThrashCount = maxOf(cacheThrashCount, value.cacheThrashCount)
             textureDoubleReleaseCount = maxOf(textureDoubleReleaseCount, value.textureDoubleReleaseCount)
         }
+
+        fun unexpectedStaleViolationCount(): Long = observedUnexpectedStaleCount
+
+        fun expectedStaleDiscardCount(): Long = expectedSupersededDiscardCount
 
         fun finish(
             status: String,
@@ -663,10 +1139,11 @@ class S24FrameAccuracyTest {
             val power = context.getSystemService(PowerManager::class.java)
             val battery = context.getSystemService(BatteryManager::class.java)
             val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            val kind = if (fileName == SEQUENTIAL_REPORT_FILE) {
-                "forward-sequential-exact"
-            } else {
-                "frame-accuracy-exact"
+            val kind = when (fileName) {
+                SEQUENTIAL_REPORT_FILE -> "forward-sequential-exact"
+                REVERSE_REPORT_FILE -> "reverse-window-exact"
+                DIRECTION_REPORT_FILE -> "bidirectional-transition-exact"
+                else -> "frame-accuracy-exact"
             }
             val json = JSONObject()
                 .put("schemaVersion", 2)
@@ -699,6 +1176,7 @@ class S24FrameAccuracyTest {
                     .put("cacheMisses", diagnostics.cacheMissCount)
                     .put("prefetchedFrames", diagnostics.prefetchedFrameCount)
                     .put("cacheBytes", diagnostics.cacheBytes)
+                    .put("peakCacheBytes", diagnostics.peakCacheBytes)
                     .put("cacheEntryCount", diagnostics.cacheEntryCount)
                     .put("peakCacheEntryCount", diagnostics.peakCacheEntryCount)
                     .put("cacheEvictionCount", diagnostics.cacheEvictionCount)
@@ -709,6 +1187,22 @@ class S24FrameAccuracyTest {
                     .put("liveTextureCount", diagnostics.liveTextureCount)
                     .put("peakLiveTextureCount", diagnostics.peakLiveTextureCount)
                     .put("textureDoubleReleaseCount", diagnostics.textureDoubleReleaseCount)
+                    .put("reverseWindowBuildCount", diagnostics.reverseWindowBuildCount)
+                    .put("reverseWindowHitCount", diagnostics.reverseWindowHitCount)
+                    .put("reverseWindowSeekCount", diagnostics.reverseWindowSeekCount)
+                    .put("reverseWindowRefillCount", diagnostics.reverseWindowRefillCount)
+                    .put("reverseWindowInitialReadyCount", diagnostics.reverseWindowInitialReadyCount)
+                    .put(
+                        "reverseWindowRollingAppendRefillCount",
+                        diagnostics.reverseWindowRollingAppendRefillCount,
+                    )
+                    .put("reverseWindowRefillNeeded", diagnostics.reverseWindowRefillNeeded)
+                    .put("reverseWindowRefillStallCount", diagnostics.reverseWindowRefillStallCount)
+                    .put("reverseWindowRefillStallMaxUs", diagnostics.reverseWindowRefillStallMaxUs)
+                    .put(
+                        "reverseWindowRefillStallOver250MsCount",
+                        diagnostics.reverseWindowRefillStallOver250MsCount,
+                    )
                     .put("decodedOutputs", diagnostics.decodeOrdinal)
                     .put("staleDiscard", diagnostics.staleDiscardCount)
                     .put("publishedSwaps", diagnostics.publishedSwapCount)
@@ -734,8 +1228,13 @@ class S24FrameAccuracyTest {
                 .put("batteryPercent", battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY))
                 .put("mismatchCount", mismatchCount)
                 .put("writeOpenCount", writeOpenCount)
+                .put("staleDiscardAssessmentVersion", 1)
+                .put("staleDiscardEvents", JSONArray(staleDiscardEvents))
                 .put("gateCounters", JSONObject()
                     .put("staleDiscard", staleDiscardCount)
+                    .put("staleDiscardEventCount", staleDiscardEvents.size)
+                    .put("expectedSupersededDiscardCount", expectedSupersededDiscardCount)
+                    .put("unexpectedStaleViolationCount", unexpectedStaleViolationCount())
                     .put("staleBeforeSwap", staleBeforeSwapCount)
                     .put("swapFailures", swapFailureCount)
                     .put("surfaceInvalid", surfaceInvalidCount)
@@ -752,7 +1251,7 @@ class S24FrameAccuracyTest {
                 startedAtElapsedRealtimeNs = startedAtElapsedRealtimeNs,
                 finishedAtElapsedRealtimeNs = SystemClock.elapsedRealtimeNanos(),
                 testCount = 1,
-                instrumentationExpectedTestCount = 2,
+                instrumentationExpectedTestCount = 1,
             )
             if (failure != null) {
                 json.put("failure", JSONObject()
@@ -770,11 +1269,32 @@ class S24FrameAccuracyTest {
             File(context.filesDir, fileName).writeText(json.toString(2))
         }
 
+        private data class ExpectedSupersededDiscard(
+            val phase: String,
+            val fixture: String,
+            val acceptance: RequestAcceptance,
+            val supersedingRequestGeneration: Long?,
+            val supersedingFileGeneration: Long?,
+        )
+
+        companion object {
+            private val EXPECTED_SUPERSEDED_STAGES = setOf(
+                "before-decode",
+                "after-test-hook",
+                "decode-loop",
+                "input-batch",
+                "output-batch",
+                "TEXTURE_GENERATION_STALE",
+            )
+        }
     }
 
     companion object {
         const val REPORT_FILE = "s24-frame-accuracy-report.json"
         const val SEQUENTIAL_REPORT_FILE = "s24-forward-sequential-report.json"
+        const val REVERSE_REPORT_FILE = "s24-reverse-window-report.json"
+        const val DIRECTION_REPORT_FILE = "s24-alpha5-direction-reversal-report.json"
+        private const val REQUIRED_CACHE_BUDGET_BYTES = 64L * 1024L * 1024L
         private const val DISCRETE_PREFETCH_PROBE_DEPTH = 2
         val REQUIRED_FIXTURES = listOf(
             "h264-ip", "h264-bframes", "vfr", "long-gop", "nonzero-pts", "one-frame", "two-frame",

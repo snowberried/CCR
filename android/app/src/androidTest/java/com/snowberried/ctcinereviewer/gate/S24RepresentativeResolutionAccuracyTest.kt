@@ -13,11 +13,13 @@ import com.snowberried.ctcinereviewer.media.ContainerMetadata
 import com.snowberried.ctcinereviewer.media.DecodedOutputMetadata
 import com.snowberried.ctcinereviewer.media.FrameResult
 import com.snowberried.ctcinereviewer.media.IndexedVideo
+import com.snowberried.ctcinereviewer.media.RequestAcceptance
 import com.snowberried.ctcinereviewer.validation.ValidationHarnessIdentity
 import com.snowberried.ctcinereviewer.validation.ValidationHarnessV2
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -120,20 +122,28 @@ class S24RepresentativeResolutionAccuracyTest {
         val metadata = requireNotNull(activity.awaitMetadata(30)) { "${golden.fixture}: METADATA_TIMEOUT" }
         validateIndex(golden, indexed)
         validateContainerMetadata(golden, metadata)
-        var last = awaitPublished(activity, golden, 0)
+        awaitPublished(activity, golden, 0)
 
-        plan.selected.sorted().forEach { index -> last = requestAndAwait(activity, golden, index) }
-        plan.consecutive.forEach { index -> last = requestAndAwait(activity, golden, index, directional = true) }
-        plan.consecutive.asReversed().forEach { index -> last = requestAndAwait(activity, golden, index, directional = true) }
-        plan.plusFive.forEach { index -> last = requestAndAwait(activity, golden, index, directional = true) }
-        plan.plusFive.asReversed().forEach { index -> last = requestAndAwait(activity, golden, index, directional = true) }
+        plan.selected.sorted().forEach { index -> requestAndAwait(activity, golden, index) }
+        plan.consecutive.forEach { index -> requestAndAwait(activity, golden, index, directional = true) }
+        plan.consecutive.asReversed().forEach { index -> requestAndAwait(activity, golden, index, directional = true) }
+        plan.plusFive.forEach { index -> requestAndAwait(activity, golden, index, directional = true) }
+        plan.plusFive.asReversed().forEach { index -> requestAndAwait(activity, golden, index, directional = true) }
+        val holdSequences = listOf(
+            exerciseHoldExactSequence(activity, golden, plan.consecutive, 1),
+            exerciseHoldExactSequence(activity, golden, plan.plusFive, 5),
+        )
 
-        val diagnostics = last.diagnostics
+        val diagnostics = activity.diagnosticsSnapshot()
         assertEquals(0L, diagnostics.staleDiscardCount)
         assertEquals(0L, diagnostics.staleBeforeSwapCount)
         assertEquals(0L, diagnostics.swapFailureCount)
         assertEquals(0L, diagnostics.surfaceInvalidCount)
         assertEquals(0L, diagnostics.publicationInvariantViolationCount)
+        assertEquals(REQUIRED_CACHE_BUDGET_BYTES, diagnostics.cacheBudgetBytes)
+        assertTrue(diagnostics.peakCacheBytes in diagnostics.cacheBytes..diagnostics.cacheBudgetBytes)
+        assertEquals(0L, diagnostics.textureDoubleReleaseCount)
+        assertTrue("${golden.fixture}: hold-specific reverse window was not built", diagnostics.reverseWindowBuildCount > 0L)
         val visibleWidth = golden.cropRight - golden.cropLeft + 1
         val visibleHeight = golden.cropBottom - golden.cropTop + 1
         val outputHistory = diagnostics.decodedOutputFormatHistory
@@ -154,6 +164,19 @@ class S24RepresentativeResolutionAccuracyTest {
             .put("reasonCounts", JSONObject(plan.reasonCounts))
             .put("consecutiveSequenceLength", plan.consecutive.size)
             .put("plusFiveSequenceLength", plan.plusFive.size)
+            .put("holdExactRequestCount", holdSequences.sumOf { it.getInt("requestCount") })
+            .put(
+                "holdExactSequenceDigest",
+                sha256Ascii(holdSequences.joinToString("|") { it.getString("sequenceDigest") }),
+            )
+            .put("holdExactSequences", JSONArray(holdSequences))
+            .put("cacheBudgetBytes", diagnostics.cacheBudgetBytes)
+            .put("cacheBytes", diagnostics.cacheBytes)
+            .put("peakCacheBytes", diagnostics.peakCacheBytes)
+            .put("textureDoubleReleaseCount", diagnostics.textureDoubleReleaseCount)
+            .put("reverseWindowBuildCount", diagnostics.reverseWindowBuildCount)
+            .put("reverseWindowHitCount", diagnostics.reverseWindowHitCount)
+            .put("reverseWindowSeekCount", diagnostics.reverseWindowSeekCount)
             .put("codecComponent", metadata.codecComponent)
             .put("hardwareAccelerated", metadata.hardwareAccelerated)
             .put("goldenCodedSize", "${golden.codedWidth}x${golden.codedHeight}")
@@ -236,6 +259,64 @@ class S24RepresentativeResolutionAccuracyTest {
         return awaitPublished(activity, golden, index)
     }
 
+    private fun exerciseHoldExactSequence(
+        activity: GateActivity,
+        golden: Golden,
+        targets: List<Int>,
+        stride: Int,
+    ): JSONObject {
+        require(stride == 1 || stride == 5)
+        require(targets.size >= 2)
+        val ordered = targets.sorted()
+        requestAndAwait(activity, golden, ordered.first())
+        val forwardTargets = ordered.drop(1)
+        forwardTargets.forEach { index -> requestHoldAndAwait(activity, golden, index, stride, null) }
+
+        val gesture = AtomicReference<Long>()
+        onMain(activity) { gesture.set(activity.beginHoldGesture()) }
+        val reverseTargets = ordered.dropLast(1).asReversed()
+        try {
+            reverseTargets.forEach { index ->
+                requestHoldAndAwait(activity, golden, index, -stride, requireNotNull(gesture.get()))
+            }
+        } finally {
+            onMain(activity) { activity.endHoldGesture(requireNotNull(gesture.get())) }
+        }
+        val canonical = buildString {
+            append(golden.sourceSha256).append('|').append(stride).append('|')
+            append(forwardTargets.joinToString(",")).append('|')
+            append(reverseTargets.joinToString(","))
+        }
+        return JSONObject()
+            .put("stride", stride)
+            .put("forwardTargets", JSONArray(forwardTargets))
+            .put("reverseStride", -stride)
+            .put("reverseTargets", JSONArray(reverseTargets))
+            .put("requestCount", forwardTargets.size + reverseTargets.size)
+            .put("sequenceDigest", sha256Ascii(canonical))
+    }
+
+    private fun requestHoldAndAwait(
+        activity: GateActivity,
+        golden: Golden,
+        index: Int,
+        stride: Int,
+        gestureGeneration: Long?,
+    ): GateActivity.ObservedResult {
+        activity.clearResults()
+        val acceptance = AtomicReference<RequestAcceptance>()
+        onMain(activity) {
+            val accepted = if (stride > 0) {
+                activity.requestForwardSequentialFrame(index, stride)
+            } else {
+                activity.requestReverseSequentialFrame(index, stride, requireNotNull(gestureGeneration))
+            }
+            accepted?.let(acceptance::set)
+        }
+        assertNotNull("${golden.fixture}[$index]: hold request was not accepted", acceptance.get())
+        return awaitPublished(activity, golden, index)
+    }
+
     private fun awaitPublished(
         activity: GateActivity,
         golden: Golden,
@@ -244,6 +325,12 @@ class S24RepresentativeResolutionAccuracyTest {
         val deadline = SystemClock.elapsedRealtime() + RESULT_TIMEOUT_MS
         while (SystemClock.elapsedRealtime() < deadline) {
             val observed = activity.awaitResult(2) ?: continue
+            assertEquals(REQUIRED_CACHE_BUDGET_BYTES, observed.diagnostics.cacheBudgetBytes)
+            assertTrue(observed.diagnostics.cacheBytes in 0L..observed.diagnostics.cacheBudgetBytes)
+            assertTrue(
+                observed.diagnostics.peakCacheBytes in
+                    observed.diagnostics.cacheBytes..observed.diagnostics.cacheBudgetBytes,
+            )
             when (val result = observed.result) {
                 is FrameResult.Published -> {
                     validatePublished(golden, result)
@@ -377,6 +464,7 @@ class S24RepresentativeResolutionAccuracyTest {
             .put("selectionContract", JSONArray(listOf(
                 "first-last", "all-gop-sync", "reorder-transition", "vfr-delta-change",
                 "deterministic-random-50", "plus-minus-one-30", "plus-minus-five", "all-duplicate-pts",
+                "hold-specific-forward-reverse-exact",
             )))
             .put("fixtures", fixtures)
             .put("mismatchCount", mismatchCount)
@@ -411,6 +499,10 @@ class S24RepresentativeResolutionAccuracyTest {
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
+    private fun sha256Ascii(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.US_ASCII))
+        .joinToString("") { "%02x".format(it) }
+
     private fun uri(fixture: String): Uri = Uri.parse("content://${context.packageName}.fixture/$fixture")
 
     private fun onMain(activity: GateActivity, action: () -> Unit) {
@@ -436,6 +528,7 @@ class S24RepresentativeResolutionAccuracyTest {
         private const val PLUS_FIVE_COUNT = 30
         private const val PTS_ROUNDING_TOLERANCE_US = 1L
         private const val RESULT_TIMEOUT_MS = 30_000L
+        private const val REQUIRED_CACHE_BUDGET_BYTES = 64L * 1024L * 1024L
         private val ERROR_PATTERN = Regex("[A-Za-z0-9_.:\\[\\]=,/ -]{1,160}")
         val REQUIRED_FIXTURES = listOf(
             "720p-h264-bframes",

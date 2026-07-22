@@ -89,6 +89,28 @@ internal class ForwardSequentialDecodeState {
     }
 
     @Synchronized
+    fun randomSeekCursor(
+        video: IndexedVideo,
+        fileGeneration: Long,
+        codecGeneration: Long,
+    ): RandomSeekDecoderCursor? {
+        val current = cursor ?: return null
+        if (
+            current.fileGeneration != fileGeneration ||
+            current.codecGeneration != codecGeneration ||
+            current.inputEos
+        ) return null
+        val frame = video.frames.getOrNull(current.lastOutputFrameIndex) ?: return null
+        return RandomSeekDecoderCursor(
+            fileGeneration = current.fileGeneration,
+            codecGeneration = current.codecGeneration,
+            frame = frame,
+            duplicateCounts = current.duplicateCounts,
+            inputEos = current.inputEos,
+        )
+    }
+
+    @Synchronized
     fun invalidate() {
         cursor = null
     }

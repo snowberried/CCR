@@ -19,6 +19,7 @@ class DirectionalByteCacheTest {
         cache.put(4, "four", 4)
 
         assertEquals(12, cache.byteSize)
+        assertEquals(12, cache.peakByteSize)
         assertNull(cache.get(1))
         assertEquals(listOf("one"), evicted)
         assertEquals(3, cache.peakSize)
@@ -50,6 +51,7 @@ class DirectionalByteCacheTest {
         assertEquals(2, evicted.size)
         cache.trimToBytes(0)
         assertEquals(0L, cache.byteSize)
+        assertEquals(12L, cache.peakByteSize)
     }
 
     @Test
@@ -125,5 +127,43 @@ class DirectionalByteCacheTest {
         assertEquals(2, cache.peakSize)
         assertEquals(0, cache.size)
         assertEquals(0L, cache.byteSize)
+    }
+
+    @Test
+    fun `rejected replacement preserves the resident value and releases nothing`() {
+        val evicted = mutableListOf<String>()
+        val cache = DirectionalByteCache<Int, String>(8, { it }) { _, value -> evicted += value }
+        assertEquals(true, cache.put(1, "resident", 4))
+        assertEquals(true, cache.put(2, "protected", 4))
+
+        val replaced = cache.put(
+            key = 1,
+            value = "too-large-replacement",
+            bytes = 8,
+            protectedKeys = setOf(2),
+        )
+
+        assertEquals(false, replaced)
+        assertEquals("resident", cache.get(1))
+        assertEquals("protected", cache.get(2))
+        assertEquals(8L, cache.byteSize)
+        assertEquals(emptyList<String>(), evicted)
+        assertEquals(1L, cache.rejectionCount)
+    }
+
+    @Test
+    fun `protected trim keeps the displayed entry even below requested target`() {
+        val evicted = mutableListOf<String>()
+        val cache = DirectionalByteCache<Int, String>(12, { it }) { _, value -> evicted += value }
+        cache.put(1, "displayed", 4)
+        cache.put(2, "history", 4)
+        cache.put(3, "older", 4)
+
+        val reachedTarget = cache.trimToBytes(0, protectedKeys = setOf(1))
+
+        assertEquals(false, reachedTarget)
+        assertEquals(4L, cache.byteSize)
+        assertEquals("displayed", cache.get(1))
+        assertEquals(listOf("history", "older"), evicted)
     }
 }

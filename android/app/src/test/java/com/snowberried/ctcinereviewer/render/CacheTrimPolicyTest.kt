@@ -14,4 +14,16 @@ class CacheTrimPolicyTest {
         assertEquals(0L, cacheTargetBytes(15, budget))
         assertEquals(0L, cacheTargetBytes(20, budget))
     }
+
+    @Test
+    fun incomingCanonicalTextureAlwaysHasAReservedSlotInside64MiB() {
+        val budget = 64L * 1024L * 1024L
+        for (frameBytes in listOf(1280L * 720L * 4L, 1920L * 1080L * 4L)) {
+            val residentTarget = residentCacheTargetBytes(budget, frameBytes)
+            val residentFrameCount = residentTarget / frameBytes
+            val liveBytesAfterCopy = residentFrameCount * frameBytes + frameBytes
+
+            assertEquals(true, liveBytesAfterCopy <= budget)
+        }
+    }
 }

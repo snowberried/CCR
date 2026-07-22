@@ -8,6 +8,101 @@ import org.junit.Test
 
 class CompletionDrivenHoldControllerTest {
     @Test
+    fun `fast publisher cannot reserve before the symmetric cadence boundary`() {
+        val policy = NavigationCadencePolicy(
+            strideOnePublicationsPerSecond = 20,
+            strideFivePublicationsPerSecond = 10,
+        )
+        for (stride in listOf(1, -1)) {
+            val controller = CompletionDrivenHoldController(policy)
+            controller.begin(gestureGeneration = 1, fileGeneration = 2, stride = stride)
+            val first = requireNotNull(
+                controller.reserveNext(50, 100, foregroundRequestInFlight = false, nowNanos = 1_000),
+            )
+            assertTrue(controller.markAccepted(first, requestGeneration = 3, acceptedAtNanos = 1_000))
+            controller.complete(
+                fileGeneration = 2,
+                requestGeneration = 3,
+                published = true,
+                publishedAtNanos = 2_000,
+            )
+
+            val boundary = 1_000 + policy.intervalNanos(stride)
+            assertEquals(boundary - 2_000, controller.nanosUntilNextAcceptance(2_000))
+            assertNull(
+                controller.reserveNext(
+                    first.frameIndex,
+                    100,
+                    foregroundRequestInFlight = false,
+                    nowNanos = boundary - 1,
+                ),
+            )
+            assertEquals(
+                first.frameIndex + stride,
+                controller.reserveNext(
+                    first.frameIndex,
+                    100,
+                    foregroundRequestInFlight = false,
+                    nowNanos = boundary,
+                )?.frameIndex,
+            )
+        }
+    }
+
+    @Test
+    fun `slow publication creates no extra delay or backlog`() {
+        val policy = NavigationCadencePolicy(
+            strideOnePublicationsPerSecond = 20,
+            strideFivePublicationsPerSecond = 10,
+        )
+        val controller = CompletionDrivenHoldController(policy)
+        controller.begin(gestureGeneration = 4, fileGeneration = 5, stride = 1)
+        val first = requireNotNull(
+            controller.reserveNext(10, 100, foregroundRequestInFlight = false, nowNanos = 1_000),
+        )
+        assertTrue(controller.markAccepted(first, requestGeneration = 6, acceptedAtNanos = 1_000))
+        val slowPublication = 1_000 + policy.intervalNanos(1) + 20_000_000
+        repeat(20) {
+            assertNull(controller.reserveNext(10, 100, foregroundRequestInFlight = false, nowNanos = slowPublication))
+            assertEquals(1, controller.outstandingTargetCount)
+        }
+
+        controller.complete(5, 6, published = true, publishedAtNanos = slowPublication)
+        assertEquals(0L, controller.nanosUntilNextAcceptance(slowPublication))
+        assertEquals(
+            12,
+            controller.reserveNext(
+                11,
+                100,
+                foregroundRequestInFlight = false,
+                nowNanos = slowPublication,
+            )?.frameIndex,
+        )
+    }
+
+    @Test
+    fun `release during cadence wait has zero overshoot`() {
+        val controller = CompletionDrivenHoldController()
+        controller.begin(gestureGeneration = 7, fileGeneration = 8, stride = -5)
+        val target = requireNotNull(
+            controller.reserveNext(50, 100, foregroundRequestInFlight = false, nowNanos = 100),
+        )
+        assertTrue(controller.markAccepted(target, requestGeneration = 9, acceptedAtNanos = 100))
+        controller.complete(8, 9, published = true, publishedAtNanos = 200)
+        controller.end(7)
+
+        assertNull(controller.nanosUntilNextAcceptance(Long.MAX_VALUE))
+        assertNull(
+            controller.reserveNext(
+                target.frameIndex,
+                100,
+                foregroundRequestInFlight = false,
+                nowNanos = Long.MAX_VALUE,
+            ),
+        )
+    }
+
+    @Test
     fun `plus and minus one and five complete one hundred published targets`() {
         assertEquals(100, publishedTargets(stride = 1, start = 100, frameCount = 1_000).size)
         assertEquals(100, publishedTargets(stride = 5, start = 100, frameCount = 1_000).size)
