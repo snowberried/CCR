@@ -47,6 +47,8 @@ internal enum class ReverseWindowFallbackReason {
     CANCELLED,
     OUTPUT_FORMAT_CHANGED,
     CODEC_ERROR,
+    PUBLICATION_TICKET_STALE,
+    REFILL_ALREADY_IN_PROGRESS,
 }
 
 internal data class ReverseWindowDecodeAccounting(

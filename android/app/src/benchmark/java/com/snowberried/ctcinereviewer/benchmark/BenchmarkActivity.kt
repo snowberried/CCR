@@ -20,6 +20,9 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import com.snowberried.ctcinereviewer.BuildConfig
 import com.snowberried.ctcinereviewer.CcrSpikeApp
+import com.snowberried.ctcinereviewer.NavigationCadencePolicy
+import com.snowberried.ctcinereviewer.PublicationTailCalculator
+import com.snowberried.ctcinereviewer.PublicationTailMetrics
 import com.snowberried.ctcinereviewer.ViewerUiState
 import com.snowberried.ctcinereviewer.ViewerViewModel
 import com.snowberried.ctcinereviewer.media.DecoderDiagnostics
@@ -106,7 +109,14 @@ class BenchmarkActivity : ComponentActivity() {
     private var lastObservedPublicationSequence = 0L
     private var publicationCount = 0L
     private val publicationIntervalsNs = mutableListOf<Long>()
+    private var publicationIntervalSequenceStartCount = 0L
     private var publicationGapMaxNs = 0L
+    private var refillAssociatedLongGapCount = 0L
+    private var windowBuildAssociatedLongGapCount = 0L
+    private var lastPublicationRefillGenerationCount = 0L
+    private var lastPublicationRefillActivitySequence = 0L
+    private var lastPublicationReverseWindowBuildCount = 0L
+    private var lastPublicationRefillInProgress = false
     private val requestedDisplayedLag = mutableListOf<Long>()
     private val acceptedTargetSequence = mutableListOf<Int>()
     private var issuedRequestCount = 0L
@@ -363,8 +373,14 @@ class BenchmarkActivity : ComponentActivity() {
                     SCENARIO_HOLD_720_PLUS_FIVE,
                     SCENARIO_HOLD_1080_PLUS_ONE,
                     SCENARIO_HOLD_1080_PLUS_FIVE -> startRepresentativeHold()
-                    SCENARIO_HOLD_1080_MINUS_ONE -> preparePureReverseHold(state, -1)
-                    SCENARIO_HOLD_1080_MINUS_FIVE -> preparePureReverseHold(state, -5)
+                    SCENARIO_HOLD_1080_MINUS_ONE,
+                    SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+                    SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+                    SCENARIO_HOLD_1080_VFR_MINUS_ONE -> preparePureReverseHold(state, -1)
+                    SCENARIO_HOLD_1080_MINUS_FIVE,
+                    SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+                    SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+                    SCENARIO_HOLD_1080_VFR_MINUS_FIVE -> preparePureReverseHold(state, -5)
                     SCENARIO_REVERSE_1080 -> prepareRepresentativeReverse(state)
                     SCENARIO_SEEK_1080 -> startRepresentativeSeek(state)
                     SCENARIO_SWITCH_1080_H264_HEVC,
@@ -632,7 +648,14 @@ class BenchmarkActivity : ComponentActivity() {
         holdAccumulatedNs = 0L
         publicationCount = 0L
         publicationIntervalsNs.clear()
+        publicationIntervalSequenceStartCount = 0L
         publicationGapMaxNs = 0L
+        refillAssociatedLongGapCount = 0L
+        windowBuildAssociatedLongGapCount = 0L
+        lastPublicationRefillGenerationCount = 0L
+        lastPublicationRefillActivitySequence = 0L
+        lastPublicationReverseWindowBuildCount = 0L
+        lastPublicationRefillInProgress = false
         requestedDisplayedLag.clear()
         acceptedTargetSequence.clear()
         issuedRequestCount = 0L
@@ -679,6 +702,7 @@ class BenchmarkActivity : ComponentActivity() {
             traceSuccessfulPublication(event)
             val previousPublicationNs = lastPublicationNs
             if (previousPublicationNs == null) {
+                publicationIntervalSequenceStartCount += 1
                 publicationGapMaxNs = maxOf(
                     publicationGapMaxNs,
                     (event.elapsedRealtimeNanos - metricSegmentStartedNs).coerceAtLeast(0),
@@ -687,7 +711,21 @@ class BenchmarkActivity : ComponentActivity() {
                 val intervalNs = (event.elapsedRealtimeNanos - previousPublicationNs).coerceAtLeast(0)
                 publicationIntervalsNs += intervalNs
                 publicationGapMaxNs = maxOf(publicationGapMaxNs, intervalNs)
+                refillGapThresholdNs()?.let { thresholdNs ->
+                    val refillActive = lastPublicationRefillInProgress ||
+                        event.reverseRefillInProgress ||
+                        event.reverseRefillGeneration > lastPublicationRefillGenerationCount ||
+                        event.reverseRefillActivitySequence > lastPublicationRefillActivitySequence
+                    val windowBuildActive =
+                        event.reverseWindowBuildGeneration > lastPublicationReverseWindowBuildCount
+                    if (intervalNs > thresholdNs && refillActive) refillAssociatedLongGapCount += 1
+                    if (intervalNs > thresholdNs && windowBuildActive) windowBuildAssociatedLongGapCount += 1
+                }
             }
+            lastPublicationRefillGenerationCount = event.reverseRefillGeneration
+            lastPublicationRefillActivitySequence = event.reverseRefillActivitySequence
+            lastPublicationReverseWindowBuildCount = event.reverseWindowBuildGeneration
+            lastPublicationRefillInProgress = event.reverseRefillInProgress
             lastPublicationNs = event.elapsedRealtimeNanos
             publicationCount += 1
         }
@@ -795,6 +833,8 @@ class BenchmarkActivity : ComponentActivity() {
         val activeNs = activeMetricDurationNs
         val activeSeconds = activeNs / 1_000_000_000.0
         val intervalsUs = publicationIntervalsNs.map { it / 1_000L }.sorted()
+        val targetCadenceNs = targetCadenceNs()
+        val tailMetrics = publicationTailMetrics(targetCadenceNs)
         val lags = requestedDisplayedLag.sorted()
         val publishedFpsMilli = if (activeSeconds > 0.0) {
             (publicationCount * 1_000.0 / activeSeconds).toLong()
@@ -811,11 +851,39 @@ class BenchmarkActivity : ComponentActivity() {
                     requestedDisplayedLag.size.toLong() == acceptedTargetCount &&
                     acceptedTargetSequence.size.toLong() == acceptedTargetCount &&
                     outstandingForegroundTargetSampleCount >= acceptedTargetCount &&
-                    releaseGraceComplete
+                    releaseGraceComplete &&
+                    tailMetrics != null &&
+                    tailMetrics.sampleCount.toLong() + publicationIntervalSequenceStartCount ==
+                    publicationCount
                 ))
         Trace.setCounter("ccr.publication_interval_p50_us", intervalsUs.percentile(0.50))
         Trace.setCounter("ccr.publication_interval_p95_us", intervalsUs.percentile(0.95))
         Trace.setCounter("ccr.publication_interval_max_us", intervalsUs.maxOrNull() ?: 0L)
+        Trace.setCounter("ccr.publication_interval_cv_ppm", tailMetrics?.coefficientOfVariationPpm ?: 0L)
+        Trace.setCounter("ccr.publication_interval_p99_us", tailMetrics?.p99Ns?.div(1_000L) ?: 0L)
+        Trace.setCounter("ccr.publication_interval_p995_us", tailMetrics?.p995Ns?.div(1_000L) ?: 0L)
+        Trace.setCounter(
+            "ccr.publication_interval_over_1_5x_count",
+            tailMetrics?.overOnePointFiveCadenceCount?.toLong() ?: 0L,
+        )
+        Trace.setCounter(
+            "ccr.publication_interval_over_2x_count",
+            tailMetrics?.overTwoCadenceCount?.toLong() ?: 0L,
+        )
+        Trace.setCounter(
+            "ccr.publication_interval_longest_over_1_5x_run",
+            tailMetrics?.longestConsecutiveOverOnePointFiveCadenceCount?.toLong() ?: 0L,
+        )
+        Trace.setCounter(
+            "ccr.publication_interval_sample_count",
+            tailMetrics?.sampleCount?.toLong() ?: 0L,
+        )
+        Trace.setCounter(
+            "ccr.publication_interval_sequence_start_count",
+            publicationIntervalSequenceStartCount,
+        )
+        Trace.setCounter("ccr.target_cadence_ns", targetCadenceNs ?: 0L)
+        Trace.setCounter("ccr.tail_metric_available", if (tailMetrics != null) 1L else 0L)
         Trace.setCounter("ccr.published_fps_milli", publishedFpsMilli)
         Trace.setCounter("ccr.requested_displayed_lag_p50", lags.percentile(0.50))
         Trace.setCounter("ccr.requested_displayed_lag_p95", lags.percentile(0.95))
@@ -863,8 +931,51 @@ class BenchmarkActivity : ComponentActivity() {
         Trace.setCounter("ccr.test_apk_hash53", identityHash53(testApkSha256))
         Trace.setCounter("ccr.cache_bytes", diagnostics.cacheBytes)
         Trace.setCounter("ccr.cache_peak_bytes", diagnostics.peakCacheBytes)
+        Trace.setCounter("ccr.actor_queue_depth", diagnostics.actorQueueDepth.toLong())
+        Trace.setCounter("ccr.cached_navigation_attempt", diagnostics.cachedNavigationAttemptCount)
+        Trace.setCounter("ccr.cached_navigation_actor_bypass", diagnostics.cachedNavigationActorBypassCount)
+        Trace.setCounter("ccr.cached_navigation_miss_fallback", diagnostics.cachedNavigationMissFallbackCount)
+        Trace.setCounter("ccr.cached_navigation_stale", diagnostics.cachedNavigationStaleCount)
+        Trace.setCounter("ccr.cached_navigation_error", diagnostics.cachedNavigationErrorCount)
+        Trace.setCounter("ccr.cached_navigation_queue_wait_max_us", diagnostics.cachedNavigationQueueWaitMaxUs)
+        Trace.setCounter("ccr.reverse_window_remaining", diagnostics.reverseWindowRemainingTargetCount.toLong())
+        Trace.setCounter("ccr.reverse_window_staged", diagnostics.reverseWindowStagedTargetCount.toLong())
+        Trace.setCounter("ccr.reverse_window_staged_ready", diagnostics.reverseWindowStagedReadyCount.toLong())
         Trace.setCounter("ccr.reverse_window_refill_stall", diagnostics.reverseWindowRefillStallCount)
         Trace.setCounter("ccr.reverse_window_refill_stall_max_us", diagnostics.reverseWindowRefillStallMaxUs)
+        Trace.setCounter("ccr.reverse_refill_generation", diagnostics.reverseRefillGenerationCount)
+        Trace.setCounter("ccr.reverse_refill_active", if (diagnostics.reverseRefillInProgress) 1L else 0L)
+        Trace.setCounter("ccr.reverse_refill_initial_seek", diagnostics.reverseRefillInitialSeekCount)
+        Trace.setCounter("ccr.reverse_refill_initial_flush", diagnostics.reverseRefillInitialFlushCount)
+        Trace.setCounter("ccr.reverse_refill_resumed_slice", diagnostics.reverseRefillResumedSliceCount)
+        Trace.setCounter("ccr.reverse_refill_restart", diagnostics.reverseRefillRestartCount)
+        Trace.setCounter(
+            "ccr.reverse_refill_max_seek_per_generation",
+            diagnostics.reverseRefillMaxSeekPerGeneration.toLong(),
+        )
+        Trace.setCounter(
+            "ccr.reverse_refill_max_flush_per_generation",
+            diagnostics.reverseRefillMaxFlushPerGeneration.toLong(),
+        )
+        Trace.setCounter("ccr.reverse_refill_cached_target", diagnostics.reverseRefillCachedTargetCount)
+        Trace.setCounter(
+            "ccr.reverse_refill_consumed_during_build",
+            diagnostics.reverseRefillConsumedDuringBuildCount,
+        )
+        Trace.setCounter("ccr.reverse_refill_low_water_trigger", diagnostics.reverseLowWaterTriggerCount)
+        Trace.setCounter(
+            "ccr.reverse_refill_started_remaining",
+            diagnostics.reverseRefillStartedRemainingTargets.toLong(),
+        )
+        Trace.setCounter("ccr.reverse_refill_partial_append", diagnostics.reversePartialAppendCount)
+        Trace.setCounter(
+            "ccr.reverse_refill_completed_before_depletion",
+            diagnostics.reverseRefillCompletedBeforeDepletionCount,
+        )
+        Trace.setCounter("ccr.reverse_refill_depletion", diagnostics.reverseDepletionBeforeRefillCount)
+        Trace.setCounter("ccr.reverse_refill_associated_gap", diagnostics.reverseRefillAssociatedGapCount)
+        Trace.setCounter("ccr.measured_refill_associated_long_gap", refillAssociatedLongGapCount)
+        Trace.setCounter("ccr.measured_window_build_associated_long_gap", windowBuildAssociatedLongGapCount)
         Trace.setCounter("ccr.swap_failure", diagnostics.swapFailureCount)
         Trace.setCounter("ccr.stale_discard", diagnostics.staleDiscardCount)
         Trace.setCounter("ccr.invariant_violation", diagnostics.publicationInvariantViolationCount)
@@ -886,6 +997,8 @@ class BenchmarkActivity : ComponentActivity() {
         if (!measurementStarted) return identity
         val activeNs = activeMetricDurationNs
         val intervalsUs = publicationIntervalsNs.map { it / 1_000L }.sorted()
+        val targetCadenceNs = targetCadenceNs()
+        val tailMetrics = publicationTailMetrics(targetCadenceNs)
         val lags = requestedDisplayedLag.sorted()
         val activeSeconds = activeNs / 1_000_000_000.0
         val fps = if (activeSeconds > 0.0) publicationCount / activeSeconds else 0.0
@@ -895,6 +1008,7 @@ class BenchmarkActivity : ComponentActivity() {
         val runtime = Runtime.getRuntime()
         val memory = Debug.MemoryInfo().also(Debug::getMemoryInfo)
         return identity + buildString {
+            append("|fixture=").append(safeMetricToken(firstFixture()))
             append("|segmented=").append(isSegmentedHoldScenario())
             append("|activeMs=").append(activeNs / 1_000_000L)
             append("|measurementTargetMs=").append(holdActiveTargetNs / 1_000_000L)
@@ -903,6 +1017,18 @@ class BenchmarkActivity : ComponentActivity() {
             append("|intervalP50Us=").append(intervalsUs.percentile(0.50))
             append("|intervalP95Us=").append(intervalsUs.percentile(0.95))
             append("|intervalMaxUs=").append(intervalsUs.maxOrNull() ?: 0L)
+            append("|intervalCvPpm=").append(tailMetrics?.coefficientOfVariationPpm ?: 0L)
+            append("|intervalP99Us=").append(tailMetrics?.p99Ns?.div(1_000L) ?: 0L)
+            append("|intervalP995Us=").append(tailMetrics?.p995Ns?.div(1_000L) ?: 0L)
+            append("|intervalOver1_5xCount=")
+                .append(tailMetrics?.overOnePointFiveCadenceCount ?: 0)
+            append("|intervalOver2xCount=").append(tailMetrics?.overTwoCadenceCount ?: 0)
+            append("|intervalLongestOver1_5xRun=")
+                .append(tailMetrics?.longestConsecutiveOverOnePointFiveCadenceCount ?: 0)
+            append("|intervalSampleCount=").append(tailMetrics?.sampleCount ?: 0)
+            append("|intervalSequenceStartCount=").append(publicationIntervalSequenceStartCount)
+            append("|targetCadenceNs=").append(targetCadenceNs ?: 0L)
+            append("|tailMetricAvailable=").append(tailMetrics != null)
             append("|gapMaxUs=").append(publicationGapMaxNs / 1_000L)
             append("|lagP50=").append(lags.percentile(0.50))
             append("|lagP95=").append(lags.percentile(0.95))
@@ -948,6 +1074,13 @@ class BenchmarkActivity : ComponentActivity() {
             append("|liveTextureCount=").append(diagnostics.liveTextureCount)
             append("|peakLiveTextureCount=").append(diagnostics.peakLiveTextureCount)
             append("|textureDoubleReleaseCount=").append(diagnostics.textureDoubleReleaseCount)
+            append("|actorQueueDepth=").append(diagnostics.actorQueueDepth)
+            append("|cachedNavigationAttemptCount=").append(diagnostics.cachedNavigationAttemptCount)
+            append("|cachedNavigationActorBypassCount=").append(diagnostics.cachedNavigationActorBypassCount)
+            append("|cachedNavigationMissFallbackCount=").append(diagnostics.cachedNavigationMissFallbackCount)
+            append("|cachedNavigationStaleCount=").append(diagnostics.cachedNavigationStaleCount)
+            append("|cachedNavigationErrorCount=").append(diagnostics.cachedNavigationErrorCount)
+            append("|cachedNavigationQueueWaitMaxUs=").append(diagnostics.cachedNavigationQueueWaitMaxUs)
             append("|reverseWindowBuildCount=").append(diagnostics.reverseWindowBuildCount)
             append("|reverseWindowHitCount=").append(diagnostics.reverseWindowHitCount)
             append("|reverseWindowSeekCount=").append(diagnostics.reverseWindowSeekCount)
@@ -956,10 +1089,36 @@ class BenchmarkActivity : ComponentActivity() {
             append("|reverseWindowRollingAppendRefillCount=")
                 .append(diagnostics.reverseWindowRollingAppendRefillCount)
             append("|reverseWindowRefillNeeded=").append(diagnostics.reverseWindowRefillNeeded)
+            append("|reverseWindowRemainingTargetCount=").append(diagnostics.reverseWindowRemainingTargetCount)
+            append("|reverseWindowStagedTargetCount=").append(diagnostics.reverseWindowStagedTargetCount)
+            append("|reverseWindowStagedReadyCount=").append(diagnostics.reverseWindowStagedReadyCount)
             append("|reverseWindowRefillStallCount=").append(diagnostics.reverseWindowRefillStallCount)
             append("|reverseWindowRefillStallMaxUs=").append(diagnostics.reverseWindowRefillStallMaxUs)
             append("|reverseWindowRefillStallOver250MsCount=")
                 .append(diagnostics.reverseWindowRefillStallOver250MsCount)
+            append("|reverseRefillGenerationCount=").append(diagnostics.reverseRefillGenerationCount)
+            append("|reverseRefillInProgress=").append(diagnostics.reverseRefillInProgress)
+            append("|reverseRefillInitialSeekCount=").append(diagnostics.reverseRefillInitialSeekCount)
+            append("|reverseRefillInitialFlushCount=").append(diagnostics.reverseRefillInitialFlushCount)
+            append("|reverseRefillResumedSliceCount=").append(diagnostics.reverseRefillResumedSliceCount)
+            append("|reverseRefillRestartCount=").append(diagnostics.reverseRefillRestartCount)
+            append("|reverseRefillMaxSeekPerGeneration=").append(diagnostics.reverseRefillMaxSeekPerGeneration)
+            append("|reverseRefillMaxFlushPerGeneration=").append(diagnostics.reverseRefillMaxFlushPerGeneration)
+            append("|reverseRefillCachedTargetCount=").append(diagnostics.reverseRefillCachedTargetCount)
+            append("|reverseRefillConsumedDuringBuildCount=")
+                .append(diagnostics.reverseRefillConsumedDuringBuildCount)
+            append("|reverseRefillLastCancelledReason=")
+                .append(safeMetricToken(diagnostics.reverseRefillLastCancelledReason))
+            append("|reverseLowWaterTriggerCount=").append(diagnostics.reverseLowWaterTriggerCount)
+            append("|reverseRefillStartedRemainingTargets=")
+                .append(diagnostics.reverseRefillStartedRemainingTargets)
+            append("|reversePartialAppendCount=").append(diagnostics.reversePartialAppendCount)
+            append("|reverseRefillCompletedBeforeDepletionCount=")
+                .append(diagnostics.reverseRefillCompletedBeforeDepletionCount)
+            append("|reverseDepletionBeforeRefillCount=").append(diagnostics.reverseDepletionBeforeRefillCount)
+            append("|reverseRefillAssociatedGapCount=").append(diagnostics.reverseRefillAssociatedGapCount)
+            append("|measuredRefillAssociatedLongGapCount=").append(refillAssociatedLongGapCount)
+            append("|measuredWindowBuildAssociatedLongGapCount=").append(windowBuildAssociatedLongGapCount)
             append("|staleDiscardCount=").append(diagnostics.staleDiscardCount)
             append("|staleBeforeSwapCount=").append(diagnostics.staleBeforeSwapCount)
             append("|surfaceInvalidCount=").append(diagnostics.surfaceInvalidCount)
@@ -1180,8 +1339,24 @@ class BenchmarkActivity : ComponentActivity() {
         Trace.setCounter("ccr.prefetch_evicted_before_use_total", diagnostics.prefetchEvictedBeforeUse)
         Trace.setCounter("ccr.cache_bytes", diagnostics.cacheBytes)
         Trace.setCounter("ccr.cache_peak_bytes", diagnostics.peakCacheBytes)
+        Trace.setCounter("ccr.actor_queue_depth", diagnostics.actorQueueDepth.toLong())
+        Trace.setCounter("ccr.cached_navigation_attempt", diagnostics.cachedNavigationAttemptCount)
+        Trace.setCounter("ccr.cached_navigation_actor_bypass", diagnostics.cachedNavigationActorBypassCount)
+        Trace.setCounter("ccr.cached_navigation_miss_fallback", diagnostics.cachedNavigationMissFallbackCount)
+        Trace.setCounter("ccr.cached_navigation_queue_wait_max_us", diagnostics.cachedNavigationQueueWaitMaxUs)
+        Trace.setCounter("ccr.reverse_window_remaining", diagnostics.reverseWindowRemainingTargetCount.toLong())
+        Trace.setCounter("ccr.reverse_window_staged", diagnostics.reverseWindowStagedTargetCount.toLong())
         Trace.setCounter("ccr.reverse_window_refill_stall", diagnostics.reverseWindowRefillStallCount)
         Trace.setCounter("ccr.reverse_window_refill_stall_max_us", diagnostics.reverseWindowRefillStallMaxUs)
+        Trace.setCounter("ccr.reverse_refill_generation", diagnostics.reverseRefillGenerationCount)
+        Trace.setCounter("ccr.reverse_refill_active", if (diagnostics.reverseRefillInProgress) 1L else 0L)
+        Trace.setCounter("ccr.reverse_refill_initial_seek", diagnostics.reverseRefillInitialSeekCount)
+        Trace.setCounter("ccr.reverse_refill_initial_flush", diagnostics.reverseRefillInitialFlushCount)
+        Trace.setCounter("ccr.reverse_refill_resumed_slice", diagnostics.reverseRefillResumedSliceCount)
+        Trace.setCounter("ccr.reverse_refill_restart", diagnostics.reverseRefillRestartCount)
+        Trace.setCounter("ccr.reverse_refill_partial_append", diagnostics.reversePartialAppendCount)
+        Trace.setCounter("ccr.reverse_refill_depletion", diagnostics.reverseDepletionBeforeRefillCount)
+        Trace.setCounter("ccr.reverse_refill_associated_gap", diagnostics.reverseRefillAssociatedGapCount)
         Trace.setCounter("ccr.seek_total", diagnostics.seekCount)
         Trace.setCounter("ccr.flush_total", diagnostics.flushCount)
         Trace.setCounter("ccr.sequential_entry_total", diagnostics.sequentialEntryCount)
@@ -1244,6 +1419,12 @@ class BenchmarkActivity : ComponentActivity() {
         SCENARIO_HOLD_1080_MINUS_FIVE,
         SCENARIO_REVERSE_1080,
         SCENARIO_SEEK_1080 -> REPRESENTATIVE_1080_H264_BFRAMES
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE -> REPRESENTATIVE_1080_H264_LONG_GOP
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE -> REPRESENTATIVE_1080_HEVC_MAIN8
+        SCENARIO_HOLD_1080_VFR_MINUS_ONE,
+        SCENARIO_HOLD_1080_VFR_MINUS_FIVE -> REPRESENTATIVE_1080_VFR
         SCENARIO_SWITCH_1080_HEVC_H264 -> REPRESENTATIVE_1080_SWITCH_HEVC
         SCENARIO_SWITCH_1080_H264_HEVC -> REPRESENTATIVE_1080_SWITCH_H264
         SCENARIO_SWITCH_HEVC_H264, SCENARIO_SWITCH_HEVC_HEVC -> HEVC_FIXTURE
@@ -1274,6 +1455,41 @@ class BenchmarkActivity : ComponentActivity() {
     private fun isRepresentativeScenario(): Boolean = scenario in REPRESENTATIVE_SCENARIOS
 
     private fun isSegmentedHoldScenario(): Boolean = scenario in REPRESENTATIVE_HOLD_SCENARIOS
+
+    private fun targetCadenceNs(): Long? = when (scenario) {
+        SCENARIO_HOLD_720_PLUS_ONE,
+        SCENARIO_HOLD_1080_PLUS_ONE,
+        SCENARIO_HOLD_1080_MINUS_ONE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+        SCENARIO_HOLD_1080_VFR_MINUS_ONE,
+        SCENARIO_REVERSE_1080 -> NavigationCadencePolicy().intervalNanos(1)
+        SCENARIO_HOLD_720_PLUS_FIVE,
+        SCENARIO_HOLD_1080_PLUS_FIVE,
+        SCENARIO_HOLD_1080_MINUS_FIVE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+        SCENARIO_HOLD_1080_VFR_MINUS_FIVE -> NavigationCadencePolicy().intervalNanos(5)
+        else -> null
+    }
+
+    private fun publicationTailMetrics(targetCadenceNs: Long?): PublicationTailMetrics? {
+        if (targetCadenceNs == null) return null
+        return PublicationTailCalculator.calculate(publicationIntervalsNs, targetCadenceNs)
+    }
+
+    private fun refillGapThresholdNs(): Long? = when (scenario) {
+        SCENARIO_HOLD_1080_MINUS_ONE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+        SCENARIO_HOLD_1080_VFR_MINUS_ONE,
+        SCENARIO_REVERSE_1080 -> 100_000_000L
+        SCENARIO_HOLD_1080_MINUS_FIVE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+        SCENARIO_HOLD_1080_VFR_MINUS_FIVE -> 125_000_000L
+        else -> null
+    }
 
     companion object {
         const val EXTRA_SCENARIO = "benchmark-scenario"
@@ -1310,6 +1526,12 @@ class BenchmarkActivity : ComponentActivity() {
         const val SCENARIO_HOLD_1080_PLUS_FIVE = "1080p-hold-plus-five"
         const val SCENARIO_HOLD_1080_MINUS_ONE = "1080p-hold-minus-one"
         const val SCENARIO_HOLD_1080_MINUS_FIVE = "1080p-hold-minus-five"
+        const val SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE = "1080p-h264-long-gop-hold-minus-one"
+        const val SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE = "1080p-h264-long-gop-hold-minus-five"
+        const val SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE = "1080p-hevc-main8-hold-minus-one"
+        const val SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE = "1080p-hevc-main8-hold-minus-five"
+        const val SCENARIO_HOLD_1080_VFR_MINUS_ONE = "1080p-vfr-hold-minus-one"
+        const val SCENARIO_HOLD_1080_VFR_MINUS_FIVE = "1080p-vfr-hold-minus-five"
         const val SCENARIO_REVERSE_1080 = "1080p-direction-reverse"
         const val SCENARIO_SEEK_1080 = "1080p-distant-seek"
         const val SCENARIO_SWITCH_1080_H264_HEVC = "1080p-switch-h264-hevc"
@@ -1345,10 +1567,10 @@ class BenchmarkActivity : ComponentActivity() {
         private const val REPRESENTATIVE_SETTLE_POLL_MS = 50L
         private const val RELEASE_ACCEPTANCE_GRACE_MS = 500L
         private const val ENTRY_TRACE_COOKIE = 1L
-        private const val ARTIFACT_SET_REVISION = 3
-        private const val EXPECTED_RUNTIME_SOURCE_SHA = "dabf11fa103179c4d81fe4448aba84ac340cf230"
+        private const val ARTIFACT_SET_REVISION = 4
+        private const val EXPECTED_RUNTIME_SOURCE_SHA = "c98264f2a10026a908e94c961bb13e4af2d59e60"
         private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
-            "612d695e4c9b57d4e4fb10076879bcb9b306d034ff05ba67ad7706c0f22c12e8"
+            "3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468"
         private val RUN_ID_PATTERN = Regex("[A-Za-z0-9._:-]{1,80}")
         private val TRACE_IDENTITY_PATTERN = Regex("[A-Za-z0-9._:-]{1,120}")
         private val GIT_SHA_PATTERN = Regex("[0-9a-f]{40}")
@@ -1361,6 +1583,12 @@ class BenchmarkActivity : ComponentActivity() {
             SCENARIO_HOLD_1080_PLUS_FIVE,
             SCENARIO_HOLD_1080_MINUS_ONE,
             SCENARIO_HOLD_1080_MINUS_FIVE,
+            SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+            SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+            SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+            SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+            SCENARIO_HOLD_1080_VFR_MINUS_ONE,
+            SCENARIO_HOLD_1080_VFR_MINUS_FIVE,
             SCENARIO_REVERSE_1080,
         )
         private val REPRESENTATIVE_SCENARIOS = REPRESENTATIVE_HOLD_SCENARIOS + setOf(

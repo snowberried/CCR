@@ -30,6 +30,9 @@ class RandomSeekPlannerTest {
         assertEquals(RandomSeekPlanKind.REVERSE_WINDOW, windowPlan.kind)
         assertEquals(0, windowPlan.actualDecodeOutputCount)
         assertFalse(windowPlan.flushRequired)
+        assertEquals(RandomSeekFallbackReason.NONE, windowPlan.fallbackReason)
+        assertEquals(0, windowPlan.previousSyncFrameIndex)
+        assertFalse(windowPlan.auxiliaryUsed)
     }
 
     @Test
@@ -58,6 +61,9 @@ class RandomSeekPlannerTest {
         assertFalse(result.flushRequired)
         assertEquals(RandomSeekCacheExpectation.CACHE_MISS, result.expectedCacheResult)
         assertEquals(TOKEN, result.generation)
+        assertEquals(RandomSeekFallbackReason.NONE, result.fallbackReason)
+        assertEquals(1, result.observedDecoderCursorFrameIndex)
+        assertEquals(0, result.previousSyncFrameIndex)
     }
 
     @Test
@@ -75,6 +81,25 @@ class RandomSeekPlannerTest {
     }
 
     @Test
+    fun `runtime continuation fallback reports the final previous-sync plan`() {
+        val video = video(syncOrdinals = setOf(0, 8))
+        val planned = RandomSeekPlanner(lowCostSequentialOutputLimit = 2).plan(
+            input(video, video.frames[6].key, cursor = cursor(video, 1)),
+        )
+        val selected = planned
+            .fallbackToPreviousSync(RandomSeekFallbackReason.OUTPUT_FRAME_UNMAPPED, 7)
+            .withActualDecodeOutputCount(9)
+
+        assertEquals(RandomSeekPlanKind.SAME_GOP_CURSOR, planned.kind)
+        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, selected.kind)
+        assertEquals(RandomSeekFallbackReason.OUTPUT_FRAME_UNMAPPED, selected.fallbackReason)
+        assertEquals(7, selected.estimatedDecodeOutputCount)
+        assertEquals(9, selected.actualDecodeOutputCount)
+        assertTrue(selected.flushRequired)
+        assertNull(selected.sourceDecoderCursor)
+    }
+
+    @Test
     fun `previous sync beats an expensive cross-GOP cursor and requires one flush`() {
         val video = video(syncOrdinals = setOf(0, 8))
         val cursor = cursor(video, 1)
@@ -88,6 +113,24 @@ class RandomSeekPlannerTest {
         assertEquals(2, result.estimatedDecodeOutputCount)
         assertTrue(result.flushRequired)
         assertEquals(7, result.withActualDecodeOutputCount(7).actualDecodeOutputCount)
+        assertEquals(RandomSeekFallbackReason.PREVIOUS_SYNC_LOWER_COST, result.fallbackReason)
+        assertEquals(1, result.observedDecoderCursorFrameIndex)
+        assertEquals(8, result.previousSyncFrameIndex)
+    }
+
+    @Test
+    fun `different GOP fallback is reported when continuation is cheap but not eligible`() {
+        val video = video(syncOrdinals = setOf(0, 8))
+        val cursor = cursor(video, 7)
+        val result = RandomSeekPlanner(lowCostSequentialOutputLimit = 0).plan(
+            input(video, video.frames[9].key, cursor = cursor),
+        )
+
+        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, result.kind)
+        assertEquals(RandomSeekFallbackReason.DIFFERENT_GOP, result.fallbackReason)
+        assertEquals(7, result.observedDecoderCursorFrameIndex)
+        assertEquals(8, result.previousSyncFrameIndex)
+        assertTrue(result.flushRequired)
     }
 
     @Test
@@ -103,10 +146,39 @@ class RandomSeekPlannerTest {
             video.frames[2].copy(sampleOrdinal = 999),
         )
 
-        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, plan(video, target, cursor = stale).kind)
-        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, plan(video, target, cursor = wrongCodec).kind)
-        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, plan(video, target, cursor = unavailable).kind)
-        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, plan(video, target, cursor = malformed).kind)
+        listOf(stale, wrongCodec, unavailable, malformed).forEach { cursor ->
+            val result = plan(video, target, cursor = cursor)
+            assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, result.kind)
+            assertEquals(RandomSeekFallbackReason.CURSOR_STALE, result.fallbackReason)
+            assertEquals(2, result.observedDecoderCursorFrameIndex)
+        }
+    }
+
+    @Test
+    fun `queued input eos still drains an available buffered continuation`() {
+        val video = video()
+        val result = plan(
+            video = video,
+            target = video.frames[3].key,
+            cursor = cursor(video, 2).copy(inputEos = true),
+        )
+
+        assertEquals(RandomSeekPlanKind.SEQUENTIAL_AHEAD, result.kind)
+        assertTrue(requireNotNull(result.sourceDecoderCursor).inputEos)
+        assertFalse(result.flushRequired)
+    }
+
+    @Test
+    fun `missing or backward cursor records a canonical fallback reason`() {
+        val video = video()
+        val missing = plan(video, video.frames[3].key)
+        assertEquals(RandomSeekFallbackReason.CURSOR_UNAVAILABLE, missing.fallbackReason)
+        assertNull(missing.observedDecoderCursorFrameIndex)
+
+        val backward = plan(video, video.frames[2].key, cursor = cursor(video, 4))
+        assertEquals(RandomSeekPlanKind.PREVIOUS_SYNC, backward.kind)
+        assertEquals(RandomSeekFallbackReason.TARGET_NOT_AHEAD, backward.fallbackReason)
+        assertEquals(4, backward.observedDecoderCursorFrameIndex)
     }
 
     private fun plan(

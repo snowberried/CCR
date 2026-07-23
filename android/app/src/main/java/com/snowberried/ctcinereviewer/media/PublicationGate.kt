@@ -6,6 +6,7 @@ import kotlin.concurrent.withLock
 class PublicationGate(
     private val clockNanos: () -> Long = System::nanoTime,
     private val eventHistoryCapacity: Int = 64,
+    private val decorateEvent: (PublicationEvent) -> PublicationEvent = { it },
     private val onPublicationEvent: (PublicationEvent) -> Unit = {},
 ) {
     init {
@@ -165,7 +166,7 @@ class PublicationGate(
                 else -> PublicationResult.SWAP_FAILED
             }
             sequence += 1
-            PublicationEvent(
+            decorateEvent(PublicationEvent(
                 eventSequence = sequence,
                 elapsedRealtimeNanos = clockNanos(),
                 fileGeneration = request.token.fileGeneration,
@@ -178,7 +179,7 @@ class PublicationGate(
                 swapAttempted = surfaceIsValid,
                 eglSwapBuffersResult = swapResult,
                 result = result,
-            ).also(::record)
+            )).also(::record)
         }
         onPublicationEvent(event)
         return event

@@ -192,6 +192,35 @@ class FrameContractsTest {
     }
 
     @Test
+    fun `publication event decorator freezes refill correlation at swap time`() {
+        var refillGeneration = 3L
+        var refillActivity = 7L
+        var buildGeneration = 2L
+        val gate = PublicationGate(
+            decorateEvent = { event ->
+                event.copy(
+                    reverseRefillGeneration = refillGeneration,
+                    reverseRefillActivitySequence = refillActivity,
+                    reverseRefillInProgress = true,
+                    reverseWindowBuildGeneration = buildGeneration,
+                )
+            },
+        )
+        val file = gate.beginFile()
+        val request = gate.acceptRequest(file.fileGeneration, 0, FrameKey(0, 0, 0))!!.request
+        val event = gate.publish(request, 0, { true }) { true }
+        refillGeneration = 99
+        refillActivity = 99
+        buildGeneration = 99
+
+        assertEquals(3L, event.reverseRefillGeneration)
+        assertEquals(7L, event.reverseRefillActivitySequence)
+        assertTrue(event.reverseRefillInProgress)
+        assertEquals(2L, event.reverseWindowBuildGeneration)
+        assertEquals(event, gate.recentEvents().single())
+    }
+
+    @Test
     fun `synthetic stale successful swap is counted as an invariant violation`() {
         val invalid = PublicationEvent(
             eventSequence = 1,

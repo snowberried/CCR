@@ -15,6 +15,13 @@ import android.util.Log
 import android.view.Surface
 import com.snowberried.ctcinereviewer.cache.DirectionalByteCache
 import com.snowberried.ctcinereviewer.media.BackwardHistoryRing
+import com.snowberried.ctcinereviewer.media.CachedNavigationCompletion
+import com.snowberried.ctcinereviewer.media.CachedNavigationContextCheck
+import com.snowberried.ctcinereviewer.media.CachedNavigationInput
+import com.snowberried.ctcinereviewer.media.CachedNavigationMissReason
+import com.snowberried.ctcinereviewer.media.CachedNavigationOutcome
+import com.snowberried.ctcinereviewer.media.CachedNavigationPendingRegistry
+import com.snowberried.ctcinereviewer.media.CachedNavigationSource
 import com.snowberried.ctcinereviewer.media.CcrTrace
 import com.snowberried.ctcinereviewer.media.ContainerMetadata
 import com.snowberried.ctcinereviewer.media.DecodedOutputMetadata
@@ -163,6 +170,7 @@ class EglFrameRenderer(
         val cacheRetentionAllowed: (() -> Boolean)?,
         val cacheTargetKind: CacheTargetKind?,
         val cacheMaximumByteSize: Long?,
+        val commitReverseWindowKeys: (() -> Set<FrameKey>?)?,
         val requireCurrentRequest: Boolean,
         val complete: (RenderAck) -> Unit,
     )
@@ -206,6 +214,7 @@ class EglFrameRenderer(
     private var lastPublishedKey: FrameKey? = null
     private val prefetchedKeys = mutableSetOf<FrameKey>()
     private val reverseWindowKeys = mutableSetOf<FrameKey>()
+    private val stagedReverseWindowKeys = mutableSetOf<FrameKey>()
     private var prefetchCacheHitCount = 0L
     private var prefetchEvictedBeforeUseCount = 0L
     private var prefetchWastedCount = 0L
@@ -219,6 +228,7 @@ class EglFrameRenderer(
 
     private val byteBudget = rendererCacheByteBudget(Runtime.getRuntime().maxMemory())
     private val backwardHistory = BackwardHistoryRing(byteBudget)
+    private val cachedNavigationCommands = CachedNavigationPendingRegistry()
     private val cache = DirectionalByteCache<FrameKey, CachedTexture>(
         byteBudget = byteBudget,
         frameIndex = { it.displayFrameIndex },
@@ -232,6 +242,7 @@ class EglFrameRenderer(
             }
             backwardHistory.remove(key)
             reverseWindowKeys.remove(key)
+            stagedReverseWindowKeys.remove(key)
             if (lastPublishedKey == key) lastPublishedKey = null
         },
     )
@@ -286,6 +297,7 @@ class EglFrameRenderer(
         if (unavailable()) return false
         return callOnRenderer(1_000, false) {
             if (unavailable() || display == EGL14.EGL_NO_DISPLAY) return@callOnRenderer false
+            completeCachedNavigationCommands("FILE_CHANGED")
             fileGeneration = nextFileGeneration
             probePolicy.reset()
             pendingTarget?.complete?.invoke(RenderAck(AckStatus.STALE, 0, "FILE_CHANGED"))
@@ -296,6 +308,7 @@ class EglFrameRenderer(
             lastPublishedKey = null
             prefetchedKeys.clear()
             reverseWindowKeys.clear()
+            stagedReverseWindowKeys.clear()
             prefetchCacheHitCount = 0
             prefetchEvictedBeforeUseCount = 0
             prefetchWastedCount = 0
@@ -375,6 +388,159 @@ class EglFrameRenderer(
         }
     }
 
+    /**
+     * Probes and publishes an exact cached reverse-navigation texture without waiting on the
+     * caller. Every cache and EGL operation runs on the renderer thread. A miss is intentionally
+     * distinct from stale/error so the caller can fall back with the same accepted FrameRequest.
+     */
+    internal fun enqueueCachedNavigation(
+        input: CachedNavigationInput,
+        contextCurrent: CachedNavigationContextCheck,
+        completion: CachedNavigationCompletion,
+    ): Boolean {
+        val ticket = cachedNavigationCommands.register(input, completion)
+        if (unavailable()) {
+            completeCachedNavigation(
+                ticket,
+                CachedNavigationOutcome.Stale(input, "RENDERER_CLOSED"),
+            )
+            return true
+        }
+        val posted = runCatching {
+            handler.post {
+                CcrTrace.section(
+                    CcrTrace.requestLabel(CcrTrace.CACHED_NAVIGATION_START, input.request),
+                ) {
+                    executeCachedNavigation(ticket, contextCurrent)
+                }
+            }
+        }.getOrDefault(false)
+        if (!posted) {
+            completeCachedNavigation(
+                ticket,
+                CachedNavigationOutcome.Error(input, "CACHE_NAVIGATION_QUEUE_REJECTED"),
+            )
+        }
+        return true
+    }
+
+    private fun executeCachedNavigation(
+        ticket: CachedNavigationPendingRegistry.Ticket,
+        contextCurrent: CachedNavigationContextCheck,
+    ) {
+        if (!cachedNavigationCommands.isPending(ticket)) return
+        val input = ticket.input
+        val request = input.request
+        try {
+            if (unavailable()) {
+                completeCachedNavigation(ticket, CachedNavigationOutcome.Stale(input, "RENDERER_CLOSED"))
+                return
+            }
+            if (request.token.fileGeneration != fileGeneration || display == EGL14.EGL_NO_DISPLAY) {
+                completeCachedNavigation(ticket, CachedNavigationOutcome.Stale(input, "CACHE_GENERATION_STALE"))
+                return
+            }
+            if (!contextIsCurrent(input, contextCurrent) || !publicationGate.isCurrent(request.token)) {
+                completeCachedNavigation(ticket, CachedNavigationOutcome.Stale(input, "CONTEXT_GENERATION_STALE"))
+                return
+            }
+
+            val key = request.expectedKey
+            val backwardHistoryHit = backwardHistory.contains(key)
+            val prefetched = key in prefetchedKeys
+            val reverseWindowHit = key in reverseWindowKeys
+            val source = when {
+                reverseWindowHit -> CachedNavigationSource.REVERSE_WINDOW
+                backwardHistoryHit -> CachedNavigationSource.BACKWARD_HISTORY
+                else -> null
+            }
+            if (source == null || source !in input.allowedSources) {
+                val reason = if (cache.containsKey(key)) {
+                    CachedNavigationMissReason.SOURCE_NOT_ALLOWED
+                } else {
+                    CachedNavigationMissReason.NOT_CACHED
+                }
+                completeCachedNavigation(ticket, CachedNavigationOutcome.Miss(input, reason))
+                return
+            }
+
+            cache.recordRequest(request.requestedFrameIndex, explicitDirection = -1)
+            val cached = cache.get(key)
+            if (cached == null) {
+                completeCachedNavigation(
+                    ticket,
+                    CachedNavigationOutcome.Miss(input, CachedNavigationMissReason.NOT_CACHED),
+                )
+                return
+            }
+            val expectedTimestampNs = runCatching { Math.multiplyExact(key.ptsUs, 1_000L) }.getOrNull()
+            if (expectedTimestampNs == null || cached.timestampNs != expectedTimestampNs) {
+                cache.remove(key)
+                completeCachedNavigation(
+                    ticket,
+                    CachedNavigationOutcome.Miss(input, CachedNavigationMissReason.FRAME_KEY_MISMATCH),
+                )
+                return
+            }
+
+            CcrTrace.section(CcrTrace.requestLabel(CcrTrace.DRAW, request)) {
+                drawTextureToWindow(cached)
+            }
+            val event = publish(request, cached.timestampNs) {
+                contextIsCurrent(input, contextCurrent)
+            }
+            when (event.result) {
+                PublicationResult.PUBLISHED -> {
+                    if (backwardHistoryHit) backwardHistoryHitCount += 1
+                    if (prefetched && prefetchedKeys.remove(key)) prefetchCacheHitCount += 1
+                    if (reverseWindowHit && reverseWindowKeys.remove(key)) reverseWindowHitCount += 1
+                    recordPublished(key)
+                    completeCachedNavigation(
+                        ticket,
+                        CachedNavigationOutcome.Published(input, event, source, cached.imageProbe),
+                    )
+                }
+                PublicationResult.STALE_BEFORE_SWAP -> completeCachedNavigation(
+                    ticket,
+                    CachedNavigationOutcome.Stale(input, "STALE_BEFORE_SWAP", event),
+                )
+                PublicationResult.SURFACE_INVALID -> {
+                    val outcome = if (!contextIsCurrent(input, contextCurrent)) {
+                        CachedNavigationOutcome.Stale(input, "CONTEXT_GENERATION_STALE", event)
+                    } else {
+                        CachedNavigationOutcome.Error(input, "SURFACE_INVALID", event)
+                    }
+                    completeCachedNavigation(ticket, outcome)
+                }
+                PublicationResult.SWAP_FAILED -> completeCachedNavigation(
+                    ticket,
+                    CachedNavigationOutcome.Error(input, "EGL_SWAP_FAILED", event),
+                )
+            }
+        } catch (_: Throwable) {
+            completeCachedNavigation(
+                ticket,
+                CachedNavigationOutcome.Error(input, "CACHE_NAVIGATION_FAILED"),
+            )
+        }
+    }
+
+    private fun contextIsCurrent(
+        input: CachedNavigationInput,
+        contextCurrent: CachedNavigationContextCheck,
+    ): Boolean = runCatching { contextCurrent(input) }.getOrDefault(false)
+
+    private fun completeCachedNavigation(
+        ticket: CachedNavigationPendingRegistry.Ticket,
+        outcome: CachedNavigationOutcome,
+    ) {
+        cachedNavigationCommands.complete(ticket, outcome)
+    }
+
+    private fun completeCachedNavigationCommands(code: String) {
+        cachedNavigationCommands.completeAll { input -> CachedNavigationOutcome.Stale(input, code) }
+    }
+
     fun queueTarget(request: FrameRequest): TargetHandle? {
         if (unavailable()) return null
         return callOnRenderer<TargetHandle?>(2_000, null) {
@@ -389,6 +555,7 @@ class EglFrameRenderer(
                         cacheRetentionAllowed = null,
                         cacheTargetKind = null,
                         cacheMaximumByteSize = null,
+                        commitReverseWindowKeys = null,
                         requireCurrentRequest = true,
                         complete = it::complete,
                     )
@@ -406,6 +573,7 @@ class EglFrameRenderer(
         cacheRetentionAllowed: () -> Boolean,
         kind: CacheTargetKind = CacheTargetKind.PREFETCH,
         maximumByteSize: Long? = null,
+        commitReverseWindowKeys: (() -> Set<FrameKey>?)? = null,
         requireCurrentRequest: Boolean = true,
     ): CacheTargetHandle? {
         if (unavailable()) return null
@@ -426,6 +594,7 @@ class EglFrameRenderer(
                         cacheRetentionAllowed = cacheRetentionAllowed,
                         cacheTargetKind = kind,
                         cacheMaximumByteSize = maximumByteSize,
+                        commitReverseWindowKeys = commitReverseWindowKeys,
                         requireCurrentRequest = requireCurrentRequest,
                         complete = it::complete,
                     )
@@ -464,20 +633,18 @@ class EglFrameRenderer(
     }
 
     fun invalidateReverseWindow(preserveCachedKey: FrameKey? = null): Int = callOnRenderer(1_000, 0) {
-        val keys = reverseWindowKeys.toList()
+        val keys = (reverseWindowKeys + stagedReverseWindowKeys).toList()
         keys.filterNot { it == preserveCachedKey }.forEach(cache::remove)
         reverseWindowKeys.clear()
+        stagedReverseWindowKeys.clear()
         keys.count { it != preserveCachedKey }
     }
 
     fun discardReverseWindowKeys(keys: Collection<FrameKey>): Int = callOnRenderer(1_000, 0) {
         keys.count { key ->
-            if (reverseWindowKeys.remove(key)) {
-                cache.remove(key)
-                true
-            } else {
-                false
-            }
+            reverseWindowKeys.remove(key)
+            stagedReverseWindowKeys.remove(key)
+            cache.remove(key)
         }
     }
 
@@ -530,6 +697,7 @@ class EglFrameRenderer(
 
     fun cancelImmediately() {
         terminalFailure = true
+        completeCachedNavigationCommands("RENDERER_CANCELLED")
         synchronized(decoderSurfaceMonitor) { decoderSurfaceMonitor.notifyAll() }
     }
 
@@ -542,46 +710,7 @@ class EglFrameRenderer(
                 latch.countDown()
                 return@post
             }
-            result.set(
-                backwardHistory.snapshot().let { history ->
-                    PrefetchSnapshot(
-                        budget = prefetchBudgetDecision(
-                            width = canonicalGeometry.width,
-                            height = canonicalGeometry.height,
-                            cacheBudgetBytes = byteBudget,
-                        ),
-                        cachedFrameKeys = frameKeys.filterTo(mutableSetOf(), cache::containsKey),
-                        cacheHitCount = prefetchCacheHitCount,
-                        evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
-                        wastedCount = prefetchWastedCount,
-                        currentDepth = prefetchedKeys.size,
-                        cacheEntryCount = cache.size,
-                        peakCacheEntryCount = cache.peakSize,
-                        cacheEvictionCount = cache.evictionCount,
-                        cacheRejectionCount = cache.rejectionCount,
-                        cacheThrashCount = prefetchEvictedBeforeUseCount + prefetchRejectedCount,
-                        cacheBytes = cache.byteSize,
-                        peakCacheBytes = cache.peakByteSize,
-                        cacheRequestHitCount = cache.hitCount,
-                        cacheRequestMissCount = cache.missCount,
-                        textureCreatedCount = textureLifetimeTracker.createdCount,
-                        textureReleasedCount = textureLifetimeTracker.releasedCount,
-                        liveTextureCount = textureLifetimeTracker.liveCount,
-                        peakLiveTextureCount = textureLifetimeTracker.peakLiveCount,
-                        textureDoubleReleaseCount = textureLifetimeTracker.doubleReleaseCount,
-                        fullFrameReadbackCount = probePolicy.readbackCount(),
-                        protectedTextureCount = protectedCacheKeys().count(cache::containsKey),
-                        backwardHistoryCapacity = history.capacity,
-                        backwardHistoryDepth = history.depth,
-                        backwardHistoryKeys = history.keys.toSet(),
-                        backwardHistoryHitCount = backwardHistoryHitCount,
-                        reverseWindowReadyCount = if (reverseWindowKeys.isEmpty()) 0 else 1,
-                        reverseWindowKeys = reverseWindowKeys.toSet(),
-                        reverseWindowHitCount = reverseWindowHitCount,
-                        lastPublishedKey = lastPublishedKey,
-                    )
-                },
-            )
+            result.set(prefetchSnapshotOnRenderer(frameKeys))
             latch.countDown()
         }
         return if (latch.await(2, TimeUnit.SECONDS)) {
@@ -590,6 +719,52 @@ class EglFrameRenderer(
             emptyPrefetchSnapshot()
         }
     }
+
+    /** Used only by a cached-navigation completion already running on the EGL thread. */
+    internal fun cachedNavigationSnapshot(): PrefetchSnapshot {
+        check(android.os.Looper.myLooper() == thread.looper) { "cached navigation snapshot must run on EGL thread" }
+        return if (unavailable()) emptyPrefetchSnapshot() else prefetchSnapshotOnRenderer(emptyList())
+    }
+
+    private fun prefetchSnapshotOnRenderer(frameKeys: Collection<FrameKey>): PrefetchSnapshot =
+        backwardHistory.snapshot().let { history ->
+            PrefetchSnapshot(
+                budget = prefetchBudgetDecision(
+                    width = canonicalGeometry.width,
+                    height = canonicalGeometry.height,
+                    cacheBudgetBytes = byteBudget,
+                ),
+                cachedFrameKeys = frameKeys.filterTo(mutableSetOf(), cache::containsKey),
+                cacheHitCount = prefetchCacheHitCount,
+                evictedBeforeUseCount = prefetchEvictedBeforeUseCount,
+                wastedCount = prefetchWastedCount,
+                currentDepth = prefetchedKeys.size,
+                cacheEntryCount = cache.size,
+                peakCacheEntryCount = cache.peakSize,
+                cacheEvictionCount = cache.evictionCount,
+                cacheRejectionCount = cache.rejectionCount,
+                cacheThrashCount = prefetchEvictedBeforeUseCount + prefetchRejectedCount,
+                cacheBytes = cache.byteSize,
+                peakCacheBytes = cache.peakByteSize,
+                cacheRequestHitCount = cache.hitCount,
+                cacheRequestMissCount = cache.missCount,
+                textureCreatedCount = textureLifetimeTracker.createdCount,
+                textureReleasedCount = textureLifetimeTracker.releasedCount,
+                liveTextureCount = textureLifetimeTracker.liveCount,
+                peakLiveTextureCount = textureLifetimeTracker.peakLiveCount,
+                textureDoubleReleaseCount = textureLifetimeTracker.doubleReleaseCount,
+                fullFrameReadbackCount = probePolicy.readbackCount(),
+                protectedTextureCount = protectedCacheKeys().count(cache::containsKey),
+                backwardHistoryCapacity = history.capacity,
+                backwardHistoryDepth = history.depth,
+                backwardHistoryKeys = history.keys.toSet(),
+                backwardHistoryHitCount = backwardHistoryHitCount,
+                reverseWindowReadyCount = if (reverseWindowKeys.isEmpty()) 0 else 1,
+                reverseWindowKeys = reverseWindowKeys.toSet(),
+                reverseWindowHitCount = reverseWindowHitCount,
+                lastPublishedKey = lastPublishedKey,
+            )
+        }
 
     fun trimCache(level: Int) {
         if (unavailable()) return
@@ -608,6 +783,7 @@ class EglFrameRenderer(
     override fun close() {
         if (closed) return
         closed = true
+        completeCachedNavigationCommands("RENDERER_CLOSED")
         synchronized(decoderSurfaceMonitor) { decoderSurfaceMonitor.notifyAll() }
         handler.removeCallbacksAndMessages(null)
         handler.postAtFrontOfQueue {
@@ -756,24 +932,48 @@ class EglFrameRenderer(
                 handle.token.fileGeneration == fileGeneration && handle.cacheRetentionAllowed?.invoke() == true && put()
             }
         }
+        val committedReverseWindowKeys = if (
+            retained && handle.cacheTargetKind == CacheTargetKind.REVERSE_WINDOW &&
+            handle.commitReverseWindowKeys != null
+        ) {
+            runCatching(handle.commitReverseWindowKeys).getOrNull()
+        } else {
+            null
+        }
+        val cacheCommitAccepted = retained && (
+            handle.cacheTargetKind != CacheTargetKind.REVERSE_WINDOW ||
+                handle.commitReverseWindowKeys == null ||
+                committedReverseWindowKeys != null
+            )
         completeCachedTextureTarget(
             publicationRequest = handle.publicationRequest,
             onCacheOnly = {
-                if (retained) {
+                if (cacheCommitAccepted) {
                     when (handle.cacheTargetKind) {
                         CacheTargetKind.PREFETCH -> prefetchedKeys += handle.expectedKey
-                        CacheTargetKind.REVERSE_WINDOW -> reverseWindowKeys += handle.expectedKey
+                        CacheTargetKind.REVERSE_WINDOW -> {
+                            val exposed = committedReverseWindowKeys ?: setOf(handle.expectedKey)
+                            if (handle.commitReverseWindowKeys != null) {
+                                stagedReverseWindowKeys += handle.expectedKey
+                                stagedReverseWindowKeys.removeAll(exposed)
+                            }
+                            reverseWindowKeys += exposed
+                        }
                         null -> Unit
                     }
                     handle.complete(RenderAck(AckStatus.CACHED, timestampNs, imageProbe = cached.imageProbe))
                 } else {
                     if (cacheAdmissionAttempted) prefetchRejectedCount += 1
-                    releaseCachedTexture(cached)
+                    if (retained) cache.remove(handle.expectedKey) else releaseCachedTexture(cached)
                     handle.complete(
                         RenderAck(
                             AckStatus.ERROR,
                             timestampNs,
-                            if (retentionAllowed) "PREFETCH_NOT_RETAINED" else "PREFETCH_NOT_ACTIVE",
+                            when {
+                                retained -> "REVERSE_WINDOW_COMMIT_REJECTED"
+                                retentionAllowed -> "PREFETCH_NOT_RETAINED"
+                                else -> "PREFETCH_NOT_ACTIVE"
+                            },
                         ),
                     )
                 }
@@ -790,13 +990,18 @@ class EglFrameRenderer(
         )
     }
 
-    private fun publish(request: FrameRequest, textureTimestampNs: Long): PublicationEvent =
+    private fun publish(
+        request: FrameRequest,
+        textureTimestampNs: Long,
+        contextCurrent: () -> Boolean = { true },
+    ): PublicationEvent =
         CcrTrace.section(CcrTrace.requestLabel(CcrTrace.PUBLISH, request)) {
             publicationGate.publish(
                 request = request,
                 textureTimestampNs = textureTimestampNs,
                 surfaceValid = {
-                    !unavailable() &&
+                    contextCurrent() &&
+                        !unavailable() &&
                         display != EGL14.EGL_NO_DISPLAY &&
                         eglWindowSurface != EGL14.EGL_NO_SURFACE &&
                         windowSurface?.isValid == true
@@ -1076,6 +1281,7 @@ class EglFrameRenderer(
     }
 
     private fun releaseGl() {
+        completeCachedNavigationCommands("SURFACE_RELEASED")
         pendingTarget?.complete?.invoke(RenderAck(AckStatus.ERROR, 0, "SURFACE_RELEASED"))
         pendingTarget = null
         if (display != EGL14.EGL_NO_DISPLAY) {
@@ -1178,6 +1384,7 @@ class EglFrameRenderer(
         lastPublishedKey?.let(::add)
         pendingTarget?.expectedKey?.let(::add)
         addAll(reverseWindowKeys)
+        addAll(stagedReverseWindowKeys)
     }
 
     private fun recordPublished(key: FrameKey) {

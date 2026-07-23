@@ -572,6 +572,23 @@ class S24FrameAccuracyTest {
             "${golden.fixture}: stride $stride repeated exact seek per target",
             diagnostics.reverseWindowSeekCount < requestCount,
         )
+        assertTrue(
+            "${golden.fixture}: stride $stride cached navigation never bypassed the actor",
+            diagnostics.cachedNavigationActorBypassCount > 0,
+        )
+        assertTrue(
+            "${golden.fixture}: stride $stride refill generation sought more than once",
+            diagnostics.reverseRefillMaxSeekPerGeneration <= 1,
+        )
+        assertTrue(
+            "${golden.fixture}: stride $stride refill generation flushed more than once",
+            diagnostics.reverseRefillMaxFlushPerGeneration <= 1,
+        )
+        assertEquals(
+            "${golden.fixture}: stride $stride refill restarted",
+            0L,
+            diagnostics.reverseRefillRestartCount,
+        )
         assertEquals("${golden.fixture}: stride $stride stale result", 0L, diagnostics.staleDiscardCount)
         assertEquals("${golden.fixture}: stride $stride stale swap", 0L, diagnostics.staleBeforeSwapCount)
         assertEquals("${golden.fixture}: stride $stride swap failure", 0L, diagnostics.swapFailureCount)
@@ -600,6 +617,21 @@ class S24FrameAccuracyTest {
             .put("reverseWindowRefillNeeded", diagnostics.reverseWindowRefillNeeded)
             .put("reverseWindowSeekCount", diagnostics.reverseWindowSeekCount)
             .put("reverseWindowHitCount", diagnostics.reverseWindowHitCount)
+            .put("cachedNavigationAttemptCount", diagnostics.cachedNavigationAttemptCount)
+            .put("cachedNavigationActorBypassCount", diagnostics.cachedNavigationActorBypassCount)
+            .put("cachedNavigationMissFallbackCount", diagnostics.cachedNavigationMissFallbackCount)
+            .put("cachedNavigationQueueWaitMaxUs", diagnostics.cachedNavigationQueueWaitMaxUs)
+            .put("reverseRefillGenerationCount", diagnostics.reverseRefillGenerationCount)
+            .put("reverseRefillInitialSeekCount", diagnostics.reverseRefillInitialSeekCount)
+            .put("reverseRefillInitialFlushCount", diagnostics.reverseRefillInitialFlushCount)
+            .put("reverseRefillResumedSliceCount", diagnostics.reverseRefillResumedSliceCount)
+            .put("reverseRefillRestartCount", diagnostics.reverseRefillRestartCount)
+            .put("reverseRefillMaxSeekPerGeneration", diagnostics.reverseRefillMaxSeekPerGeneration)
+            .put("reverseRefillMaxFlushPerGeneration", diagnostics.reverseRefillMaxFlushPerGeneration)
+            .put("reverseLowWaterTriggerCount", diagnostics.reverseLowWaterTriggerCount)
+            .put("reversePartialAppendCount", diagnostics.reversePartialAppendCount)
+            .put("reverseDepletionBeforeRefillCount", diagnostics.reverseDepletionBeforeRefillCount)
+            .put("reverseRefillAssociatedGapCount", diagnostics.reverseRefillAssociatedGapCount)
     }
 
     private fun exerciseBurst(activity: GateActivity, golden: Golden) {
@@ -1301,6 +1333,6 @@ class S24FrameAccuracyTest {
             "short-last-gop", "rotation-90", "rotation-180", "rotation-270", "hevc-main8", "burst",
             "switch-a", "switch-b", "par-8-9", "duplicate-pts",
         )
-        private val SEQUENTIAL_FIXTURES = listOf("h264-bframes", "long-gop", "vfr")
+        private val SEQUENTIAL_FIXTURES = listOf("h264-bframes", "long-gop", "vfr", "hevc-main8")
     }
 }

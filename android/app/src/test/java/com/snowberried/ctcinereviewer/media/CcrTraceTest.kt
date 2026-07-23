@@ -28,6 +28,19 @@ class CcrTraceTest {
     }
 
     @Test
+    fun `cached navigation marker has a stable request identity contract`() {
+        val request = FrameRequest(
+            GenerationToken(3, 9),
+            7,
+            FrameKey(7, 7_000, 0),
+        )
+
+        val label = CcrTrace.requestLabel(CcrTrace.CACHED_NAVIGATION_START, request)
+
+        assertEquals("CCR.cached-navigation.start f=3 r=9 i=7 p=7000", label)
+    }
+
+    @Test
     fun `navigation input label records mode stride requested and displayed without paths`() {
         val request = FrameRequest(
             GenerationToken(7, 11),
