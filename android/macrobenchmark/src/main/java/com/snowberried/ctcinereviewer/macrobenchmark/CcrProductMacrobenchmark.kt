@@ -125,7 +125,7 @@ class CcrProductMacrobenchmark {
                 SELECT accepted.accepted_ns AS accepted_ns,
                        actor_started.actor_started_ns AS actor_started_ns,
                        cached_navigation_started.cached_navigation_started_ns
-                           AS cached_navigation_started_ns,
+                            AS cached_navigation_started_ns,
                        first_output.first_output_ns AS first_output_ns,
                        target_output.target_output_ns AS target_output_ns,
                        published.published_ns AS published_ns
@@ -180,8 +180,8 @@ class CcrProductMacrobenchmark {
 
             rows.forEach { row ->
                 check(row.acceptedNs <= row.publishedNs) { "CCR publication precedes request acceptance" }
-                check((row.actorStartedNs == null) != (row.cachedNavigationStartedNs == null)) {
-                    "CCR publication must have exactly one actor or cached-navigation start"
+                check(row.actorStartedNs != null || row.cachedNavigationStartedNs != null) {
+                    "CCR publication has no actor or cached-navigation start"
                 }
                 check((row.firstOutputNs == null) == (row.targetOutputNs == null)) {
                     "CCR request has only one decoder-output stage"
@@ -195,8 +195,12 @@ class CcrProductMacrobenchmark {
                     check(cachedStarted in row.acceptedNs..row.publishedNs) {
                         "CCR cached-navigation start is outside the request/publication interval"
                     }
-                    check(row.firstOutputNs == null && row.targetOutputNs == null) {
-                        "CCR cached-navigation publication touched decoder output"
+                    row.actorStartedNs?.let { actorStarted ->
+                        check(cachedStarted <= actorStarted) {
+                            "CCR media actor started before cached-navigation fallback"
+                        }
+                    } ?: check(row.firstOutputNs == null && row.targetOutputNs == null) {
+                        "CCR cache-only publication touched decoder output"
                     }
                 }
                 row.firstOutputNs?.let { first ->
@@ -219,7 +223,9 @@ class CcrProductMacrobenchmark {
 
             val decodedRows = rows.filter { it.firstOutputNs != null }
             val actorRows = rows.filter { it.actorStartedNs != null }
-            val cachedOnlyRows = rows.filter { it.cachedNavigationStartedNs != null }
+            val cachedOnlyRows = rows.filter {
+                it.cachedNavigationStartedNs != null && it.actorStartedNs == null
+            }
             val acceptedToActorStartUs = actorRows.map {
                 (requireNotNull(it.actorStartedNs) - it.acceptedNs) / 1_000L
             }.sorted()

@@ -274,6 +274,32 @@ try {
   Assert-Alpha6Stage1Test ($source.Contains("directionReversalAndGenerationInvalidationRemainExactOnS24Ultra")) "direction-reversal-correctness-retained"
   $benchmarkSource = [System.IO.File]::ReadAllText($benchmarkActivity, [System.Text.Encoding]::UTF8)
   $macrobenchmarkSource = [System.IO.File]::ReadAllText($macrobenchmark, [System.Text.Encoding]::UTF8)
+  Assert-Alpha6Stage1Test `
+    ($macrobenchmarkSource.Contains(
+      "row.actorStartedNs != null || row.cachedNavigationStartedNs != null"
+    )) `
+    "macrobenchmark-request-path-at-least-one"
+  Assert-Alpha6Stage1Test `
+    (-not $macrobenchmarkSource.Contains(
+      "CCR publication must have exactly one actor or cached-navigation start"
+    )) `
+    "macrobenchmark-request-path-xor-removed"
+  Assert-Alpha6Stage1Test `
+    ($macrobenchmarkSource.Contains(
+      "it.cachedNavigationStartedNs != null && it.actorStartedNs == null"
+    )) `
+    "macrobenchmark-cache-only-excludes-fallback"
+  Assert-Alpha6Stage1Test `
+    ($macrobenchmarkSource.Contains("cachedStarted <= actorStarted") -and
+      $macrobenchmarkSource.Contains(
+        "CCR media actor started before cached-navigation fallback"
+      )) `
+    "macrobenchmark-fallback-ordering"
+  Assert-Alpha6Stage1Test `
+    ($macrobenchmarkSource.Contains(
+      "CCR cache-only publication touched decoder output"
+    )) `
+    "macrobenchmark-cache-only-decoder-isolation"
   foreach ($contract in @(
     [PSCustomObject]@{ id = "h264-bframes"; fixture = "1080p-h264-bframes.mp4"; minusOne = "hold1080MinusOne"; minusFive = "hold1080MinusFive"; scenario = "1080p-hold-minus" },
     [PSCustomObject]@{ id = "h264-long-gop"; fixture = "1080p-h264-long-gop.mp4"; minusOne = "hold1080H264LongGopMinusOne"; minusFive = "hold1080H264LongGopMinusFive"; scenario = "1080p-h264-long-gop-hold-minus" },
