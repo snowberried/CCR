@@ -156,6 +156,14 @@ try {
   $buildFree = @(Assert-CcrAlpha6ValidationScriptsBuildFree $closed)
   Assert-Alpha6Stage1Test ($buildFree.Count -eq 4) "closed-script-list-build-free"
   $source = [System.IO.File]::ReadAllText($runner, [System.Text.Encoding]::UTF8)
+  $runnerAst = [System.Management.Automation.Language.Parser]::ParseFile($runner, [ref]$null, [ref]$null)
+  $resolverAst = @($runnerAst.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -ceq "Resolve-CcrAlpha6Stage1CorrectnessEvidenceContract"
+  }, $true))
+  Assert-Alpha6Stage1Test ($resolverAst.Count -eq 1) "correctness-evidence-resolver-defined-once"
+  Invoke-Expression $resolverAst[0].Extent.Text
   Assert-Alpha6Stage1Test ($source.Contains("Invoke-CcrAlpha6PinnedHostPreflight")) "host-preflight-connected"
   Assert-Alpha6Stage1Test ($source.Contains("Assert-CcrAlpha6ArtifactSetUnchanged")) "artifact-rehash-connected"
   Assert-Alpha6Stage1Test ($source.Contains("Invoke-CcrPinnedCleanup")) "package-cleanup-finally"
@@ -163,6 +171,52 @@ try {
   Assert-Alpha6Stage1Test ($source -notmatch '(?m)^\s*\$\w*(?:Sha|Sha256)\w*\s*=\s*"[0-9a-f]{40,64}"') "no-final-hash-placeholder"
   Assert-Alpha6Stage1Test ($source -match 'scenarioCount\s*=\s*10' -and $source -match 'independentTraceCount\s*=\s*30') "ten-scenarios-thirty-traces"
   Assert-Alpha6Stage1Test ($source.Contains("ALPHA6_STAGE1_BENCHMARK_FIXTURE_IDENTITY_MISMATCH")) "fixture-identity-fail-closed"
+  $resolverContracts = @(
+    [PSCustomObject]@{ stage = "Full"; reportName = "s24-frame-accuracy-report.json"; kind = "frame-accuracy-exact" },
+    [PSCustomObject]@{ stage = "Representative"; reportName = "representative-resolution-exact-report.json"; kind = "representative-resolution-exact-subset" },
+    [PSCustomObject]@{ stage = "Forward"; reportName = "s24-forward-sequential-report.json"; kind = "forward-sequential-exact" },
+    [PSCustomObject]@{ stage = "Reverse"; reportName = "s24-reverse-window-report.json"; kind = "reverse-window-exact" },
+    [PSCustomObject]@{ stage = "ReleaseCancel"; reportName = "s24-release-cancel-grace-report.json"; kind = "release-cancel-grace" },
+    [PSCustomObject]@{ stage = "Direction"; reportName = "s24-alpha5-direction-reversal-report.json"; kind = "bidirectional-transition-exact" },
+    [PSCustomObject]@{ stage = "ReverseLifecycle"; reportName = "s24-alpha5-reverse-lifecycle-report.json"; kind = "alpha5-reverse-lifecycle-exact" }
+  )
+  foreach ($contract in $resolverContracts) {
+    $suffix = ([string]$contract.stage).ToLowerInvariant()
+    $resolvedContract = Resolve-CcrAlpha6Stage1CorrectnessEvidenceContract `
+      "trusted-run-c-$suffix-$([string]$contract.reportName)" $resolverContracts "trusted-run"
+    Assert-Alpha6Stage1Test (
+      [string]$resolvedContract.expectedChildRunId -ceq "trusted-run-c-$suffix" -and
+        [string]$resolvedContract.contract.stage -ceq [string]$contract.stage
+    ) "correctness-evidence-binds-trusted-parent-run-id-$suffix"
+    Assert-Alpha6Stage1ThrowsLike {
+      Resolve-CcrAlpha6Stage1CorrectnessEvidenceContract `
+        "stale-run-c-$suffix-$([string]$contract.reportName)" $resolverContracts "trusted-run" | Out-Null
+    } "ALPHA6_STAGE1_CORRECTNESS_RESULT_EVIDENCE_IDENTITY_MISMATCH:*" "correctness-evidence-rejects-stale-self-consistent-run-id-$suffix"
+  }
+  Assert-Alpha6Stage1ThrowsLike {
+    Resolve-CcrAlpha6Stage1CorrectnessEvidenceContract `
+      "trusted-run-c-reverselifecycle-s24-frame-accuracy-report.json" $resolverContracts "trusted-run" | Out-Null
+  } "ALPHA6_STAGE1_CORRECTNESS_RESULT_EVIDENCE_IDENTITY_MISMATCH:*" "correctness-evidence-rejects-wrong-stage-prefix"
+  $correctnessCheckpointValidation = 'Assert-CcrAlpha6Stage1Checkpoint $correctnessCheckpoint "Correctness" $context | Out-Null'
+  $correctnessCheckpointWrite = 'Write-CcrAlpha6Stage1ImmutableJson $correctnessCheckpointPath $correctnessCheckpoint | Out-Null'
+  $correctnessWriteIndex = $source.IndexOf($correctnessCheckpointWrite, [System.StringComparison]::Ordinal)
+  $correctnessValidationIndex = $source.LastIndexOf(
+    $correctnessCheckpointValidation,
+    $correctnessWriteIndex,
+    [System.StringComparison]::Ordinal
+  )
+  $performanceCheckpointValidation = 'Assert-CcrAlpha6Stage1Checkpoint $performanceCheckpoint "Performance" $context | Out-Null'
+  $performanceCheckpointWrite = 'Write-CcrAlpha6Stage1ImmutableJson $performanceCheckpointPath $performanceCheckpoint | Out-Null'
+  $performanceWriteIndex = $source.IndexOf($performanceCheckpointWrite, [System.StringComparison]::Ordinal)
+  $performanceValidationIndex = $source.LastIndexOf(
+    $performanceCheckpointValidation,
+    $performanceWriteIndex,
+    [System.StringComparison]::Ordinal
+  )
+  Assert-Alpha6Stage1Test (
+    $correctnessValidationIndex -ge 0 -and $correctnessValidationIndex -lt $correctnessWriteIndex -and
+      $performanceValidationIndex -ge 0 -and $performanceValidationIndex -lt $performanceWriteIndex
+  ) "stage-checkpoints-validated-before-write"
   Assert-Alpha6Stage1Test ($source.Contains('"measuredWindowBuildAssociatedLongGapCount"') -and
     $source.Contains("ALPHA6_STAGE1_REVERSE_MECHANISM_NOT_EXERCISED")) "window-build-and-mechanism-gates"
   Assert-Alpha6Stage1Test ($source.Contains("directionReversalAndGenerationInvalidationRemainExactOnS24Ultra")) "direction-reversal-correctness-retained"

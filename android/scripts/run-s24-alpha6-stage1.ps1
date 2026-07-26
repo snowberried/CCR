@@ -559,6 +559,28 @@ function Get-CcrAlpha6Stage1DirectoryEvidence {
   })
 }
 
+function Resolve-CcrAlpha6Stage1CorrectnessEvidenceContract {
+  param(
+    [Parameter(Mandatory = $true)][string]$Leaf,
+    [Parameter(Mandatory = $true)][object[]]$Contracts,
+    [Parameter(Mandatory = $true)][string]$ParentRunId
+  )
+  $matches = @($Contracts | ForEach-Object {
+    $stage = [string]$_.stage
+    $expectedChildRunId = "$ParentRunId-c-$($stage.ToLowerInvariant())"
+    if ($Leaf -ceq "$expectedChildRunId-$([string]$_.reportName)") {
+      [PSCustomObject]@{
+        contract = $_
+        expectedChildRunId = $expectedChildRunId
+      }
+    }
+  })
+  if ($matches.Count -ne 1) {
+    throw "ALPHA6_STAGE1_CORRECTNESS_RESULT_EVIDENCE_IDENTITY_MISMATCH:$Leaf"
+  }
+  return $matches[0]
+}
+
 function Assert-CcrAlpha6Stage1CorrectnessResult {
   param(
     [Parameter(Mandatory = $true)][object]$Result,
@@ -569,32 +591,35 @@ function Assert-CcrAlpha6Stage1CorrectnessResult {
       [long](Get-CcrPinnedRequiredProperty $Result "buildCommandCount") -ne 0L) {
     throw "ALPHA6_STAGE1_CORRECTNESS_RESULT_CONTRACT_MISMATCH"
   }
-  $contracts = @{
-    "s24-frame-accuracy-report.json" = @("Full", "frame-accuracy-exact")
-    "representative-resolution-exact-report.json" = @("Representative", "representative-resolution-exact-subset")
-    "s24-forward-sequential-report.json" = @("Forward", "forward-sequential-exact")
-    "s24-reverse-window-report.json" = @("Reverse", "reverse-window-exact")
-    "s24-release-cancel-grace-report.json" = @("ReleaseCancel", "release-cancel-grace")
-    "s24-alpha5-direction-reversal-report.json" = @("Direction", "bidirectional-transition-exact")
-    "s24-alpha5-reverse-lifecycle-report.json" = @("ReverseLifecycle", "alpha5-reverse-lifecycle-exact")
-  }
+  $contracts = @(
+    [PSCustomObject]@{ stage = "Full"; reportName = "s24-frame-accuracy-report.json"; kind = "frame-accuracy-exact" },
+    [PSCustomObject]@{ stage = "Representative"; reportName = "representative-resolution-exact-report.json"; kind = "representative-resolution-exact-subset" },
+    [PSCustomObject]@{ stage = "Forward"; reportName = "s24-forward-sequential-report.json"; kind = "forward-sequential-exact" },
+    [PSCustomObject]@{ stage = "Reverse"; reportName = "s24-reverse-window-report.json"; kind = "reverse-window-exact" },
+    [PSCustomObject]@{ stage = "ReleaseCancel"; reportName = "s24-release-cancel-grace-report.json"; kind = "release-cancel-grace" },
+    [PSCustomObject]@{ stage = "Direction"; reportName = "s24-alpha5-direction-reversal-report.json"; kind = "bidirectional-transition-exact" },
+    [PSCustomObject]@{ stage = "ReverseLifecycle"; reportName = "s24-alpha5-reverse-lifecycle-report.json"; kind = "alpha5-reverse-lifecycle-exact" }
+  )
   $records = @((Get-CcrPinnedRequiredProperty $Result "evidence"))
   if ($records.Count -ne $contracts.Count) { throw "ALPHA6_STAGE1_CORRECTNESS_RESULT_EVIDENCE_COUNT_MISMATCH" }
-  $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
   foreach ($record in $records) {
     $path = Assert-CcrAlpha6Stage1FileRecord $record $Context.OutputDirectory
     $leaf = [System.IO.Path]::GetFileName($path)
-    if (-not $contracts.ContainsKey($leaf) -or -not $seen.Add($leaf)) {
+    $resolved = Resolve-CcrAlpha6Stage1CorrectnessEvidenceContract $leaf $contracts $RunId
+    $contract = $resolved.contract
+    $contractName = [string]$contract.reportName
+    if (-not $seen.Add($contractName)) {
       throw "ALPHA6_STAGE1_CORRECTNESS_RESULT_EVIDENCE_IDENTITY_MISMATCH:$leaf"
     }
     try { $report = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch {
       throw "ALPHA6_STAGE1_CORRECTNESS_RESULT_JSON_INVALID:$leaf"
     }
-    $stage = [string]$contracts[$leaf][0]
-    $kind = [string]$contracts[$leaf][1]
+    $stage = [string]$contract.stage
+    $kind = [string]$contract.kind
     Assert-CcrPinnedReport `
       -Report $report -ArtifactSet $Context.ArtifactSet `
-      -RunId ([string](Get-CcrPinnedRequiredProperty $report "runId")) `
+      -RunId ([string]$resolved.expectedChildRunId) `
       -AppRole "debugApp" -TestRole "debugTest" -ExpectedKind $kind `
       -ExpectedTestCount 1 -ExpectedInstrumentationTestCount 1 | Out-Null
     Assert-CcrAlpha6Stage1HardReport $report $stage $Context | Out-Null
@@ -649,7 +674,9 @@ function Assert-CcrAlpha6Stage1PerformanceResult {
 
 function Assert-CcrAlpha6Stage1Checkpoint {
   param([Parameter(Mandatory = $true)][object]$Checkpoint, [Parameter(Mandatory = $true)][string]$Stage, [Parameter(Mandatory = $true)][object]$Context)
-  if ([string]$Checkpoint.status -cne "PASS" -or
+  if ([int]$Checkpoint.schemaVersion -ne 1 -or
+      [string]$Checkpoint.kind -cne "alpha6-stage1-checkpoint" -or
+      [string]$Checkpoint.status -cne "PASS" -or
       [string]$Checkpoint.stage -cne $Stage -or
       [long]$Checkpoint.buildCommandCount -ne 0L) {
     throw "ALPHA6_STAGE1_CHECKPOINT_STATUS_MISMATCH:$Stage"
@@ -973,6 +1000,7 @@ try {
       completedAtUtc = [DateTime]::UtcNow.ToString("o")
       buildCommandCount = 0L
     }
+    Assert-CcrAlpha6Stage1Checkpoint $correctnessCheckpoint "Correctness" $context | Out-Null
     Write-CcrAlpha6Stage1ImmutableJson $correctnessCheckpointPath $correctnessCheckpoint | Out-Null
   }
 
@@ -1002,6 +1030,7 @@ try {
       completedAtUtc = [DateTime]::UtcNow.ToString("o")
       buildCommandCount = 0L
     }
+    Assert-CcrAlpha6Stage1Checkpoint $performanceCheckpoint "Performance" $context | Out-Null
     Write-CcrAlpha6Stage1ImmutableJson $performanceCheckpointPath $performanceCheckpoint | Out-Null
   }
   Assert-CcrAlpha6Stage1Deadline "complete"
