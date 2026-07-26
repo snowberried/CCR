@@ -37,7 +37,8 @@ if ($testHookUsed -and $env:CCR_ALPHA6_STAGE1_TEST_MODE -cne "1") {
 }
 
 Assert-CcrPinnedRunId $RunId | Out-Null
-if ($RunId.Length -gt 80) { throw "ALPHA6_STAGE1_RUN_ID_TOO_LONG" }
+# The longest performance suffix ("-a6-hevc-m5") must fit the app's 48-character run ID contract.
+if ($RunId.Length -gt 37) { throw "ALPHA6_STAGE1_RUN_ID_TOO_LONG" }
 $deadlineUtc = [DateTime]::UtcNow.AddMinutes($MaxMinutes)
 $adbDeadlineState = [PSCustomObject]@{
   ValidationDeadlineUtc = $deadlineUtc

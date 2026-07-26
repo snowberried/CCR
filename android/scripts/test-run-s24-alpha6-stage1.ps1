@@ -334,6 +334,13 @@ try {
     & $runner @zeroRuntime | Out-Null
   } "ALPHA6_RUNTIME_SOURCE_SHA_INVALID" "zero-runtime-placeholder-rejected"
 
+  $longRunId = @{} + $preflightArgs
+  $longRunId.OutputDirectory = Join-Path $root "long-run-id-output"
+  $longRunId.RunId = "r" * 38
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @longRunId | Out-Null
+  } "ALPHA6_STAGE1_RUN_ID_TOO_LONG" "performance-child-run-id-length-fails-fast"
+
   $failureOutput = Join-Path $root "correctness-failure-output"
   $failureLog = Join-Path $root "correctness-failure-stage-log.txt"
   $failureState = New-Alpha6FakeAdbState
