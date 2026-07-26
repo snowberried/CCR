@@ -365,8 +365,22 @@ try {
     param($Stage, $Context, $StageDirectory)
     [System.IO.Directory]::CreateDirectory($StageDirectory) | Out-Null
     [System.IO.File]::AppendAllText($successLog, "$Stage`n", [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText((Join-Path $StageDirectory "host-only-$Stage.txt"), "synthetic-$Stage", [System.Text.UTF8Encoding]::new($false))
-    return [PSCustomObject]@{ status = "PASS"; buildCommandCount = 0L }
+    $evidencePath = if ($Stage -ceq "Correctness") {
+      Join-Path $Context.OutputDirectory "host-only-$Stage.txt"
+    } else {
+      Join-Path $StageDirectory "host-only-$Stage.txt"
+    }
+    [System.IO.File]::WriteAllText($evidencePath, "synthetic-$Stage", [System.Text.UTF8Encoding]::new($false))
+    $result = [PSCustomObject]@{ status = "PASS"; buildCommandCount = 0L }
+    if ($Stage -ceq "Correctness") {
+      $item = Get-Item -LiteralPath $evidencePath
+      $result | Add-Member -NotePropertyName evidence -NotePropertyValue @([PSCustomObject]@{
+        path = $item.FullName
+        bytes = [long]$item.Length
+        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $item.FullName).Hash.ToLowerInvariant()
+      })
+    }
+    return $result
   }.GetNewClosure()
   $successArgs = @{} + $failureArgs
   $successArgs.OutputDirectory = $successOutput
@@ -382,6 +396,13 @@ try {
       [string]$successSummary.technicalGateStatus -ceq "PASS" -and $successSummary.releaseEligible -eq $false) "success-status"
   Assert-Alpha6Stage1Test ($successSummary.auxiliaryDecoderUsed -eq $false -and [string]$successSummary.userReverseSmoothness -ceq "PENDING_USER") "stage1-single-decoder-user-pending"
   Assert-Alpha6Stage1Test ([long]$successSummary.buildCommandCount -eq 0L) "success-build-count-zero"
+  $successCorrectnessCheckpoint = [System.IO.File]::ReadAllText(
+    (Join-Path $successOutput "checkpoint-alpha6-stage1-correctness-alpha6-stage1-success.json"),
+    [System.Text.Encoding]::UTF8
+  ) | ConvertFrom-Json
+  Assert-Alpha6Stage1Test (
+    [System.IO.Path]::GetDirectoryName([string]$successCorrectnessCheckpoint.evidence[0].path) -ceq $successOutput
+  ) "correctness-uses-returned-root-evidence"
   $successResume = @{} + $successArgs
   $successResume.Resume = $true
   & $runner @successResume | Out-Null

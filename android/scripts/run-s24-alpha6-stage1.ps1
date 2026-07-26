@@ -956,7 +956,11 @@ try {
     $correctnessDirectory = Join-Path $context.OutputDirectory "attempt-$hostPreflightRunId-stage-correctness"
     $correctnessResult = Invoke-CcrAlpha6Stage1Correctness $context $correctnessDirectory
     if ([string]$correctnessResult.status -cne "PASS") { throw "ALPHA6_STAGE1_CORRECTNESS_FAILED" }
-    $evidence = @(Get-CcrAlpha6Stage1DirectoryEvidence $correctnessDirectory)
+    $evidence = @(if (Test-CcrPinnedProperty $correctnessResult "evidence") {
+        @((Get-CcrPinnedRequiredProperty $correctnessResult "evidence"))
+      } else {
+        @(Get-CcrAlpha6Stage1DirectoryEvidence $correctnessDirectory)
+      })
     if ($evidence.Count -eq 0) { throw "ALPHA6_STAGE1_CORRECTNESS_EVIDENCE_EMPTY" }
     $correctnessCheckpoint = [ordered]@{
       schemaVersion = 1
