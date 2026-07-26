@@ -208,7 +208,19 @@ foreach ($entry in @(
   @("ccrAcceptedToExecutionStartP99Us", 2500),
   @("ccrAcceptedToExecutionStartMaxUs", 4000),
   @("ccrAcceptedToFirstOutputAvailable", 1),
+  @("ccrAcceptedToFirstOutputP50Us", 5000),
+  @("ccrAcceptedToFirstOutputP95Us", 6000),
+  @("ccrAcceptedToFirstOutputP99Us", 7000),
+  @("ccrAcceptedToFirstOutputMaxUs", 8000),
   @("ccrAcceptedToTargetOutputAvailable", 1),
+  @("ccrAcceptedToTargetOutputP50Us", 8000),
+  @("ccrAcceptedToTargetOutputP95Us", 9000),
+  @("ccrAcceptedToTargetOutputP99Us", 10000),
+  @("ccrAcceptedToTargetOutputMaxUs", 11000),
+  @("ccrAcceptedToSuccessfulPublicationP50Us", 12000),
+  @("ccrAcceptedToSuccessfulPublicationP95Us", 13000),
+  @("ccrAcceptedToSuccessfulPublicationP99Us", 14000),
+  @("ccrAcceptedToSuccessfulPublicationMaxUs", 15000),
   @("ccrSuccessfulPublicationTraceCount", 100),
   @("ccrActorStartedPublicationTraceCount", 70),
   @("ccrCacheOnlyActorBypassTraceCount", 30),
@@ -248,6 +260,37 @@ $document = [ordered]@{
 }
 $temporary = Join-Path ([System.IO.Path]::GetTempPath()) "ccr-alpha6-tail-contract-$PID.json"
 try {
+  $forwardDocument = ($document | ConvertTo-Json -Depth 12) | ConvertFrom-Json
+  $forwardDocument.benchmarks[0].name = "hold1080PlusOne"
+  $requestStageMetricNames = @(
+    $forwardDocument.benchmarks[0].metrics.PSObject.Properties.Name | Where-Object {
+      $_ -clike "ccrAcceptedTo*" -or
+        @(
+          "ccrSuccessfulPublicationTraceCount",
+          "ccrActorStartedPublicationTraceCount",
+          "ccrCacheOnlyActorBypassTraceCount",
+          "ccrCacheOnlyActorStartUs",
+          "ccrDecoderOutputTraceCount",
+          "ccrMissingDecoderOutputTraceCount"
+        ) -ccontains $_
+    }
+  )
+  foreach ($metric in $requestStageMetricNames) {
+    $forwardDocument.benchmarks[0].metrics.PSObject.Properties.Remove($metric)
+  }
+  [System.IO.File]::WriteAllText(
+    $temporary,
+    ($forwardDocument | ConvertTo-Json -Depth 12),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  $forwardParsed = Assert-CcrAlpha6BenchmarkData $temporary "hold1080PlusOne" $evidence
+  Assert-Alpha6Equal $forwardParsed.name "hold1080PlusOne" "forward-benchmark-without-request-stage-metrics"
+  Assert-Alpha6Throws {
+    Assert-CcrAlpha6BenchmarkData $temporary "hold1080PlusOne" $evidence `
+      -RequireRequestStageMetrics | Out-Null
+  } "ALPHA6_BENCHMARK_DATA_METRIC_MISSING:ccrAcceptedToActorStartAvailable" `
+    "forward-request-stage-metrics-remain-optional"
+
   [System.IO.File]::WriteAllText(
     $temporary,
     ($document | ConvertTo-Json -Depth 12),
@@ -256,6 +299,105 @@ try {
   $parsed = Assert-CcrAlpha6BenchmarkData $temporary "hold1080MinusOne" $evidence `
     -RequireRequestStageMetrics
   Assert-Alpha6Equal $parsed.name "hold1080MinusOne" "benchmark-json-pass"
+
+  $requiredRequestStageLatencyMetrics = @(
+    "ccrAcceptedToFirstOutputP50Us",
+    "ccrAcceptedToFirstOutputP95Us",
+    "ccrAcceptedToFirstOutputP99Us",
+    "ccrAcceptedToFirstOutputMaxUs",
+    "ccrAcceptedToTargetOutputP50Us",
+    "ccrAcceptedToTargetOutputP95Us",
+    "ccrAcceptedToTargetOutputP99Us",
+    "ccrAcceptedToTargetOutputMaxUs",
+    "ccrAcceptedToSuccessfulPublicationP50Us",
+    "ccrAcceptedToSuccessfulPublicationP95Us",
+    "ccrAcceptedToSuccessfulPublicationP99Us",
+    "ccrAcceptedToSuccessfulPublicationMaxUs"
+  )
+  foreach ($metric in $requiredRequestStageLatencyMetrics) {
+    $missingMetricDocument = ($document | ConvertTo-Json -Depth 12) | ConvertFrom-Json
+    $missingMetricDocument.benchmarks[0].metrics.PSObject.Properties.Remove($metric)
+    [System.IO.File]::WriteAllText(
+      $temporary,
+      ($missingMetricDocument | ConvertTo-Json -Depth 12),
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    Assert-Alpha6Throws {
+      Assert-CcrAlpha6BenchmarkData $temporary "hold1080MinusOne" $evidence `
+        -RequireRequestStageMetrics | Out-Null
+    } "ALPHA6_BENCHMARK_DATA_METRIC_MISSING:$metric" "required-request-stage-latency-$metric"
+  }
+
+  foreach ($metric in @("ccrAcceptedToFirstOutputAvailable", "ccrAcceptedToTargetOutputAvailable")) {
+    $unavailableDecodedOutput = ($document | ConvertTo-Json -Depth 12) | ConvertFrom-Json
+    $unavailableDecodedOutput.benchmarks[0].metrics.$metric.runs[0] = 0
+    [System.IO.File]::WriteAllText(
+      $temporary,
+      ($unavailableDecodedOutput | ConvertTo-Json -Depth 12),
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    Assert-Alpha6Throws {
+      Assert-CcrAlpha6BenchmarkData $temporary "hold1080MinusOne" $evidence `
+        -RequireRequestStageMetrics | Out-Null
+    } "ALPHA6_BENCHMARK_DECODER_OUTPUT_AVAILABILITY_MISMATCH:1" `
+      "decoded-output-availability-$metric"
+  }
+
+  $invalidPercentileDocument = ($document | ConvertTo-Json -Depth 12) | ConvertFrom-Json
+  $invalidPercentileDocument.benchmarks[0].metrics.ccrAcceptedToSuccessfulPublicationP95Us.runs[0] = 11000
+  [System.IO.File]::WriteAllText(
+    $temporary,
+    ($invalidPercentileDocument | ConvertTo-Json -Depth 12),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  Assert-Alpha6Throws {
+    Assert-CcrAlpha6BenchmarkData $temporary "hold1080MinusOne" $evidence `
+      -RequireRequestStageMetrics | Out-Null
+  } "ALPHA6_BENCHMARK_REQUEST_STAGE_PERCENTILE_INVALID:ccrAcceptedToSuccessfulPublication/1" `
+    "request-stage-percentile-order"
+
+  $invalidStageOrderDocument = ($document | ConvertTo-Json -Depth 12) | ConvertFrom-Json
+  $invalidStageOrderDocument.benchmarks[0].metrics.ccrAcceptedToTargetOutputP50Us.runs[0] = 4000
+  [System.IO.File]::WriteAllText(
+    $temporary,
+    ($invalidStageOrderDocument | ConvertTo-Json -Depth 12),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  Assert-Alpha6Throws {
+    Assert-CcrAlpha6BenchmarkData $temporary "hold1080MinusOne" $evidence `
+      -RequireRequestStageMetrics | Out-Null
+  } "ALPHA6_BENCHMARK_REQUEST_STAGE_ORDER_INVALID:1" "first-output-before-target-output"
+
+  $zeroLatencyDocument = ($document | ConvertTo-Json -Depth 12) | ConvertFrom-Json
+  foreach ($metric in $requiredRequestStageLatencyMetrics) {
+    $zeroLatencyDocument.benchmarks[0].metrics.$metric.runs = @(0, 0, 0)
+  }
+  [System.IO.File]::WriteAllText(
+    $temporary,
+    ($zeroLatencyDocument | ConvertTo-Json -Depth 12),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  $zeroLatencyParsed = Assert-CcrAlpha6BenchmarkData $temporary "hold1080MinusOne" $evidence `
+    -RequireRequestStageMetrics
+  Assert-Alpha6Equal $zeroLatencyParsed.name "hold1080MinusOne" "zero-request-stage-latency-is-valid"
+
+  $publicationSubsetDocument = ($document | ConvertTo-Json -Depth 12) | ConvertFrom-Json
+  foreach ($entry in @(
+    @("ccrAcceptedToSuccessfulPublicationP50Us", 1000),
+    @("ccrAcceptedToSuccessfulPublicationP95Us", 2000),
+    @("ccrAcceptedToSuccessfulPublicationP99Us", 3000)
+  )) {
+    $publicationSubsetDocument.benchmarks[0].metrics.($entry[0]).runs = @($entry[1], $entry[1], $entry[1])
+  }
+  [System.IO.File]::WriteAllText(
+    $temporary,
+    ($publicationSubsetDocument | ConvertTo-Json -Depth 12),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  $publicationSubsetParsed = Assert-CcrAlpha6BenchmarkData `
+    $temporary "hold1080MinusOne" $evidence -RequireRequestStageMetrics
+  Assert-Alpha6Equal $publicationSubsetParsed.name "hold1080MinusOne" `
+    "publication-subset-percentiles-are-not-cross-compared"
 
   $document.benchmarks[0].metrics.ccrCacheOnlyActorBypassTraceCount.runs[1] = 29
   [System.IO.File]::WriteAllText(

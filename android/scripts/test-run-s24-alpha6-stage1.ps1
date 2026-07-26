@@ -164,6 +164,13 @@ try {
   }, $true))
   Assert-Alpha6Stage1Test ($resolverAst.Count -eq 1) "correctness-evidence-resolver-defined-once"
   Invoke-Expression $resolverAst[0].Extent.Text
+  $settingsAssertionAst = @($runnerAst.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -ceq "Assert-CcrAlpha6Stage1SettingsRestored"
+  }, $true))
+  Assert-Alpha6Stage1Test ($settingsAssertionAst.Count -eq 1) "settings-restore-assertion-defined-once"
+  Invoke-Expression $settingsAssertionAst[0].Extent.Text
   Assert-Alpha6Stage1Test ($source.Contains("Invoke-CcrAlpha6PinnedHostPreflight")) "host-preflight-connected"
   Assert-Alpha6Stage1Test ($source.Contains("Assert-CcrAlpha6ArtifactSetUnchanged")) "artifact-rehash-connected"
   Assert-Alpha6Stage1Test ($source.Contains("Invoke-CcrPinnedCleanup")) "package-cleanup-finally"
@@ -217,6 +224,51 @@ try {
     $correctnessValidationIndex -ge 0 -and $correctnessValidationIndex -lt $correctnessWriteIndex -and
       $performanceValidationIndex -ge 0 -and $performanceValidationIndex -lt $performanceWriteIndex
   ) "stage-checkpoints-validated-before-write"
+  Assert-Alpha6Stage1Test (
+    ([regex]::Matches(
+      $source,
+      '\$requireRequestStageMetrics = \[string\]\$scenario\.direction -ceq "reverse"'
+    )).Count -eq 1 -and
+      ([regex]::Matches(
+        $source,
+        '\$requireRequestStageMetrics = \[string\]\$contract\.direction -ceq "reverse"'
+      )).Count -eq 1 -and
+      ([regex]::Matches($source, '-RequireRequestStageMetrics:\$requireRequestStageMetrics')).Count -eq 2
+  ) "request-stage-metrics-bind-execution-and-canonical-result-directions"
+  Assert-Alpha6Stage1Test (
+    $source.Contains('$strideValue -isnot [int] -and $strideValue -isnot [long]') -and
+      $source.Contains('[long]$strideValue -ne [long]$contract.stride')
+  ) "performance-result-stride-requires-exact-json-integer"
+  Assert-Alpha6Stage1Test (
+    $source.Contains('$seenTracePaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)') -and
+      $source.Contains('$seenTraceHashes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)') -and
+      $source.Contains('$traceOrdinals = [System.Collections.Generic.HashSet[int]]::new()') -and
+      $source.Contains('iter00(?<ordinal>[0-2])_.+\.perfetto-trace$') -and
+      $source.Contains('ALPHA6_STAGE1_PERFORMANCE_RESULT_TRACE_IDENTITY_MISMATCH')
+  ) "performance-result-traces-bind-method-ordinal-path-and-hash"
+  $brightnessDriftState = New-Alpha6FakeAdbState
+  $brightnessDriftState.Settings["system/screen_brightness"] = "40"
+  $brightnessDriftContext = [PSCustomObject]@{
+    Adb = "fake-adb"
+    AdbInvoker = New-Alpha6FakeAdbInvoker $brightnessDriftState
+    Serial = "FAKE-S24"
+    SavedSettings = [PSCustomObject]@{
+      stayAwake = "0"
+      brightnessMode = "1"
+      brightness = "29"
+      screenTimeout = "600000"
+      accelerometerRotation = "1"
+      userRotation = "2"
+    }
+  }
+  Assert-Alpha6Stage1Test (
+    (Assert-CcrAlpha6Stage1SettingsRestored $brightnessDriftContext) -eq $true
+  ) "automatic-brightness-raw-value-may-drift-after-restore"
+  $brightnessDriftState.Settings["system/screen_brightness_mode"] = "0"
+  $brightnessDriftContext.SavedSettings.brightnessMode = "0"
+  Assert-Alpha6Stage1ThrowsLike {
+    Assert-CcrAlpha6Stage1SettingsRestored $brightnessDriftContext | Out-Null
+  } "ALPHA6_STAGE1_SETTING_RESTORE_MISMATCH:system/screen_brightness" "manual-brightness-remains-exact"
   Assert-Alpha6Stage1Test ($source.Contains('"measuredWindowBuildAssociatedLongGapCount"') -and
     $source.Contains("ALPHA6_STAGE1_REVERSE_MECHANISM_NOT_EXERCISED")) "window-build-and-mechanism-gates"
   Assert-Alpha6Stage1Test ($source.Contains("directionReversalAndGenerationInvalidationRemainExactOnS24Ultra")) "direction-reversal-correctness-retained"

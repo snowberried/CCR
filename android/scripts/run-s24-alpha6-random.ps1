@@ -227,6 +227,10 @@ function Assert-CcrAlpha6RandomSettingsRestored {
     @("system", "accelerometer_rotation", $Context.SavedSettings.accelerometerRotation),
     @("system", "user_rotation", $Context.SavedSettings.userRotation)
   )) {
+    # Android can immediately recompute the raw brightness after automatic mode is restored.
+    if ($entry[1] -ceq "screen_brightness" -and [string]$Context.SavedSettings.brightnessMode -ceq "1") {
+      continue
+    }
     if ((Get-CcrPinnedDeviceSetting $Context $entry[0] $entry[1]) -cne [string]$entry[2]) {
       throw "ALPHA6_RANDOM_SETTING_RESTORE_MISMATCH:$($entry[0])/$($entry[1])"
     }

@@ -40,7 +40,8 @@ foreach ($name in @(
   "Get-CcrAlpha6RandomFlattenedTargets",
   "Assert-CcrAlpha6RandomGate",
   "Get-CcrAlpha6RandomFileRecord",
-  "Assert-CcrAlpha6RandomTrace"
+  "Assert-CcrAlpha6RandomTrace",
+  "Assert-CcrAlpha6RandomSettingsRestored"
 )) { Invoke-Expression (Get-CcrAlpha6RandomTestFunctionDefinition $runnerPath $name) }
 
 $passes = 0
@@ -330,6 +331,60 @@ Invoke-CcrAlpha6RandomHostTest "burst-nonfinal-publication-fails" {
   $report.fixtures[0].burst.nonFinalPublishedAfterFinalAcceptanceCount = 1
   Assert-CcrAlpha6RandomThrows "ALPHA6_RANDOM_BURST_FINAL_ONLY_VIOLATION" {
     Assert-CcrAlpha6RandomReport $report $performanceKind $context "Stage1" | Out-Null
+  }
+}
+
+Invoke-CcrAlpha6RandomHostTest "automatic-brightness-raw-drift-is-accepted" {
+  $actualSettings = @{
+    "global/stay_on_while_plugged_in" = "15"
+    "system/screen_brightness_mode" = "1"
+    "system/screen_brightness" = "40"
+    "system/screen_off_timeout" = "600000"
+    "system/accelerometer_rotation" = "0"
+    "system/user_rotation" = "0"
+  }
+  function Get-CcrPinnedDeviceSetting {
+    param([object]$Context, [string]$Namespace, [string]$Name)
+    return [string]$actualSettings["$Namespace/$Name"]
+  }
+  $settingsContext = [PSCustomObject]@{
+    SavedSettings = [PSCustomObject]@{
+      stayAwake = "15"
+      brightnessMode = "1"
+      brightness = "29"
+      screenTimeout = "600000"
+      accelerometerRotation = "0"
+      userRotation = "0"
+    }
+  }
+  Assert-CcrAlpha6RandomSettingsRestored $settingsContext | Out-Null
+}
+
+Invoke-CcrAlpha6RandomHostTest "manual-brightness-raw-mismatch-fails" {
+  $actualSettings = @{
+    "global/stay_on_while_plugged_in" = "15"
+    "system/screen_brightness_mode" = "0"
+    "system/screen_brightness" = "40"
+    "system/screen_off_timeout" = "600000"
+    "system/accelerometer_rotation" = "0"
+    "system/user_rotation" = "0"
+  }
+  function Get-CcrPinnedDeviceSetting {
+    param([object]$Context, [string]$Namespace, [string]$Name)
+    return [string]$actualSettings["$Namespace/$Name"]
+  }
+  $settingsContext = [PSCustomObject]@{
+    SavedSettings = [PSCustomObject]@{
+      stayAwake = "15"
+      brightnessMode = "0"
+      brightness = "29"
+      screenTimeout = "600000"
+      accelerometerRotation = "0"
+      userRotation = "0"
+    }
+  }
+  Assert-CcrAlpha6RandomThrows "ALPHA6_RANDOM_SETTING_RESTORE_MISMATCH:system/screen_brightness" {
+    Assert-CcrAlpha6RandomSettingsRestored $settingsContext | Out-Null
   }
 }
 

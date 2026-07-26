@@ -170,6 +170,10 @@ function Assert-CcrAlpha6Stage1SettingsRestored {
     @("system", "accelerometer_rotation", $Context.SavedSettings.accelerometerRotation),
     @("system", "user_rotation", $Context.SavedSettings.userRotation)
   )) {
+    # Android can immediately recompute the raw brightness after automatic mode is restored.
+    if ($entry[1] -ceq "screen_brightness" -and [string]$Context.SavedSettings.brightnessMode -ceq "1") {
+      continue
+    }
     if ((Get-CcrPinnedDeviceSetting $Context $entry[0] $entry[1]) -cne [string]$entry[2]) {
       throw "ALPHA6_STAGE1_SETTING_RESTORE_MISMATCH:$($entry[0])/$($entry[1])"
     }
@@ -523,9 +527,11 @@ function Invoke-CcrAlpha6Stage1Performance {
       throw "ALPHA6_STAGE1_TRACE_RECOVERY_CONTRACT_MISMATCH:$($scenario.method)"
     }
     $iterations = @(Assert-CcrAlpha6Stage1BenchmarkEvidence $harnessEvidence $scenario $Context $scenarioRunId)
+    $requireRequestStageMetrics = [string]$scenario.direction -ceq "reverse"
     Assert-CcrAlpha6BenchmarkData `
       -Path $benchmarkData[0].FullName -ExpectedMethod $scenario.method `
-      -ExpectedEvidence $harnessEvidence -RequireRequestStageMetrics | Out-Null
+      -ExpectedEvidence $harnessEvidence `
+      -RequireRequestStageMetrics:$requireRequestStageMetrics | Out-Null
     $evidencePath = Join-Path $local "ccrBenchmarkHarnessV2.json"
     Write-CcrAlpha6Stage1ImmutableJson $evidencePath $harnessEvidence | Out-Null
     foreach ($item in @(Get-ChildItem -LiteralPath $local -Recurse -File)) { $item.IsReadOnly = $true }
@@ -639,14 +645,68 @@ function Assert-CcrAlpha6Stage1PerformanceResult {
       [long](Get-CcrPinnedRequiredProperty $Result "buildCommandCount") -ne 0L) {
     throw "ALPHA6_STAGE1_PERFORMANCE_RESULT_CONTRACT_MISMATCH"
   }
+  $scenarioContracts = @{
+    "hold1080PlusOne" = [PSCustomObject]@{ evidence = "1080p-hold-plus-one"; fixtureIdentity = "h264-bframes"; fixture = "1080p-h264-bframes.mp4"; stride = 1; direction = "forward"; prefix = "a6-bf-p1" }
+    "hold1080PlusFive" = [PSCustomObject]@{ evidence = "1080p-hold-plus-five"; fixtureIdentity = "h264-bframes"; fixture = "1080p-h264-bframes.mp4"; stride = 5; direction = "forward"; prefix = "a6-bf-p5" }
+    "hold1080MinusOne" = [PSCustomObject]@{ evidence = "1080p-hold-minus-one"; fixtureIdentity = "h264-bframes"; fixture = "1080p-h264-bframes.mp4"; stride = -1; direction = "reverse"; prefix = "a6-bf-m1" }
+    "hold1080MinusFive" = [PSCustomObject]@{ evidence = "1080p-hold-minus-five"; fixtureIdentity = "h264-bframes"; fixture = "1080p-h264-bframes.mp4"; stride = -5; direction = "reverse"; prefix = "a6-bf-m5" }
+    "hold1080H264LongGopMinusOne" = [PSCustomObject]@{ evidence = "1080p-h264-long-gop-hold-minus-one"; fixtureIdentity = "h264-long-gop"; fixture = "1080p-h264-long-gop.mp4"; stride = -1; direction = "reverse"; prefix = "a6-lg-m1" }
+    "hold1080H264LongGopMinusFive" = [PSCustomObject]@{ evidence = "1080p-h264-long-gop-hold-minus-five"; fixtureIdentity = "h264-long-gop"; fixture = "1080p-h264-long-gop.mp4"; stride = -5; direction = "reverse"; prefix = "a6-lg-m5" }
+    "hold1080HevcMain8MinusOne" = [PSCustomObject]@{ evidence = "1080p-hevc-main8-hold-minus-one"; fixtureIdentity = "hevc-main8"; fixture = "1080p-hevc-main8.mp4"; stride = -1; direction = "reverse"; prefix = "a6-hevc-m1" }
+    "hold1080HevcMain8MinusFive" = [PSCustomObject]@{ evidence = "1080p-hevc-main8-hold-minus-five"; fixtureIdentity = "hevc-main8"; fixture = "1080p-hevc-main8.mp4"; stride = -5; direction = "reverse"; prefix = "a6-hevc-m5" }
+    "hold1080VfrMinusOne" = [PSCustomObject]@{ evidence = "1080p-vfr-hold-minus-one"; fixtureIdentity = "vfr"; fixture = "1080p-vfr.mp4"; stride = -1; direction = "reverse"; prefix = "a6-vfr-m1" }
+    "hold1080VfrMinusFive" = [PSCustomObject]@{ evidence = "1080p-vfr-hold-minus-five"; fixtureIdentity = "vfr"; fixture = "1080p-vfr.mp4"; stride = -5; direction = "reverse"; prefix = "a6-vfr-m5" }
+  }
   $scenarios = @((Get-CcrPinnedRequiredProperty $Result "scenarios"))
-  if ($scenarios.Count -ne 10 -or @($scenarios.method | Select-Object -Unique).Count -ne 10) {
+  if ($scenarios.Count -ne $scenarioContracts.Count) {
     throw "ALPHA6_STAGE1_PERFORMANCE_RESULT_SCENARIO_MISMATCH"
   }
+  $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+  $seenTracePaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  $seenTraceHashes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
   foreach ($scenario in $scenarios) {
+    $method = [string](Get-CcrPinnedRequiredProperty $scenario "method")
+    $contractMethods = @($scenarioContracts.Keys | Where-Object { $_ -ceq $method })
+    if ($contractMethods.Count -ne 1 -or -not $seen.Add($method)) {
+      throw "ALPHA6_STAGE1_PERFORMANCE_RESULT_SCENARIO_MISMATCH"
+    }
+    $contract = $scenarioContracts[[string]$contractMethods[0]]
+    $strideValue = Get-CcrPinnedRequiredProperty $scenario "stride"
+    if (($strideValue -isnot [int] -and $strideValue -isnot [long]) -or
+        [long]$strideValue -ne [long]$contract.stride) {
+      throw "ALPHA6_STAGE1_PERFORMANCE_RESULT_SCENARIO_MISMATCH:$method"
+    }
+    if ([string](Get-CcrPinnedRequiredProperty $scenario "evidenceScenario") -cne [string]$contract.evidence -or
+        [string](Get-CcrPinnedRequiredProperty $scenario "fixtureIdentity") -cne [string]$contract.fixtureIdentity -or
+        [string](Get-CcrPinnedRequiredProperty $scenario "fixture") -cne [string]$contract.fixture -or
+        [string](Get-CcrPinnedRequiredProperty $scenario "direction") -cne [string]$contract.direction -or
+        [string](Get-CcrPinnedRequiredProperty $scenario "runId") -cne "$RunId-$([string]$contract.prefix)") {
+      throw "ALPHA6_STAGE1_PERFORMANCE_RESULT_SCENARIO_MISMATCH:$method"
+    }
     $traces = @((Get-CcrPinnedRequiredProperty $scenario "traces"))
     if ($traces.Count -ne 3) { throw "ALPHA6_STAGE1_PERFORMANCE_RESULT_TRACE_COUNT_MISMATCH" }
-    foreach ($trace in $traces) { Assert-CcrAlpha6Stage1FileRecord $trace $Context.OutputDirectory | Out-Null }
+    $traceOrdinals = [System.Collections.Generic.HashSet[int]]::new()
+    $tracePattern =
+      "^CcrProductMacrobenchmark_$([regex]::Escape($method))_iter00(?<ordinal>[0-2])_.+\.perfetto-trace$"
+    foreach ($trace in $traces) {
+      $tracePath = Assert-CcrAlpha6Stage1FileRecord $trace $Context.OutputDirectory
+      $traceMatch = [regex]::Match(
+        [System.IO.Path]::GetFileName($tracePath),
+        $tracePattern,
+        [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+      )
+      $traceHash = [string](Get-CcrPinnedRequiredProperty $trace "sha256")
+      if (-not $traceMatch.Success -or
+          [System.IO.Path]::GetFileName([System.IO.Path]::GetDirectoryName($tracePath)) -cne
+            "$RunId-$([string]$contract.prefix)" -or
+          -not $traceOrdinals.Add([int]$traceMatch.Groups["ordinal"].Value) -or
+          -not $seenTracePaths.Add($tracePath) -or -not $seenTraceHashes.Add($traceHash)) {
+        throw "ALPHA6_STAGE1_PERFORMANCE_RESULT_TRACE_IDENTITY_MISMATCH:$method"
+      }
+    }
+    if ($traceOrdinals.Count -ne 3) {
+      throw "ALPHA6_STAGE1_PERFORMANCE_RESULT_TRACE_IDENTITY_MISMATCH:$method"
+    }
     $benchmarkDataPath = Assert-CcrAlpha6Stage1FileRecord `
       (Get-CcrPinnedRequiredProperty $scenario "benchmarkData") $Context.OutputDirectory
     $harnessEvidencePath = Assert-CcrAlpha6Stage1FileRecord `
@@ -655,19 +715,21 @@ function Assert-CcrAlpha6Stage1PerformanceResult {
       throw "ALPHA6_STAGE1_PERFORMANCE_RESULT_JSON_INVALID"
     }
     $scenarioContract = [PSCustomObject]@{
-      method = [string](Get-CcrPinnedRequiredProperty $scenario "method")
-      evidence = [string](Get-CcrPinnedRequiredProperty $scenario "evidenceScenario")
-      fixture = [string](Get-CcrPinnedRequiredProperty $scenario "fixture")
+      method = $method
+      evidence = [string]$contract.evidence
+      fixture = [string]$contract.fixture
     }
     $validatedIterations = @(Assert-CcrAlpha6Stage1BenchmarkEvidence `
-      $harnessEvidence $scenarioContract $Context ([string](Get-CcrPinnedRequiredProperty $scenario "runId")))
+      $harnessEvidence $scenarioContract $Context "$RunId-$([string]$contract.prefix)")
     if (($validatedIterations | ConvertTo-Json -Depth 30 -Compress) -cne
         (@((Get-CcrPinnedRequiredProperty $scenario "iterations")) | ConvertTo-Json -Depth 30 -Compress)) {
       throw "ALPHA6_STAGE1_PERFORMANCE_RESULT_ITERATION_MISMATCH"
     }
+    $requireRequestStageMetrics = [string]$contract.direction -ceq "reverse"
     Assert-CcrAlpha6BenchmarkData `
       -Path $benchmarkDataPath -ExpectedMethod $scenarioContract.method `
-      -ExpectedEvidence $harnessEvidence -RequireRequestStageMetrics | Out-Null
+      -ExpectedEvidence $harnessEvidence `
+      -RequireRequestStageMetrics:$requireRequestStageMetrics | Out-Null
   }
   Assert-CcrAlpha6Stage1TailGate $scenarios | Out-Null
   return $true

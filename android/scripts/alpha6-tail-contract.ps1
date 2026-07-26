@@ -212,7 +212,13 @@ function Assert-CcrAlpha6BenchmarkData {
       "ccrAcceptedToActorStartMaxUs", "ccrAcceptedToExecutionStartP50Us",
       "ccrAcceptedToExecutionStartP95Us", "ccrAcceptedToExecutionStartP99Us",
       "ccrAcceptedToExecutionStartMaxUs", "ccrAcceptedToFirstOutputAvailable",
-      "ccrAcceptedToTargetOutputAvailable", "ccrSuccessfulPublicationTraceCount",
+      "ccrAcceptedToFirstOutputP50Us", "ccrAcceptedToFirstOutputP95Us",
+      "ccrAcceptedToFirstOutputP99Us", "ccrAcceptedToFirstOutputMaxUs",
+      "ccrAcceptedToTargetOutputAvailable", "ccrAcceptedToTargetOutputP50Us",
+      "ccrAcceptedToTargetOutputP95Us", "ccrAcceptedToTargetOutputP99Us",
+      "ccrAcceptedToTargetOutputMaxUs", "ccrAcceptedToSuccessfulPublicationP50Us",
+      "ccrAcceptedToSuccessfulPublicationP95Us", "ccrAcceptedToSuccessfulPublicationP99Us",
+      "ccrAcceptedToSuccessfulPublicationMaxUs", "ccrSuccessfulPublicationTraceCount",
       "ccrActorStartedPublicationTraceCount", "ccrCacheOnlyActorBypassTraceCount",
       "ccrCacheOnlyActorStartUs", "ccrDecoderOutputTraceCount",
       "ccrMissingDecoderOutputTraceCount"
@@ -283,10 +289,29 @@ function Assert-CcrAlpha6BenchmarkData {
       if ($actor -gt 0L -and [int]$runsByMetric.ccrAcceptedToActorStartAvailable[$index] -ne 1) {
         throw "ALPHA6_BENCHMARK_ACTOR_START_AVAILABILITY_MISMATCH:$($index + 1)"
       }
-      if ($decoded -eq 0L -and (
-          [int]$runsByMetric.ccrAcceptedToFirstOutputAvailable[$index] -ne 0 -or
-          [int]$runsByMetric.ccrAcceptedToTargetOutputAvailable[$index] -ne 0)) {
+      $expectedOutputAvailability = if ($decoded -gt 0L) { 1 } else { 0 }
+      if ([int]$runsByMetric.ccrAcceptedToFirstOutputAvailable[$index] -ne $expectedOutputAvailability -or
+          [int]$runsByMetric.ccrAcceptedToTargetOutputAvailable[$index] -ne $expectedOutputAvailability) {
         throw "ALPHA6_BENCHMARK_DECODER_OUTPUT_AVAILABILITY_MISMATCH:$($index + 1)"
+      }
+      foreach ($prefix in @(
+        "ccrAcceptedToFirstOutput",
+        "ccrAcceptedToTargetOutput",
+        "ccrAcceptedToSuccessfulPublication"
+      )) {
+        $p50 = [long]$runsByMetric["${prefix}P50Us"][$index]
+        $p95 = [long]$runsByMetric["${prefix}P95Us"][$index]
+        $p99 = [long]$runsByMetric["${prefix}P99Us"][$index]
+        $max = [long]$runsByMetric["${prefix}MaxUs"][$index]
+        if ($p50 -lt 0L -or $p95 -lt $p50 -or $p99 -lt $p95 -or $max -lt $p99) {
+          throw "ALPHA6_BENCHMARK_REQUEST_STAGE_PERCENTILE_INVALID:$prefix/$($index + 1)"
+        }
+      }
+      foreach ($suffix in @("P50Us", "P95Us", "P99Us", "MaxUs")) {
+        if ([long]$runsByMetric["ccrAcceptedToTargetOutput$suffix"][$index] -lt
+            [long]$runsByMetric["ccrAcceptedToFirstOutput$suffix"][$index]) {
+          throw "ALPHA6_BENCHMARK_REQUEST_STAGE_ORDER_INVALID:$($index + 1)"
+        }
       }
     }
   }

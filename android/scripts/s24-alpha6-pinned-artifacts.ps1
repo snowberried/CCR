@@ -229,9 +229,15 @@ function Initialize-CcrAlpha6PinnedDeviceSettings {
   $resumeObservedStateCompatible = $true
   $interruptedAttemptStateDetected = $false
   if ($resumeBaselineProvided) {
+    $baselineBrightnessMode = [string](Get-CcrPinnedRequiredProperty $ResumeRestoreBaseline "brightnessMode")
+    $observedBrightnessMode = [string]$observed.brightnessMode
     foreach ($spec in $settingSpecs) {
       $baselineValue = [string](Get-CcrPinnedRequiredProperty $ResumeRestoreBaseline $spec.Property)
       $observedValue = [string]$observed.($spec.Property)
+      if ($spec.Property -ceq "brightness" -and
+          $baselineBrightnessMode -ceq "1" -and $observedBrightnessMode -ceq "1") {
+        continue
+      }
       if ($observedValue -cne $baselineValue -and $observedValue -cne $spec.ToolValue) {
         $resumeObservedStateCompatible = $false
       }

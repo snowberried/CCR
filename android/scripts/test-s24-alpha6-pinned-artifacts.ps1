@@ -287,10 +287,22 @@ try {
     [string]$settingsState["system/screen_off_timeout"] -ceq "120000") "resume-restores-known-tool-setting-vector"
 
   $settingsState["system/screen_brightness"] = "200"
-  $changed = Initialize-CcrAlpha6PinnedDeviceSettings -Context $settingsContext -ResumeRestoreBaseline $restoreBaseline
-  Assert-Alpha6PinnedTest ($changed.status -ceq "BLOCKED" -and
-    @($changed.missingTrustedOriginalSettings) -ccontains "resume_device_settings_changed" -and
-    [string]$settingsState["system/screen_brightness"] -ceq "200") "resume-blocks-on-possible-user-setting-change"
+  $autoBrightnessDrift = Initialize-CcrAlpha6PinnedDeviceSettings -Context $settingsContext -ResumeRestoreBaseline $restoreBaseline
+  Assert-Alpha6PinnedTest ($autoBrightnessDrift.status -ceq "PASS" -and
+    $autoBrightnessDrift.resumeObservedStateCompatible -eq $true -and
+    @($autoBrightnessDrift.missingTrustedOriginalSettings).Count -eq 0 -and
+    [string]$settingsState["system/screen_brightness"] -ceq "200") "resume-allows-automatic-brightness-drift"
+
+  $manualRestoreBaseline = [PSCustomObject][ordered]@{
+    stayAwake = "0"; brightnessMode = "0"; brightness = "77"; screenTimeout = "120000"
+    accelerometerRotation = "1"; userRotation = "2"
+  }
+  $settingsState["system/screen_brightness_mode"] = "0"
+  $settingsState["system/screen_brightness"] = "200"
+  $manualBrightnessChange = Initialize-CcrAlpha6PinnedDeviceSettings -Context $settingsContext -ResumeRestoreBaseline $manualRestoreBaseline
+  Assert-Alpha6PinnedTest ($manualBrightnessChange.status -ceq "BLOCKED" -and
+    @($manualBrightnessChange.missingTrustedOriginalSettings) -ccontains "resume_device_settings_changed" -and
+    [string]$settingsState["system/screen_brightness"] -ceq "200") "resume-blocks-on-manual-brightness-change"
 
   $devicePending = @{} + $common
   $devicePending.RunId = "alpha6-test-0011"
