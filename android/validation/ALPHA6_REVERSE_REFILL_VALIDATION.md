@@ -17,6 +17,26 @@
 
 Alpha 4·5 runtime manifest와 보존된 APK·S24 evidence는 변경하거나 재생성하지 않는다. Alpha 6 runtime manifest는 위 runtime commit의 40개 입력과 현재 worktree가 byte-for-byte 일치할 때만 통과한다.
 
+## revision 5 device runner bridge
+
+시작 HEAD `1ce42c1fad00da4d97a9ba8a9d61096c767a84f9`에서 signed candidate APK 4종과
+artifact revision 5 생성은 성공했다. 이 세트는
+`VALID_SIGNED_CANDIDATE_BUILD_EVIDENCE — SUPERSEDED_FOR_DEVICE_GATE_BY_REV5_RUNNER_BRIDGE`로
+보존한다. manifest SHA-256은
+`72b964403c21021a3ef2db7df149e7131c96b991aff38ce033b2f52fdf9c3023`, archive SHA-256은
+`3a8bc9563202bdd72e58934da211369d92cc46f2be620df7a612a067dadeac4f`다.
+
+기존 active runner가 `s24-alpha6-pinned-artifacts.ps1`의 revision 4 importer와 literal
+revision 4 identity를 사용하던 문제는 전용 candidate device bridge로 수정했다. historical
+helper는 그대로 유지한다. 새 bridge는 strict revision 5 importer, repository public
+policy·fingerprint·PEM, 실제 APK 4종 signer를 결합하며 이 identity를 모든 checkpoint,
+resume, failure, summary와 실행 후 rehash에 사용한다. 검증 APK 내부 revision 식별 상수만
+5로 맞췄고 제품 runtime과 metric·threshold는 변경하지 않았다.
+
+bridge commit 뒤 기존 manifest의 harness source는 stale이므로 최종 device Gate 분류는
+`NOT_ELIGIBLE_FOR_FINAL_DEVICE_GATE_AFTER_HARNESS_HEAD_CHANGE`다. 새 clean bridge HEAD에서
+네 APK와 revision 5 artifact set을 모두 다시 만들어야 한다.
+
 ## Alpha 5 관찰 기준선
 
 Alpha 5 S24 실측에서 +1/-1/+5/-5 평균 처리량은 각각 약 14.62/14.31/11.84/11.68 FPS였다. 평균 대칭성은 충족했지만 -1 interval CV는 약 37~38%, 150 ms 초과 interval은 run당 14~15회였고 약 1.8~1.9초마다 평균 약 192 ms gap이 나타났다. 긴 gap 44/44는 reverse-window build·seek·flush·refill과 겹쳤다.
@@ -64,6 +84,10 @@ Stage 1 재실행은 Pending이다. 첫 candidate APK·manifest·실패 보고�
 - random runner host-negative test: 17 PASS
 - Alpha 4·5·6 runtime freeze verifier: PASS
 - source/privacy/CI contract: PASS
+- revision 5 candidate device bridge host test: 28 PASS
+- revision 5 Stage 1 runner host test: 107 PASS
+- revision 5 Random runner host test: 24 PASS
+- PowerShell parser: 39 scripts PASS
 
 최종 clean build, desktop 회귀, Android lint·APK 4종 build·privacy 검사는 최종 harness commit에서 다시 실행한다.
 
@@ -94,15 +118,15 @@ artifact manifest v5를 만든 뒤 manifest 자체 SHA-256까지 고정한다. �
 `CI_EPHEMERAL_DEBUG` APK는 candidate로 허용하지 않는다. 실기기 실행 스크립트는
 build/assemble을 호출하지 않으며 실행 전후 APK를 다시 해시한다.
 
-아래 명령은 revision 4 historical runner 형식을 보존한 기록이다. signing baseline은
-확정됐으며, 새 revision 5 candidate 생성과 runner 연결은 다음 별도 검증에서 수행한다.
+아래 명령은 새 clean bridge HEAD에서 다시 생성한 revision 5 artifact set에만 사용한다.
+revision 4 historical manifest는 active runner가 명확히 거부한다.
 
 두 runner는 ADB 호출 자체를 `MaxMinutes`에 묶고 제한시간에 도달한 process를 bounded cleanup 뒤 종료한다. 이전 작업의 잔존값인 `stay_on_while_plugged_in=15` 또는 `screen_off_timeout=600000`을 발견하면 원래 사용자값을 추측하지 않고 중단한다. 신뢰 가능한 원래값을 확인한 경우에만 `-OriginalStayAwakeSetting` 또는 `-OriginalScreenTimeoutSetting`으로 전달한다. 강제종료 후 `-Resume`에서는 첫 시도의 외부 device-settings preflight JSON에 고정된 복구 기준과 현재 값이 원래값·도구 적용값 조합으로만 이루어진 경우에 한해 먼저 복구하며, 제3의 값이 있으면 사용자 변경 가능성 때문에 fail-closed한다. 관찰값·복구 기준·실행 전 복구 여부는 시도별 외부 JSON에 남긴다.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\android\scripts\run-s24-alpha6-stage1.ps1 `
-  -ArtifactManifest <absolute-manifest-v4.json> `
+  -ArtifactManifest <absolute-manifest-v5.json> `
   -ArtifactManifestSha256 <manifest-sha256> `
   -RuntimeSourceSha c98264f2a10026a908e94c961bb13e4af2d59e60 `
   -HarnessSourceSha <final-clean-head> `
@@ -118,7 +142,7 @@ Stage 1 correctness와 tail Gate가 통과한 뒤에만 같은 manifest와 APK�
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\android\scripts\run-s24-alpha6-random.ps1 `
-  -ArtifactManifest <absolute-manifest-v4.json> `
+  -ArtifactManifest <absolute-manifest-v5.json> `
   -ArtifactManifestSha256 <manifest-sha256> `
   -RuntimeSourceSha c98264f2a10026a908e94c961bb13e4af2d59e60 `
   -HarnessSourceSha <final-clean-head> `

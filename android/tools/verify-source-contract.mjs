@@ -174,6 +174,14 @@ const s24Alpha6PinnedTests = readFileSync(
   resolve(androidRoot, "scripts/test-s24-alpha6-pinned-artifacts.ps1"),
   "utf8",
 );
+const alpha6CandidateDeviceBridge = readFileSync(
+  resolve(androidRoot, "scripts/s24-alpha6-candidate-device-artifacts.ps1"),
+  "utf8",
+);
+const alpha6CandidateDeviceBridgeTests = readFileSync(
+  resolve(androidRoot, "scripts/test-s24-alpha6-candidate-device-artifacts.ps1"),
+  "utf8",
+);
 const alpha6TailContract = readFileSync(
   resolve(androidRoot, "scripts/alpha6-tail-contract.ps1"),
   "utf8",
@@ -407,6 +415,7 @@ requireContract(
 );
 for (const scriptName of [
   "test-s24-alpha6-pinned-artifacts.ps1",
+  "test-s24-alpha6-candidate-device-artifacts.ps1",
   "test-alpha6-tail-contract.ps1",
   "test-run-s24-alpha6-stage1.ps1",
   "test-run-s24-alpha6-random.ps1",
@@ -585,8 +594,13 @@ for (const [name, source] of alpha6Scripts) {
     "MaxMinutes",
     "Resume",
     "PreflightOnly",
-    "Invoke-CcrAlpha6PinnedHostPreflight",
-    "Assert-CcrAlpha6ArtifactSetUnchanged",
+    "Invoke-CcrAlpha6CandidateDeviceHostPreflight",
+    "Assert-CcrAlpha6CandidateDeviceIdentityUnchanged",
+    "signingMode",
+    "candidateSigning",
+    "signingLineage",
+    "expectedSigningCertificateSha256",
+    "publicSigningPolicySha256",
     "buildCommandCount = 0L",
   ]) {
     requireContract(source.includes(marker), `${name} missing Alpha 6 safety marker ${marker}`);
@@ -594,7 +608,37 @@ for (const [name, source] of alpha6Scripts) {
   for (const forbidden of [/connectedAndroidTest/i, /build[\\/]outputs/i]) {
     requireContract(!forbidden.test(source), `${name} contains build-time execution path ${forbidden}`);
   }
+  requireContract(
+    !source.includes("artifactSetRevision = 4") &&
+      source.includes("artifactSetRevision = $revision"),
+    `${name} still hardcodes the historical artifact revision`,
+  );
 }
+for (const marker of [
+  "Import-CcrAlpha6CandidateArtifactManifest",
+  "Invoke-CcrAlpha6CandidateDeviceHostPreflight",
+  "Assert-CcrAlpha6CandidateDeviceIdentityUnchanged",
+  "Get-CcrAlpha6CandidatePublicSigningIdentity",
+  "ccr-internal-pilot-v1-policy.json",
+  "ccr-internal-pilot-v1-cert.sha256",
+  "ccr-internal-pilot-v1-cert.pem",
+  "ALPHA6_CANDIDATE_PUBLIC_POLICY_CHANGED_AFTER_PREFLIGHT",
+  "BuildCommandCount -ne 0L",
+]) {
+  requireContract(
+    alpha6CandidateDeviceBridge.includes(marker),
+    `Alpha 6 candidate device bridge missing ${marker}`,
+  );
+}
+requireContract(
+  alpha6CandidateDeviceBridgeTests.includes("foreach ($revision in @(4, 6))") &&
+    alpha6CandidateDeviceBridgeTests.includes('"revision-$revision-rejected"') &&
+    alpha6CandidateDeviceBridgeTests.includes('name = "mixed-signer"') &&
+    alpha6CandidateDeviceBridgeTests.includes("manifest-tamper-after-preflight") &&
+    alpha6CandidateDeviceBridgeTests.includes("public-policy-drift-rejected") &&
+    alpha6CandidateDeviceBridgeTests.includes("historical-v4-preserved-active-v5-explicit"),
+  "Alpha 6 candidate device bridge host-negative coverage is incomplete",
+);
 for (const marker of [
   "$script:CcrPinnedArtifactSetRevision = 4",
   '$script:CcrPinnedVersionName = "0.2.0-alpha.6"',
@@ -632,7 +676,9 @@ requireContract(
 );
 requireContract(
   alpha6Stage1Tests.includes("Alpha 6 Stage 1 host-only tests passed") &&
-    alpha6RandomTests.includes("Alpha6 random runner host tests passed"),
+    alpha6Stage1Tests.includes("revision5-signing-identity-recorded") &&
+    alpha6RandomTests.includes("Alpha6 random runner host tests passed") &&
+    alpha6RandomTests.includes("revision5-runner-preflight-and-resume"),
   "Alpha 6 runner host-negative tests are incomplete",
 );
 for (const marker of [
@@ -690,14 +736,14 @@ for (const marker of [
 for (const marker of [
   runtimeInputsAlpha6.runtimeSourceSha,
   runtimeInputsAlpha6.runtimeInputsTreeSha256,
-  "EXPECTED_ARTIFACT_SET_REVISION = 4",
+  "EXPECTED_ARTIFACT_SET_REVISION = 5",
 ]) {
   requireContract(validationHarnessV2.includes(marker), `Alpha 6 validation harness identity missing ${marker}`);
 }
 for (const source of [benchmarkActivity, macrobenchmark]) {
   requireContract(source.includes(runtimeInputsAlpha6.runtimeSourceSha), "Alpha 6 benchmark runtime SHA mismatch");
   requireContract(source.includes(runtimeInputsAlpha6.runtimeInputsTreeSha256), "Alpha 6 benchmark runtime tree mismatch");
-  requireContract(source.includes("ARTIFACT_SET_REVISION = 4"), "Alpha 6 benchmark artifact revision mismatch");
+  requireContract(source.includes("ARTIFACT_SET_REVISION = 5"), "Alpha 6 benchmark artifact revision mismatch");
 }
 for (const marker of [
   '$ExpectedApplicationId = "com.snowberried.ctcinereviewer.internal"',

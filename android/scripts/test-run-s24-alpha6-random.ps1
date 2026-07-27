@@ -2,8 +2,8 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $runnerPath = Join-Path $PSScriptRoot "run-s24-alpha6-random.ps1"
-$alpha6PinnedPath = Join-Path $PSScriptRoot "s24-alpha6-pinned-artifacts.ps1"
-. $alpha6PinnedPath
+$candidateBridgePath = Join-Path $PSScriptRoot "s24-alpha6-candidate-device-artifacts.ps1"
+. $candidateBridgePath
 
 $script:CcrAlpha6FrozenTargetSetIdentities = [ordered]@{
   "fixture-01" = "e27c3831f54e977f8cbe66221fd8cbf636b255cbfbd06cbd31119ea2d5ec6da6"
@@ -419,10 +419,10 @@ try {
 Invoke-CcrAlpha6RandomHostTest "runner-static-same-artifact-contract" {
   $source = [System.IO.File]::ReadAllText($runnerPath, [System.Text.Encoding]::UTF8)
   foreach ($marker in @(
-    "Invoke-CcrAlpha6PinnedHostPreflight", "Assert-CcrAlpha6ArtifactSetUnchanged",
+    "Invoke-CcrAlpha6CandidateDeviceHostPreflight", "Assert-CcrAlpha6CandidateDeviceIdentityUnchanged",
     "ArtifactManifestSha256", "ExpectedDebugAppSha256", "OutputDirectory", "PreflightOnly", "Resume",
     "MaxMinutes", "checkpoint-alpha6-random-exactness", "checkpoint-alpha6-random-performance",
-    "correctnessFailureBlocksPerformance", "BuildCommandCount 0L", "preRunArtifactRehash",
+    "correctnessFailureBlocksPerformance", "BuildCommandCount = 0L", "preRunArtifactRehash",
     "postRunArtifactRehash", "Initialize-CcrAlpha6PinnedDeviceSettings", "Invoke-CcrPinnedCleanup",
     "Assert-CcrAlpha6RandomSettingsRestored", "Alpha6RandomSeekExactnessTest",
     "Alpha6RandomSeekPerformanceTest", "s24-alpha6-random-exactness-v1.json",
@@ -433,13 +433,15 @@ Invoke-CcrAlpha6RandomHostTest "runner-static-same-artifact-contract" {
     "ALPHA6_RANDOM_TARGET_SET_IDENTITY_MISMATCH", "New-CcrAlpha6TimedAdbInvoker",
     "Initialize-CcrAlpha6PinnedDeviceSettings", "deviceSettingsPreflight",
     'checkpoint-alpha6-random-device-settings-$hostPreflightRunId.json',
-    "Assert-CcrAlpha6RandomCompletedSummary"
+    "Assert-CcrAlpha6RandomCompletedSummary", "signingMode", "signingLineage",
+    "expectedSigningCertificateSha256", "publicSigningPolicySha256"
   )) {
     if (-not $source.Contains($marker)) { throw "RUNNER_MARKER_MISSING:$marker" }
   }
   foreach ($forbidden in @(
     "Alpha5RandomSeekExactnessTest#", "Alpha5RandomSeekPerformanceTest#",
-    'alpha5-cost-aware-random-exactness', 'alpha5-cost-aware-random-performance'
+    'alpha5-cost-aware-random-exactness', 'alpha5-cost-aware-random-performance',
+    'artifactSetRevision = 4'
   )) {
     if ($source.Contains($forbidden)) { throw "ALPHA5_EXECUTION_IDENTITY_LEAK:$forbidden" }
   }
@@ -452,6 +454,246 @@ Invoke-CcrAlpha6RandomHostTest "runner-static-same-artifact-contract" {
     if ([System.IO.Path]::GetFileName($name) -cmatch '(?i)^(gradlew(?:\.bat)?|gradle(?:\.bat)?|msbuild(?:\.exe)?|mvnw?(?:\.cmd)?|cargo(?:\.exe)?)$') {
       throw "BUILD_COMMAND_FOUND:$name"
     }
+  }
+}
+
+$runnerRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ccr-alpha6-random-runner-$PID-$([Guid]::NewGuid().ToString('N'))"
+[System.IO.Directory]::CreateDirectory($runnerRoot) | Out-Null
+$previousRandomTestMode = $env:CCR_ALPHA6_RANDOM_TEST_MODE
+$env:CCR_ALPHA6_RANDOM_TEST_MODE = "1"
+try {
+  $runnerRuntimeSource = "1" * 40
+  $runnerHarnessSource = "2" * 40
+  $runnerRuntimeTree = "3" * 64
+  $runnerCertificate = Get-CcrCandidatePublicPolicyFingerprint
+  $runnerOtherCertificate = "4" * 64
+  $runnerRoles = @(
+    [PSCustomObject]@{ role = "debugApp"; package = $script:CcrPinnedAppPackage; versionName = "0.2.0-alpha.6"; versionCode = 7; runner = $null; target = $null },
+    [PSCustomObject]@{ role = "debugTest"; package = $script:CcrPinnedDebugTestPackage; versionName = $null; versionCode = $null; runner = $script:CcrPinnedRunner; target = $script:CcrPinnedAppPackage },
+    [PSCustomObject]@{ role = "benchmarkApp"; package = $script:CcrPinnedAppPackage; versionName = "0.2.0-alpha.6"; versionCode = 7; runner = $null; target = $null },
+    [PSCustomObject]@{ role = "macrobenchmarkTest"; package = $script:CcrPinnedMacrobenchmarkPackage; versionName = $null; versionCode = $null; runner = $script:CcrPinnedRunner; target = $script:CcrPinnedMacrobenchmarkPackage }
+  )
+  $runnerArtifacts = [System.Collections.Generic.List[object]]::new()
+  $runnerIdentities = @{}
+  $runnerArtifactBodies = @{}
+  foreach ($role in $runnerRoles) {
+    $path = Join-Path $runnerRoot "$($role.role).apk"
+    $body = "random-candidate-$($role.role)"
+    $runnerArtifactBodies[$role.role] = $body
+    [System.IO.File]::WriteAllText($path, $body, [System.Text.UTF8Encoding]::new($false))
+    $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+    $runnerArtifacts.Add([PSCustomObject][ordered]@{
+      role = $role.role
+      path = $path
+      bytes = (Get-Item -LiteralPath $path).Length
+      sha256 = $sha
+      packageName = $role.package
+      versionName = $role.versionName
+      versionCode = $role.versionCode
+      signingCertificateSha256 = $runnerCertificate
+      runner = $role.runner
+      targetPackage = $role.target
+    }) | Out-Null
+    $runnerIdentities[$role.role] = [PSCustomObject]@{
+      packageName = $role.package
+      versionName = $role.versionName
+      versionCode = $role.versionCode
+      signingCertificateSha256 = $runnerCertificate
+      runner = $role.runner
+      targetPackage = $role.target
+    }
+  }
+  $runnerManifest = [PSCustomObject][ordered]@{
+    schemaVersion = 1
+    artifactSetRevision = 5
+    signingLineage = $script:CcrCandidateSigningLineage
+    signingMode = "SIGNED_CANDIDATE"
+    candidateSigning = $true
+    expectedSigningCertificateSha256 = $runnerCertificate
+    runtimeSourceSha = $runnerRuntimeSource
+    harnessSourceSha = $runnerHarnessSource
+    runtimeInputsTreeSha256 = $runnerRuntimeTree
+    versionName = "0.2.0-alpha.6"
+    versionCode = 7
+    syntheticOnly = $true
+    containsRealMediaMetadata = $false
+    artifacts = $runnerArtifacts.ToArray()
+  }
+  function Write-CcrAlpha6RandomRunnerManifest {
+    param(
+      [Parameter(Mandatory = $true)][object]$Value,
+      [Parameter(Mandatory = $true)][string]$Path
+    )
+    [System.IO.File]::WriteAllText(
+      $Path,
+      (($Value | ConvertTo-Json -Depth 15) + "`n"),
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+  }
+  $runnerManifestPath = Join-Path $runnerRoot "artifact-manifest-v5.json"
+  $runnerManifestSha = Write-CcrAlpha6RandomRunnerManifest $runnerManifest $runnerManifestPath
+  $runnerIdentityReader = {
+    param($Artifact, $Tools)
+    return $runnerIdentities[[string]$Artifact.role]
+  }.GetNewClosure()
+  $runnerSourceVerifier = { param($Repo, $Runtime, $Harness) return $true }
+  $runnerAdbState = [PSCustomObject]@{ Count = 0 }
+  $runnerForbiddenAdb = {
+    param($Arguments)
+    $runnerAdbState.Count += 1
+    throw "ADB_MUST_NOT_RUN_DURING_RANDOM_HOST_PREFLIGHT"
+  }.GetNewClosure()
+  $runnerTools = [PSCustomObject]@{ Adb = "fake-adb"; ApkAnalyzer = "fake"; ApkSigner = "fake" }
+  $runnerPreflightArgs = @{
+    ArtifactManifest = $runnerManifestPath
+    ArtifactManifestSha256 = $runnerManifestSha
+    RuntimeSourceSha = $runnerRuntimeSource
+    HarnessSourceSha = $runnerHarnessSource
+    RuntimeInputsTreeSha256 = $runnerRuntimeTree
+    ExpectedDebugAppSha256 = [string]$runnerArtifacts[0].sha256
+    OutputDirectory = Join-Path $runnerRoot "positive-output"
+    RunId = "alpha6-random-v5"
+    MaxMinutes = 25
+    DecoderStage = "Stage1"
+    PreflightOnly = $true
+    TestOnlyAndroidTools = $runnerTools
+    TestOnlyIdentityReader = $runnerIdentityReader
+    TestOnlySourceIdentityVerifier = $runnerSourceVerifier
+    TestOnlyAdbInvoker = $runnerForbiddenAdb
+  }
+
+  Invoke-CcrAlpha6RandomHostTest "revision5-runner-preflight-and-resume" {
+    & $runnerPath @runnerPreflightArgs | Out-Null
+    if ($runnerAdbState.Count -ne 0) { throw "RANDOM_PREFLIGHT_TOUCHED_ADB" }
+    $summaryPath = Join-Path $runnerPreflightArgs.OutputDirectory "alpha6-random-summary-alpha6-random-v5.json"
+    $summary = [System.IO.File]::ReadAllText($summaryPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    if ([string]$summary.status -cne "PREFLIGHT_PASS" -or
+        [int]$summary.identity.artifactSetRevision -ne 5 -or
+        [string]$summary.identity.signingMode -cne "SIGNED_CANDIDATE" -or
+        $summary.identity.candidateSigning -ne $true -or
+        [string]$summary.identity.signingLineage -cne "ccr-internal-pilot-v1" -or
+        [string]$summary.identity.expectedSigningCertificateSha256 -cne $runnerCertificate -or
+        [string]$summary.identity.publicSigningPolicySha256 -notmatch "^[a-f0-9]{64}$" -or
+        @($summary.identity.closedValidationScripts).Count -ne 6 -or
+        @($summary.preRunArtifactRehash).Count -ne 4 -or
+        @($summary.postRunArtifactRehash).Count -ne 4 -or
+        [long]$summary.buildCommandCount -ne 0L) {
+      throw "RANDOM_REV5_PREFLIGHT_IDENTITY_MISMATCH"
+    }
+    $resume = @{} + $runnerPreflightArgs
+    $resume.Resume = $true
+    & $runnerPath @resume | Out-Null
+    if ($runnerAdbState.Count -ne 0) { throw "RANDOM_PREFLIGHT_RESUME_TOUCHED_ADB" }
+  }
+
+  Invoke-CcrAlpha6RandomHostTest "revision4-and-signing-mutants-rejected" {
+    $cases = @(
+      [PSCustomObject]@{ name = "revision4"; property = "artifactSetRevision"; value = 4; error = "CANDIDATE_MANIFEST_REVISION_MISMATCH" },
+      [PSCustomObject]@{ name = "mode"; property = "signingMode"; value = "CI_EPHEMERAL_DEBUG"; error = "CANDIDATE_MANIFEST_SIGNING_MODE_MISMATCH" },
+      [PSCustomObject]@{ name = "lineage"; property = "signingLineage"; value = "other"; error = "CANDIDATE_MANIFEST_LINEAGE_MISMATCH" },
+      [PSCustomObject]@{ name = "fingerprint"; property = "expectedSigningCertificateSha256"; value = $runnerOtherCertificate; error = "CANDIDATE_MANIFEST_PUBLIC_POLICY_MISMATCH" }
+    )
+    $caseIndex = 0
+    foreach ($case in $cases) {
+      $caseIndex += 1
+      $bad = Copy-CcrAlpha6RandomTestValue $runnerManifest
+      $bad.($case.property) = $case.value
+      $path = Join-Path $runnerRoot "manifest-$($case.name).json"
+      $sha = Write-CcrAlpha6RandomRunnerManifest $bad $path
+      $caseArgs = @{} + $runnerPreflightArgs
+      $caseArgs.ArtifactManifest = $path
+      $caseArgs.ArtifactManifestSha256 = $sha
+      $caseArgs.OutputDirectory = Join-Path $runnerRoot "output-$($case.name)"
+      $caseArgs.RunId = "random-case-$caseIndex"
+      Assert-CcrAlpha6RandomThrows $case.error { & $runnerPath @caseArgs | Out-Null }
+    }
+  }
+
+  Invoke-CcrAlpha6RandomHostTest "mixed-signer-and-wrong-artifact-sha-rejected" {
+    $runnerIdentities["macrobenchmarkTest"].signingCertificateSha256 = $runnerOtherCertificate
+    try {
+      $mixedArgs = @{} + $runnerPreflightArgs
+      $mixedArgs.OutputDirectory = Join-Path $runnerRoot "mixed-output"
+      $mixedArgs.RunId = "random-mixed"
+      Assert-CcrAlpha6RandomThrows "PINNED_ARTIFACT_CERTIFICATE_MISMATCH:macrobenchmarkTest" {
+        & $runnerPath @mixedArgs | Out-Null
+      }
+    } finally {
+      $runnerIdentities["macrobenchmarkTest"].signingCertificateSha256 = $runnerCertificate
+    }
+    $wrongSha = Copy-CcrAlpha6RandomTestValue $runnerManifest
+    $wrongSha.artifacts[0].sha256 = "5" * 64
+    $wrongPath = Join-Path $runnerRoot "manifest-wrong-sha.json"
+    $wrongManifestSha = Write-CcrAlpha6RandomRunnerManifest $wrongSha $wrongPath
+    $wrongArgs = @{} + $runnerPreflightArgs
+    $wrongArgs.ArtifactManifest = $wrongPath
+    $wrongArgs.ArtifactManifestSha256 = $wrongManifestSha
+    $wrongArgs.OutputDirectory = Join-Path $runnerRoot "wrong-sha-output"
+    $wrongArgs.RunId = "random-wrong-sha"
+    Assert-CcrAlpha6RandomThrows "PINNED_ARTIFACT_SHA_MISMATCH:debugApp" {
+      & $runnerPath @wrongArgs | Out-Null
+    }
+  }
+
+  Invoke-CcrAlpha6RandomHostTest "manifest-hash-artifact-and-resume-identity-drift-rejected" {
+    $staleArgs = @{} + $runnerPreflightArgs
+    $staleArgs.OutputDirectory = Join-Path $runnerRoot "stale-manifest-output"
+    $staleArgs.RunId = "random-stale-manifest"
+    $staleArgs.ArtifactManifestSha256 = "6" * 64
+    Assert-CcrAlpha6RandomThrows "ALPHA6_MANIFEST_SHA_MISMATCH" {
+      & $runnerPath @staleArgs | Out-Null
+    }
+
+    $resume = @{} + $runnerPreflightArgs
+    $resume.Resume = $true
+    $sessionPath = Join-Path $runnerPreflightArgs.OutputDirectory "checkpoint-alpha6-random-session-alpha6-random-v5.json"
+    $sessionRaw = [System.IO.File]::ReadAllText($sessionPath, [System.Text.Encoding]::UTF8)
+    (Get-Item -LiteralPath $sessionPath).IsReadOnly = $false
+    $revision4 = $sessionRaw | ConvertFrom-Json
+    $revision4.identity.artifactSetRevision = 4
+    [System.IO.File]::WriteAllText($sessionPath, ($revision4 | ConvertTo-Json -Depth 50), [System.Text.UTF8Encoding]::new($false))
+    Assert-CcrAlpha6RandomThrows "ALPHA6_RANDOM_RESUME_IDENTITY_MISMATCH" {
+      & $runnerPath @resume | Out-Null
+    }
+    $policyDrift = $sessionRaw | ConvertFrom-Json
+    $policyDrift.identity.publicSigningPolicySha256 = "0" * 64
+    [System.IO.File]::WriteAllText($sessionPath, ($policyDrift | ConvertTo-Json -Depth 50), [System.Text.UTF8Encoding]::new($false))
+    Assert-CcrAlpha6RandomThrows "ALPHA6_RANDOM_RESUME_IDENTITY_MISMATCH" {
+      & $runnerPath @resume | Out-Null
+    }
+    [System.IO.File]::WriteAllText($sessionPath, $sessionRaw, [System.Text.UTF8Encoding]::new($false))
+    (Get-Item -LiteralPath $sessionPath).IsReadOnly = $true
+
+    [System.IO.File]::AppendAllText($runnerArtifacts[0].path, "tamper", [System.Text.UTF8Encoding]::new($false))
+    try {
+      Assert-CcrAlpha6RandomThrows "PINNED_ARTIFACT_BYTE_SIZE_MISMATCH:debugApp" {
+        & $runnerPath @resume | Out-Null
+      }
+    } finally {
+      [System.IO.File]::WriteAllText(
+        $runnerArtifacts[0].path,
+        [string]$runnerArtifactBodies["debugApp"],
+        [System.Text.UTF8Encoding]::new($false)
+      )
+    }
+  }
+
+  Invoke-CcrAlpha6RandomHostTest "stage2-remains-rejected" {
+    $stage2 = @{} + $runnerPreflightArgs
+    $stage2.DecoderStage = "Stage2"
+    $stage2.OutputDirectory = Join-Path $runnerRoot "stage2-output"
+    $stage2.RunId = "random-stage2"
+    Assert-CcrAlpha6RandomThrows "ALPHA6_RANDOM_STAGE2_NOT_IMPLEMENTED" {
+      & $runnerPath @stage2 | Out-Null
+    }
+  }
+} finally {
+  $env:CCR_ALPHA6_RANDOM_TEST_MODE = $previousRandomTestMode
+  if (Test-Path -LiteralPath $runnerRoot) {
+    Get-ChildItem -LiteralPath $runnerRoot -Recurse -File -ErrorAction SilentlyContinue |
+      ForEach-Object { $_.IsReadOnly = $false }
+    Remove-Item -LiteralPath $runnerRoot -Recurse -Force
   }
 }
 

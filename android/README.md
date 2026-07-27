@@ -188,6 +188,11 @@ historical pinned artifact v4 host runner를 구현했다. v4의 `49379c…` sig
 `ccr-internal-pilot-v1`과 revision 5를 사용한다. primary와 두 backup, 공개 policy 검증은
 완료됐고 certificate SHA-256은
 `3a995765c4cb2502815b5bff31afd11aba220874be83f525fcd5ee64ab007e2e`다.
-signed candidate APK 네 개 생성, S24 exactness·tail·random·사용자 smoothness와 장기 Gate는
-모두 Pending이며 release 합격으로 간주하지 않는다. 구조와 동일-artifact 실행 순서는
+시작 HEAD `1ce42c1…`에서 signed candidate APK 네 개와 revision 5 artifact set 생성은
+성공했다. 기존 Stage 1/Random이 historical revision 4 importer와 identity에 고정된 문제는
+`s24-alpha6-candidate-device-artifacts.ps1` bridge로 수정했다. 두 active runner는 공개
+policy·fingerprint·PEM hash와 실제 APK 4종 signer까지 checkpoint/resume/failure identity에
+고정하며 revision 4를 거부한다. pre-bridge set은 유효한 build evidence로 보존하지만 새
+bridge HEAD의 S24 Gate에는 사용할 수 없으므로 APK 4종을 새 clean HEAD에서 다시 만든다.
+S24 exactness·tail·random·사용자 smoothness와 장기 Gate는 모두 Pending이며 release 합격으로 간주하지 않는다. 구조와 동일-artifact 실행 순서는
 [ALPHA6_REVERSE_REFILL_VALIDATION.md](validation/ALPHA6_REVERSE_REFILL_VALIDATION.md)에 기록한다.

@@ -1567,7 +1567,7 @@ class BenchmarkActivity : ComponentActivity() {
         private const val REPRESENTATIVE_SETTLE_POLL_MS = 50L
         private const val RELEASE_ACCEPTANCE_GRACE_MS = 500L
         private const val ENTRY_TRACE_COOKIE = 1L
-        private const val ARTIFACT_SET_REVISION = 4
+        private const val ARTIFACT_SET_REVISION = 5
         private const val EXPECTED_RUNTIME_SOURCE_SHA = "c98264f2a10026a908e94c961bb13e4af2d59e60"
         private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
             "3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468"

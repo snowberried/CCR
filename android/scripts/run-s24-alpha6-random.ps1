@@ -12,7 +12,11 @@ param(
   [AllowEmptyString()][string]$OriginalStayAwakeSetting = "",
   [AllowEmptyString()][string]$OriginalScreenTimeoutSetting = "",
   [switch]$Resume,
-  [switch]$PreflightOnly
+  [switch]$PreflightOnly,
+  [Parameter(DontShow = $true)][object]$TestOnlyAndroidTools = $null,
+  [Parameter(DontShow = $true)][scriptblock]$TestOnlyIdentityReader = $null,
+  [Parameter(DontShow = $true)][scriptblock]$TestOnlySourceIdentityVerifier = $null,
+  [Parameter(DontShow = $true)][scriptblock]$TestOnlyAdbInvoker = $null
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,9 +35,18 @@ $script:CcrAlpha6FrozenTargetSetIdentities = [ordered]@{
 }
 
 $runnerPath = [System.IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
-$alpha6PinnedPath = Join-Path $PSScriptRoot "s24-alpha6-pinned-artifacts.ps1"
+$candidateBridgePath = Join-Path $PSScriptRoot "s24-alpha6-candidate-device-artifacts.ps1"
+$candidateArtifactsPath = Join-Path $PSScriptRoot "s24-alpha6-candidate-artifacts.ps1"
+$candidateSigningCommonPath = Join-Path $PSScriptRoot "ccr-android-pilot-signing-common.ps1"
+$alpha6HistoricalPinnedPath = Join-Path $PSScriptRoot "s24-alpha6-pinned-artifacts.ps1"
 $basePinnedPath = Join-Path $PSScriptRoot "s24-pinned-artifacts.ps1"
-. $alpha6PinnedPath
+. $candidateBridgePath
+
+$testHookUsed = $null -ne $TestOnlyAndroidTools -or $null -ne $TestOnlyIdentityReader -or
+  $null -ne $TestOnlySourceIdentityVerifier -or $null -ne $TestOnlyAdbInvoker
+if ($testHookUsed -and $env:CCR_ALPHA6_RANDOM_TEST_MODE -cne "1") {
+  throw "ALPHA6_RANDOM_TEST_HOOK_FORBIDDEN"
+}
 
 Assert-CcrPinnedRunId $RunId | Out-Null
 $deadlineUtc = [DateTime]::UtcNow.AddMinutes($MaxMinutes)
@@ -44,10 +57,13 @@ $adbDeadlineState = [PSCustomObject]@{
 }
 $closedValidationScripts = @(
   $runnerPath,
-  [System.IO.Path]::GetFullPath($alpha6PinnedPath),
+  [System.IO.Path]::GetFullPath($candidateBridgePath),
+  [System.IO.Path]::GetFullPath($candidateArtifactsPath),
+  [System.IO.Path]::GetFullPath($candidateSigningCommonPath),
+  [System.IO.Path]::GetFullPath($alpha6HistoricalPinnedPath),
   [System.IO.Path]::GetFullPath($basePinnedPath)
 )
-if (@($closedValidationScripts | Select-Object -Unique).Count -ne 3) {
+if (@($closedValidationScripts | Select-Object -Unique).Count -ne 6) {
   throw "ALPHA6_RANDOM_CLOSED_SCRIPT_SET_INVALID"
 }
 
@@ -120,6 +136,9 @@ function Get-CcrAlpha6RandomArtifactRecords {
 
 function New-CcrAlpha6RandomIdentity {
   param([Parameter(Mandatory = $true)][object]$Context)
+  $revision = [int](Get-CcrPinnedRequiredProperty $Context.ArtifactSet.Manifest "artifactSetRevision")
+  if ($revision -ne 5) { throw "ALPHA6_RANDOM_CANDIDATE_REVISION_MISMATCH" }
+  $signing = Get-CcrPinnedRequiredProperty $Context "PublicSigningIdentity"
   $device = $null
   if (Test-CcrPinnedProperty $Context "Serial") {
     $device = [PSCustomObject][ordered]@{
@@ -136,7 +155,15 @@ function New-CcrAlpha6RandomIdentity {
     decoderStage = $DecoderStage
     artifactManifest = [string]$Context.ArtifactSet.ManifestPath
     artifactManifestSha256 = [string]$Context.ArtifactSet.ManifestSha256
-    artifactSetRevision = 4
+    artifactSetRevision = $revision
+    signingMode = [string](Get-CcrPinnedRequiredProperty $signing "signingMode")
+    candidateSigning = [bool](Get-CcrPinnedRequiredProperty $signing "candidateSigning")
+    signingLineage = [string](Get-CcrPinnedRequiredProperty $signing "signingLineage")
+    expectedSigningCertificateSha256 = [string](Get-CcrPinnedRequiredProperty $signing "expectedSigningCertificateSha256")
+    publicSigningPolicySha256 = [string](Get-CcrPinnedRequiredProperty $signing.publicPolicy "sha256")
+    publicSigningPolicy = Get-CcrPinnedRequiredProperty $signing "publicPolicy"
+    publicSigningFingerprint = Get-CcrPinnedRequiredProperty $signing "publicFingerprint"
+    publicSigningCertificate = Get-CcrPinnedRequiredProperty $signing "publicCertificate"
     runtimeSourceSha = [string]$Context.ArtifactSet.RuntimeSourceSha
     harnessSourceSha = [string]$Context.ArtifactSet.HarnessSourceSha
     runtimeInputsTreeSha256 = [string]$Context.ArtifactSet.RuntimeInputsTreeSha256
@@ -579,22 +606,30 @@ function Assert-CcrAlpha6RandomCheckpoint {
   return $Checkpoint
 }
 
-$androidTools = Get-CcrPinnedAndroidSdkTools
-$effectiveAdbInvoker = New-CcrAlpha6TimedAdbInvoker ([string]$androidTools.Adb) $adbDeadlineState
+$androidTools = if ($null -ne $TestOnlyAndroidTools) { $TestOnlyAndroidTools } else { Get-CcrPinnedAndroidSdkTools }
+$effectiveAdbInvoker = if ($null -ne $TestOnlyAdbInvoker) {
+  $TestOnlyAdbInvoker
+} else {
+  New-CcrAlpha6TimedAdbInvoker ([string]$androidTools.Adb) $adbDeadlineState
+}
 $hostPreflightRunId = if ($Resume) { "$RunId-resume-$([Guid]::NewGuid().ToString('N'))" } else { $RunId }
-$context = Invoke-CcrAlpha6PinnedHostPreflight `
-  -ArtifactManifest $ArtifactManifest `
-  -ArtifactManifestSha256 $ArtifactManifestSha256 `
-  -OutputDirectory $OutputDirectory `
-  -RunId $hostPreflightRunId `
-  -RuntimeSourceSha $RuntimeSourceSha `
-  -HarnessSourceSha $HarnessSourceSha `
-  -RuntimeInputsTreeSha256 $RuntimeInputsTreeSha256 `
-  -ExpectedDebugAppSha256 $ExpectedDebugAppSha256 `
-  -PreflightOnly ([bool]$PreflightOnly) `
-  -BuildCommandCount 0L `
-  -ValidationScriptPaths $closedValidationScripts `
-  -AndroidTools $androidTools
+$hostParameters = @{
+  ArtifactManifest = $ArtifactManifest
+  ArtifactManifestSha256 = $ArtifactManifestSha256
+  OutputDirectory = $OutputDirectory
+  RunId = $hostPreflightRunId
+  RuntimeSourceSha = $RuntimeSourceSha
+  HarnessSourceSha = $HarnessSourceSha
+  RuntimeInputsTreeSha256 = $RuntimeInputsTreeSha256
+  ExpectedDebugAppSha256 = $ExpectedDebugAppSha256
+  PreflightOnly = [bool]$PreflightOnly
+  BuildCommandCount = 0L
+  ValidationScriptPaths = $closedValidationScripts
+  AndroidTools = $androidTools
+}
+if ($null -ne $TestOnlyIdentityReader) { $hostParameters.IdentityReader = $TestOnlyIdentityReader }
+if ($null -ne $TestOnlySourceIdentityVerifier) { $hostParameters.SourceIdentityVerifier = $TestOnlySourceIdentityVerifier }
+$context = Invoke-CcrAlpha6CandidateDeviceHostPreflight @hostParameters
 $context | Add-Member -Force -NotePropertyName AndroidTools -NotePropertyValue $androidTools
 $context | Add-Member -Force -NotePropertyName Adb -NotePropertyValue ([string]$androidTools.Adb
 )
@@ -680,7 +715,7 @@ if ($Resume) {
         throw "ALPHA6_RANDOM_RESUME_COMPLETED_GATE_MISMATCH"
       }
     }
-    Assert-CcrAlpha6ArtifactSetUnchanged $context | Out-Null
+    Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $context | Out-Null
     Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath
     return
   }
@@ -704,10 +739,10 @@ if ($Resume) {
 }
 
 $preRunArtifactRehash = @(Get-CcrAlpha6RandomArtifactRecords $context)
-Assert-CcrAlpha6ArtifactSetUnchanged $context | Out-Null
+Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $context | Out-Null
 if ($PreflightOnly) {
   $postRunArtifactRehash = @(Get-CcrAlpha6RandomArtifactRecords $context)
-  Assert-CcrAlpha6ArtifactSetUnchanged $context | Out-Null
+  Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $context | Out-Null
   Write-CcrAlpha6RandomImmutableJson $summaryPath ([ordered]@{
     schemaVersion = 1
     kind = "alpha6-random-preflight"
@@ -785,7 +820,7 @@ try {
   Set-CcrPinnedDeviceSetting $context "system" "user_rotation" "0"
   Assert-CcrAlpha6RandomDeadline "before-install"
   Install-CcrPinnedArtifactSet $context "Debug"
-  Assert-CcrAlpha6ArtifactSetUnchanged $context | Out-Null
+  Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $context | Out-Null
 
   $currentPhase = "exactness"
   if ($Resume -and (Test-Path -LiteralPath $exactCheckpointPath -PathType Leaf)) {
@@ -838,7 +873,7 @@ try {
   # The performance instrumentation is deliberately unreachable unless the
   # exact same artifact set has a revalidated 250/250 exact checkpoint.
   Assert-CcrAlpha6RandomCheckpoint $exactCheckpoint "Exactness" $context | Out-Null
-  Assert-CcrAlpha6ArtifactSetUnchanged $context | Out-Null
+  Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $context | Out-Null
   $currentPhase = "performance"
   if ($Resume -and (Test-Path -LiteralPath $performanceCheckpointPath -PathType Leaf)) {
     $performanceCheckpoint = [System.IO.File]::ReadAllText($performanceCheckpointPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
@@ -915,13 +950,13 @@ try {
   }
   Assert-CcrAlpha6RandomCheckpoint $performanceCheckpoint "Performance" $context | Out-Null
   Assert-CcrAlpha6RandomDeadline "complete"
-  Assert-CcrAlpha6ArtifactSetUnchanged $context | Out-Null
+  Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $context | Out-Null
   $postRunArtifactRehash = @(Get-CcrAlpha6RandomArtifactRecords $context)
 } catch {
   $primaryFailure = $_
   try {
     $postRunArtifactRehash = @(Get-CcrAlpha6RandomArtifactRecords $context)
-    Assert-CcrAlpha6ArtifactSetUnchanged $context | Out-Null
+    Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $context | Out-Null
   } catch { $cleanupFailures.Add("ARTIFACT_REHASH:$($_.Exception.Message)") | Out-Null }
 } finally {
   $adbDeadlineState.CleanupMode = $true
@@ -953,7 +988,7 @@ try {
       $cleanupFailures.Add("SETTINGS_RESTORE:$($_.Exception.Message)") | Out-Null
     }
   }
-  try { Assert-CcrAlpha6ArtifactSetUnchanged $context | Out-Null } catch {
+  try { Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $context | Out-Null } catch {
     $cleanupFailures.Add("FINAL_ARTIFACT_REHASH:$($_.Exception.Message)") | Out-Null
   }
   if ($null -ne $primaryFailure -or $cleanupFailures.Count -gt 0) {

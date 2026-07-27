@@ -63,8 +63,45 @@ Codex, Browser, Windows, 권한, 샌드박스, `Path/PATH`, `node_repl`, Vite �
 공통 재발 방지 원칙은 공용 troubleshooting의 같은 날짜 항목을 따르고, 이 프로젝트의
 인증서 식별자·historical evidence·새 lineage 결정은
 `android/signing/SIGNING_INCIDENT_2026-07-27.md`에만 기록한다.
-2026-07-28 KST에 새 primary와 두 backup, 공개 certificate·policy 검증을 완료했으며,
-다음 단계는 signed candidate APK 네 개와 revision 5 artifact 세트 생성이다.
+2026-07-28 KST에 새 primary와 두 backup, 공개 certificate·policy 검증을 완료했고
+`1ce42c1…`에서 signed candidate APK 네 개와 revision 5 artifact 세트 생성도 성공했다.
+
+## 2026-07-28 Alpha 6 signed candidate가 historical revision 4 runner에 연결된 문제
+
+상태: 검증 완료 / revision 5 device runner bridge 적용
+
+### 증상
+
+revision 5 manifest와 signer 검증기는 준비됐지만 active Stage 1과 Random runner가
+historical revision 4 helper와 literal revision 4 identity를 사용했다. 정상 생성된
+signed candidate를 최종 S24 Gate에 안전하게 연결할 수 없었다.
+
+### 원인
+
+artifact 생성 경계와 device runner 경계가 별도로 발전하면서 active runner의 importer,
+checkpoint/resume identity와 검증 APK revision 식별 상수가 revision 4에 남았다.
+
+### 해결 절차
+
+historical helper를 수정하지 않고 `s24-alpha6-candidate-device-artifacts.ps1` bridge를
+추가했다. active runner는 strict revision 5 candidate importer만 사용하며 public policy,
+fingerprint·PEM hash, 실제 APK 4종 signer와 manifest를 동일 identity로 고정한다.
+검증 APK의 artifact revision 식별 상수만 5로 맞추고 제품 runtime과 성능 threshold는
+변경하지 않는다.
+
+### 검증 방법
+
+- candidate bridge host test 28 PASS
+- Stage 1 host test 107 PASS
+- Random host test 24 PASS
+- historical Alpha 4/5와 Alpha 6 revision 4 verifier PASS
+- Alpha 6 runtime freeze 40/40 PASS
+
+### 관련 변경
+
+기존 `1ce42c1…` artifact는 정상 build evidence로 보존하지만 bridge commit 이후
+`harnessSourceSha`가 달라 최종 device Gate에는 사용하지 않는다. 새 clean bridge HEAD에서
+APK 4종과 revision 5 artifact set을 다시 생성한다.
 
 ## 2026-07-10 FFmpeg setup 스크립트와 Windows PowerShell 5
 

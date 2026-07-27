@@ -47,9 +47,9 @@
 | Android S24 Gate 3 Evidence | `evidence/android/s24/README.md` | 비식별 Gate 3 PASS 요약, 기준 tag와 artifact/fixture checksum |
 | Android S24 Gate 3 Device Baseline | `../android/validation/device-baselines/sm-s928n-android16-2026-07-15/README.md` | 고정된 비식별 sanitized report와 재검증 가능한 checksum |
 | Android Alpha 5 Bidirectional Validation | `../android/validation/ALPHA5_BIDIRECTIONAL_VALIDATION.md` | Alpha 4 기준선, Alpha 5 구조, 동일 아티팩트와 S24 A–H 검증 계약 |
-| Android Alpha 6 Reverse Refill Validation | `../android/validation/ALPHA6_REVERSE_REFILL_VALIDATION.md` | renderer cache 게시, rolling refill, random tail과 pinned artifact v4 S24 Pending 계약 |
-| Android Alpha 6 Handoff | `../HANDOFF_ANDROID_ALPHA6.md` | 최신 source·artifact identity, Stage 1 측정기 실패 진단과 안전한 재개 순서 |
-| Android Internal-pilot Signing | `../android/signing/README.md` | 검증 완료된 ccr-internal-pilot-v1 공개 정책, debug·candidate 신원 분리와 복구 절차 |
+| Android Alpha 6 Reverse Refill Validation | `../android/validation/ALPHA6_REVERSE_REFILL_VALIDATION.md` | renderer cache 게시, rolling refill, revision 5 runner bridge와 S24 Pending 계약 |
+| Android Alpha 6 Handoff | `../HANDOFF_ANDROID_ALPHA6.md` | 최신 source·signed artifact 분류, revision 5 bridge와 안전한 candidate rebuild 순서 |
+| Android Internal-pilot Signing | `../android/signing/README.md` | 검증 완료된 ccr-internal-pilot-v1 공개 정책, revision 5 runner identity와 복구 절차 |
 | Android Local Sample Pilot | `../local-samples/README.md` | 실제 파일을 추적하지 않는 비식별 로컬 파일럿 manifest와 수동 체크리스트 |
 | v0.5.2 Design QA | `../design-qa.md` | 최종 시안과 1440×900·720×600 구현 비교 및 판정 |
 | v0.5.2 Modern Dark Handoff | `../HANDOFF_V052_MODERN_DARK.md` | 최신 UI·확대율 의미, 검증 결과, 설치본과 후속 작업 상태 |

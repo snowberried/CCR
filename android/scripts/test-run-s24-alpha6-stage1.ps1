@@ -2,12 +2,15 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $runner = Join-Path $PSScriptRoot "run-s24-alpha6-stage1.ps1"
-$alpha6Pinned = Join-Path $PSScriptRoot "s24-alpha6-pinned-artifacts.ps1"
+$candidateBridge = Join-Path $PSScriptRoot "s24-alpha6-candidate-device-artifacts.ps1"
+$candidateArtifacts = Join-Path $PSScriptRoot "s24-alpha6-candidate-artifacts.ps1"
+$candidateSigningCommon = Join-Path $PSScriptRoot "ccr-android-pilot-signing-common.ps1"
+$alpha6HistoricalPinned = Join-Path $PSScriptRoot "s24-alpha6-pinned-artifacts.ps1"
 $basePinned = Join-Path $PSScriptRoot "s24-pinned-artifacts.ps1"
 $tailContract = Join-Path $PSScriptRoot "alpha6-tail-contract.ps1"
 $benchmarkActivity = Join-Path $PSScriptRoot "..\app\src\benchmark\java\com\snowberried\ctcinereviewer\benchmark\BenchmarkActivity.kt"
 $macrobenchmark = Join-Path $PSScriptRoot "..\macrobenchmark\src\main\java\com\snowberried\ctcinereviewer\macrobenchmark\CcrProductMacrobenchmark.kt"
-. $alpha6Pinned
+. $candidateBridge
 
 $passed = 0
 function Assert-Alpha6Stage1Test {
@@ -92,7 +95,7 @@ try {
   $runtimeSource = "1" * 40
   $harnessSource = "2" * 40
   $runtimeTree = "3" * 64
-  $certificate = $script:CcrPinnedSigningCertificateSha256
+  $certificate = Get-CcrCandidatePublicPolicyFingerprint
   $roles = @(
     [PSCustomObject]@{ role = "debugApp"; package = $script:CcrPinnedAppPackage; versionName = "0.2.0-alpha.6"; versionCode = 7; runner = $null; target = $null },
     [PSCustomObject]@{ role = "debugTest"; package = $script:CcrPinnedDebugTestPackage; versionName = $null; versionCode = $null; runner = $script:CcrPinnedRunner; target = $script:CcrPinnedAppPackage },
@@ -128,7 +131,11 @@ try {
   }
   $manifest = [PSCustomObject][ordered]@{
     schemaVersion = 1
-    artifactSetRevision = 4
+    artifactSetRevision = 5
+    signingLineage = $script:CcrCandidateSigningLineage
+    signingMode = "SIGNED_CANDIDATE"
+    candidateSigning = $true
+    expectedSigningCertificateSha256 = $certificate
     runtimeSourceSha = $runtimeSource
     harnessSourceSha = $harnessSource
     runtimeInputsTreeSha256 = $runtimeTree
@@ -138,7 +145,7 @@ try {
     containsRealMediaMetadata = $false
     artifacts = $artifacts.ToArray()
   }
-  $manifestPath = Join-Path $root "artifact-manifest-v4.json"
+  $manifestPath = Join-Path $root "artifact-manifest-v5.json"
   [System.IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 12), [System.Text.UTF8Encoding]::new($false))
   $manifestSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash.ToLowerInvariant()
   $debugSha = [string]$artifacts[0].sha256
@@ -152,9 +159,17 @@ try {
   $parseErrors = $null
   [System.Management.Automation.Language.Parser]::ParseFile($runner, [ref]$null, [ref]$parseErrors) | Out-Null
   Assert-Alpha6Stage1Test (@($parseErrors).Count -eq 0) "runner-parser"
-  $closed = @($runner, $alpha6Pinned, $basePinned, $tailContract | ForEach-Object { [System.IO.Path]::GetFullPath($_) })
+  $closed = @(
+    $runner,
+    $candidateBridge,
+    $candidateArtifacts,
+    $candidateSigningCommon,
+    $alpha6HistoricalPinned,
+    $basePinned,
+    $tailContract
+  ) | ForEach-Object { [System.IO.Path]::GetFullPath($_) }
   $buildFree = @(Assert-CcrAlpha6ValidationScriptsBuildFree $closed)
-  Assert-Alpha6Stage1Test ($buildFree.Count -eq 4) "closed-script-list-build-free"
+  Assert-Alpha6Stage1Test ($buildFree.Count -eq 7) "closed-script-list-build-free"
   $source = [System.IO.File]::ReadAllText($runner, [System.Text.Encoding]::UTF8)
   $runnerAst = [System.Management.Automation.Language.Parser]::ParseFile($runner, [ref]$null, [ref]$null)
   $resolverAst = @($runnerAst.FindAll({
@@ -171,8 +186,9 @@ try {
   }, $true))
   Assert-Alpha6Stage1Test ($settingsAssertionAst.Count -eq 1) "settings-restore-assertion-defined-once"
   Invoke-Expression $settingsAssertionAst[0].Extent.Text
-  Assert-Alpha6Stage1Test ($source.Contains("Invoke-CcrAlpha6PinnedHostPreflight")) "host-preflight-connected"
-  Assert-Alpha6Stage1Test ($source.Contains("Assert-CcrAlpha6ArtifactSetUnchanged")) "artifact-rehash-connected"
+  Assert-Alpha6Stage1Test ($source.Contains("Invoke-CcrAlpha6CandidateDeviceHostPreflight")) "candidate-host-preflight-connected"
+  Assert-Alpha6Stage1Test ($source.Contains("Assert-CcrAlpha6CandidateDeviceIdentityUnchanged")) "candidate-identity-rehash-connected"
+  Assert-Alpha6Stage1Test (-not $source.Contains("artifactSetRevision = 4")) "active-revision4-hardcode-removed"
   Assert-Alpha6Stage1Test ($source.Contains("Invoke-CcrPinnedCleanup")) "package-cleanup-finally"
   Assert-Alpha6Stage1Test ($source.Contains("Recover-CcrAlpha6Stage1Traces")) "trace-recovery-hook"
   Assert-Alpha6Stage1Test ($source -notmatch '(?m)^\s*\$\w*(?:Sha|Sha256)\w*\s*=\s*"[0-9a-f]{40,64}"') "no-final-hash-placeholder"
@@ -364,12 +380,48 @@ try {
     "1080p-vfr-hold-minus-one|vfr|1080p-vfr.mp4|-1"
   ) | Sort-Object
   Assert-Alpha6Stage1Test (($plannedTokens -join "`n") -ceq ($expectedPlannedTokens -join "`n")) "preflight-fixture-scenario-plan-exact"
-  Assert-Alpha6Stage1Test (@($preflight.identity.closedValidationScripts).Count -eq 4) "closed-script-hashes-recorded"
+  Assert-Alpha6Stage1Test (@($preflight.identity.closedValidationScripts).Count -eq 7) "closed-script-hashes-recorded"
+  Assert-Alpha6Stage1Test (
+    [int]$preflight.identity.artifactSetRevision -eq 5 -and
+      [string]$preflight.identity.signingMode -ceq "SIGNED_CANDIDATE" -and
+      $preflight.identity.candidateSigning -eq $true -and
+      [string]$preflight.identity.signingLineage -ceq "ccr-internal-pilot-v1" -and
+      [string]$preflight.identity.expectedSigningCertificateSha256 -ceq $certificate -and
+      [string]$preflight.identity.publicSigningPolicySha256 -cmatch "^[a-f0-9]{64}$" -and
+      [string]$preflight.identity.publicSigningFingerprint.sha256 -cmatch "^[a-f0-9]{64}$" -and
+      [string]$preflight.identity.publicSigningCertificate.sha256 -cmatch "^[a-f0-9]{64}$"
+  ) "revision5-signing-identity-recorded"
   Assert-Alpha6Stage1Test (@($preflight.preRunArtifactRehash).Count -eq 4 -and @($preflight.postRunArtifactRehash).Count -eq 4) "pre-post-rehash-recorded"
   $preflightResume = @{} + $preflightArgs
   $preflightResume.Resume = $true
   & $runner @preflightResume | Out-Null
   Assert-Alpha6Stage1Test ($adbWasCalled.Count -eq 0) "preflight-resume-has-zero-adb"
+  $preflightSessionPath = Join-Path $preflightOutput "checkpoint-alpha6-stage1-session-alpha6-stage1-preflight.json"
+  $preflightSessionRaw = [System.IO.File]::ReadAllText($preflightSessionPath, [System.Text.Encoding]::UTF8)
+  (Get-Item -LiteralPath $preflightSessionPath).IsReadOnly = $false
+  $revision4Session = $preflightSessionRaw | ConvertFrom-Json
+  $revision4Session.identity.artifactSetRevision = 4
+  [System.IO.File]::WriteAllText(
+    $preflightSessionPath,
+    ($revision4Session | ConvertTo-Json -Depth 50),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @preflightResume | Out-Null
+  } "ALPHA6_STAGE1_RESUME_IDENTITY_MISMATCH" "revision4-resume-identity-rejected"
+  [System.IO.File]::WriteAllText($preflightSessionPath, $preflightSessionRaw, [System.Text.UTF8Encoding]::new($false))
+  $policyDriftSession = $preflightSessionRaw | ConvertFrom-Json
+  $policyDriftSession.identity.publicSigningPolicySha256 = "0" * 64
+  [System.IO.File]::WriteAllText(
+    $preflightSessionPath,
+    ($policyDriftSession | ConvertTo-Json -Depth 50),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @preflightResume | Out-Null
+  } "ALPHA6_STAGE1_RESUME_IDENTITY_MISMATCH" "policy-identity-drift-rejected"
+  [System.IO.File]::WriteAllText($preflightSessionPath, $preflightSessionRaw, [System.Text.UTF8Encoding]::new($false))
+  (Get-Item -LiteralPath $preflightSessionPath).IsReadOnly = $true
   $preflightSummaryRaw = [System.IO.File]::ReadAllText($preflightSummaryPath, [System.Text.Encoding]::UTF8)
   (Get-Item -LiteralPath $preflightSummaryPath).IsReadOnly = $false
   $mutatedPreflight = $preflightSummaryRaw | ConvertFrom-Json
@@ -411,6 +463,25 @@ try {
   Assert-Alpha6Stage1ThrowsLike {
     & $runner @zeroRuntime | Out-Null
   } "ALPHA6_RUNTIME_SOURCE_SHA_INVALID" "zero-runtime-placeholder-rejected"
+
+  $revision4Manifest = ($manifest | ConvertTo-Json -Depth 15 -Compress) | ConvertFrom-Json
+  $revision4Manifest.artifactSetRevision = 4
+  $revision4ManifestPath = Join-Path $root "artifact-manifest-v4.json"
+  [System.IO.File]::WriteAllText(
+    $revision4ManifestPath,
+    (($revision4Manifest | ConvertTo-Json -Depth 15) + "`n"),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  $revision4Args = @{} + $preflightArgs
+  $revision4Args.ArtifactManifest = $revision4ManifestPath
+  $revision4Args.ArtifactManifestSha256 = (
+    Get-FileHash -Algorithm SHA256 -LiteralPath $revision4ManifestPath
+  ).Hash.ToLowerInvariant()
+  $revision4Args.OutputDirectory = Join-Path $root "revision4-output"
+  $revision4Args.RunId = "alpha6-stage1-revision4"
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @revision4Args | Out-Null
+  } "CANDIDATE_MANIFEST_REVISION_MISMATCH" "historical-revision4-active-runner-rejected"
 
   $longRunId = @{} + $preflightArgs
   $longRunId.OutputDirectory = Join-Path $root "long-run-id-output"

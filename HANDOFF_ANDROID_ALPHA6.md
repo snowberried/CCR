@@ -9,18 +9,21 @@ Android `0.2.0-alpha.6` 제품 runtime의 exactness 수정과 역방향 cache-on
 debug key를 장기 candidate identity로 사용한 구조가 반복 blocker의 원인으로 확정됐다.
 revision 4는 historical evidence로만 보존하고, 새 candidate는 전용
 `ccr-internal-pilot-v1`과 artifact set revision 5를 사용한다. 2026-07-28 KST에 primary와
-두 backup, 공개 certificate·policy 검증을 완료했다. signed candidate artifact 생성,
-Stage 1 전체 재실행과 Random 250은 아직 Pending이다.
+두 backup, 공개 certificate·policy 검증을 완료했다. 시작 HEAD `1ce42c1…`에서 signed
+candidate APK 4종과 revision 5 artifact set 생성도 성공했다. 이후 확인된 active
+Stage 1/Random의 historical revision 4 결합은 제품 runtime을 바꾸지 않는 전용 revision 5
+device bridge로 제거했다. bridge를 포함하는 새 clean HEAD에서 APK 4종과 artifact set을
+다시 생성해야 하며 S24 PreflightOnly, Stage 1, Random 250과 사용자 smoothness는 Pending이다.
 
 현재 판정은 다음과 같다.
 
-`BLOCKED_FOR_RELEASE — SIGNING_BASELINE_READY; SIGNED_CANDIDATE_APKS, S24 STAGE 1, RANDOM 250, AND USER SMOOTHNESS REVIEW PENDING`
+`BLOCKED_FOR_RELEASE — ALPHA6_REV5_DEVICE_RUNNER_BRIDGE_READY; CLEAN_HEAD CANDIDATE REBUILD, S24 STAGE 1, RANDOM 250, AND USER SMOOTHNESS REVIEW PENDING`
 
 ## Git과 원격 기준
 
 - repository: `snowberried/CCR`
 - branch: `codex/android-reverse-refill-smoothing`
-- 인수인계 작성 전 HEAD: `85d30f3901973e219eaa416577ca896b7867936a`
+- revision 5 bridge 시작 HEAD: `1ce42c1fad00da4d97a9ba8a9d61096c767a84f9`
 - runtime source: `c98264f2a10026a908e94c961bb13e4af2d59e60`
 - runtime input tree: `3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468`
 - version: `0.2.0-alpha.6` / versionCode `7`
@@ -70,6 +73,42 @@ Stage 1 전체 재실행과 Random 250은 아직 Pending이다.
 - `:macrobenchmark:assembleInternalBenchmark`: PASS
 - Android CI 두 실행: PASS
 - 제품 runtime 입력: 변경 없음
+
+revision 5 device bridge closure에서는 다음 host 계약을 확인했다.
+
+- candidate device bridge tests: 28 PASS
+- Stage 1 host tests: 107 PASS
+- Random host tests: 24 PASS
+- PowerShell parser: 39 scripts PASS
+- Alpha 4/5와 Alpha 6 revision 4 historical verifier: 보존
+- Alpha 6 runtime freeze: 40/40 PASS
+- 제품 runtime Kotlin과 40개 frozen input: 변경 없음
+
+## revision 5 runner bridge와 pre-bridge artifact
+
+`s24-alpha6-candidate-device-artifacts.ps1`이 historical Alpha 6 device primitive를
+재사용하되 strict `Import-CcrAlpha6CandidateArtifactManifest`만 active 진입점으로 사용한다.
+Stage 1과 Random은 revision 5, `SIGNED_CANDIDATE`, candidate flag, lineage, 공개 policy,
+fingerprint·PEM hash와 실제 APK 4종 signer를 하나의 identity로 checkpoint, resume,
+failure, final summary와 post-run rehash에 고정한다. revision 4 manifest는 active
+runner에서 fail-closed하며 historical verifier에서는 계속 검증할 수 있다.
+
+보존된 pre-bridge artifact set:
+
+- path:
+  `C:\Users\snowb\Documents\CCR-Artifacts\CCR-Android-0.2.0-alpha.6-1ce42c1-20260728-011441`
+- manifest SHA-256:
+  `72b964403c21021a3ef2db7df149e7131c96b991aff38ce033b2f52fdf9c3023`
+- archive SHA-256:
+  `3a8bc9563202bdd72e58934da211369d92cc46f2be620df7a612a067dadeac4f`
+- 분류:
+  `VALID_SIGNED_CANDIDATE_BUILD_EVIDENCE — SUPERSEDED_FOR_DEVICE_GATE_BY_REV5_RUNNER_BRIDGE`
+- device gate:
+  `NOT_ELIGIBLE_FOR_FINAL_DEVICE_GATE_AFTER_HARNESS_HEAD_CHANGE`
+
+이 세트는 정상 생성된 signed build evidence이며 수정·삭제·덮어쓰지 않는다. 다만 manifest의
+`harnessSourceSha=1ce42c1fad00da4d97a9ba8a9d61096c767a84f9`가 bridge commit 이전 HEAD를
+가리키므로 다음 S24 실행에는 새 clean bridge HEAD에서 wrapper를 처음부터 다시 실행한다.
 
 ## historical revision 4 제품 artifact 기록
 
@@ -193,11 +232,11 @@ git diff --check
 전체 파일을 read-only로 설정한다. `PROVENANCE.txt`에는
 `signingMode=SIGNED_CANDIDATE`, lineage와 revision을 기록한다. `C:\tmp`는 사용하지 않는다.
 
-## historical revision 4 실기기 명령
+## revision 5 active 실기기 명령
 
-아래 revision 4 명령은 기존 증거의 재현 형식을 보존한 historical 기록이다. private key가
-없는 `49379c…` signer를 새로 만들거나 revision 5 candidate에 재사용하지 않는다. 새 signing
-baseline과 revision 5 runner 연결이 완료된 뒤 별도 검토를 거쳐야 한다.
+아래 명령은 새 clean bridge HEAD에서 다시 생성한 revision 5 manifest와 APK 4종에만
+사용한다. private key가 없는 historical `49379c…` signer나 revision 4 manifest는 active
+runner가 거부한다.
 
 1. 새 artifact 세트로 Stage 1 `-PreflightOnly`
 2. 새 runId와 새 출력 디렉터리로 Stage 1 전체 실행
@@ -211,12 +250,12 @@ Stage 1 기본 명령:
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\android\scripts\run-s24-alpha6-stage1.ps1 `
-  -ArtifactManifest <new-absolute-manifest-v4.json> `
+  -ArtifactManifest <new-absolute-manifest-v5.json> `
   -ArtifactManifestSha256 <new-manifest-sha256> `
   -RuntimeSourceSha c98264f2a10026a908e94c961bb13e4af2d59e60 `
   -HarnessSourceSha <git-rev-parse-head> `
   -RuntimeInputsTreeSha256 3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468 `
-  -ExpectedDebugAppSha256 2d921dfb93aee0d845ad228fd2428336c8e43d31213e0f28b387b32d33b90ea7 `
+  -ExpectedDebugAppSha256 <new-debug-app-sha256> `
   -OutputDirectory <new-absolute-stage1-output> `
   -RunId <new-unique-run-id> `
   -MaxMinutes 120
@@ -227,12 +266,12 @@ Random은 Stage 1 통과 후에만 실행한다.
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\android\scripts\run-s24-alpha6-random.ps1 `
-  -ArtifactManifest <same-new-absolute-manifest-v4.json> `
+  -ArtifactManifest <same-new-absolute-manifest-v5.json> `
   -ArtifactManifestSha256 <same-new-manifest-sha256> `
   -RuntimeSourceSha c98264f2a10026a908e94c961bb13e4af2d59e60 `
   -HarnessSourceSha <same-clean-head> `
   -RuntimeInputsTreeSha256 3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468 `
-  -ExpectedDebugAppSha256 2d921dfb93aee0d845ad228fd2428336c8e43d31213e0f28b387b32d33b90ea7 `
+  -ExpectedDebugAppSha256 <same-new-debug-app-sha256> `
   -OutputDirectory <new-absolute-random-output> `
   -RunId <new-unique-run-id> `
   -MaxMinutes 25 `

@@ -44,8 +44,14 @@ key 접근 검사가 모두 통과했다. 검증 증거는 저장소 밖 evidenc
 - candidate wrapper는 명시적 opt-in, key·공개 인증서·두 백업 preflight,
   `signingReport`, 네 APK signer 일치와 revision 5 manifest 검증을 모두 통과해야 한다.
 - 네 역할은 `debugApp`, `debugTest`, `benchmarkApp`, `macrobenchmarkTest`다.
-- 다음 단계는 final clean HEAD에서 signed candidate APK 네 개와 revision 5 artifact
-  세트를 생성하는 별도 작업이다. S24 Gate와 사용자 smoothness 검증은 아직 Pending이다.
+- `1ce42c1…`에서 signed candidate APK 네 개와 revision 5 artifact 세트 생성은 성공했다.
+  이 세트는 유효한 pre-bridge build evidence로 수정 없이 보존한다.
+- active Stage 1/Random은 candidate device bridge를 통해 public policy·fingerprint·PEM
+  hash와 실제 APK signer를 동일 identity로 고정한다. historical revision 4 verifier는
+  유지되지만 active runner는 revision 4를 거부한다.
+- bridge commit으로 harness HEAD가 달라지므로 다음 단계는 새 final clean HEAD에서 wrapper를
+  처음부터 다시 실행해 APK 네 개와 revision 5 artifact set을 재생성하는 것이다.
+  S24 Gate와 사용자 smoothness 검증은 아직 Pending이다.
 
 사고 기록은 [SIGNING_INCIDENT_2026-07-27.md](SIGNING_INCIDENT_2026-07-27.md), 복구와
 백업 절차는 [SIGNING_RECOVERY_RUNBOOK.md](SIGNING_RECOVERY_RUNBOOK.md)를 따른다.

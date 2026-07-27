@@ -1325,7 +1325,7 @@ class CcrProductMacrobenchmark {
         private const val FIXTURE_1080_VFR = "1080p-vfr.mp4"
         private const val FIXTURE_1080_SWITCH_H264 = "1080p-switch-a.mp4"
         private const val FIXTURE_1080_SWITCH_HEVC = "1080p-switch-b.mp4"
-        private const val ARTIFACT_SET_REVISION = 4
+        private const val ARTIFACT_SET_REVISION = 5
         private const val EXPECTED_RUNTIME_SOURCE_SHA = "c98264f2a10026a908e94c961bb13e4af2d59e60"
         private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
             "3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468"
