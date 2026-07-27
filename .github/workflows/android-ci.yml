@@ -29,6 +29,7 @@ jobs:
     timeout-minutes: 30
     env:
       CCR_ANDROID_COMMIT_SHA: c98264f2a10026a908e94c961bb13e4af2d59e60
+      CCR_ANDROID_SIGNING_ROLE: CI_EPHEMERAL_DEBUG
 
     steps:
       - name: Check out repository
@@ -87,6 +88,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-s24-alpha6-pinned-artifacts.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-ccr-android-pilot-signing.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-alpha6-tail-contract.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-run-s24-alpha6-stage1.ps1
@@ -94,9 +97,20 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-run-s24-alpha6-random.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Test and build internal APK
+      - name: Test and build non-candidate internal APK
         working-directory: android
         run: .\gradlew.bat lintInternalDebug testInternalDebugUnitTest assembleInternalDebug assembleInternalDebugAndroidTest assembleInternalBenchmark :macrobenchmark:assembleInternalBenchmark --stacktrace
+
+      - name: Record non-candidate signing role
+        shell: powershell
+        run: |
+          @"
+          ## Android signing role
+          - role: `CI_EPHEMERAL_DEBUG`
+          - signed candidate: `false`
+          - S24 pinned manifest generation: `forbidden`
+          - candidate signing requires the external ccr-internal-pilot-v1 key preflight and is not performed in this workflow.
+          "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
 
       - name: Verify APK privacy contract
         run: |
@@ -107,7 +121,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v6
         with:
-          name: ccr-android-0.2.0-alpha.6-internal
+          name: ccr-android-0.2.0-alpha.6-ci-ephemeral-debug
           path: |
             android/app/build/outputs/apk/internal/debug/app-internal-debug.apk
             android/app/build/outputs/apk/internal/benchmark/app-internal-benchmark.apk
@@ -122,7 +136,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v6
         with:
-          name: ccr-android-0.2.0-alpha.6-test-tools
+          name: ccr-android-0.2.0-alpha.6-ci-ephemeral-test-tools
           path: |
             android/app/build/outputs/apk/androidTest/internal/debug/app-internal-debug-androidTest.apk
             android/macrobenchmark/build/outputs/apk/internal/benchmark/macrobenchmark-internal-benchmark.apk

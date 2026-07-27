@@ -1,0 +1,48 @@
+def candidateMode = System.getenv("CCR_ANDROID_CANDIDATE_MODE")
+def candidateNames = [
+    "CCR_ANDROID_CANDIDATE_KEYSTORE_PATH",
+    "CCR_ANDROID_CANDIDATE_KEYSTORE_PASSWORD",
+    "CCR_ANDROID_CANDIDATE_KEY_ALIAS",
+    "CCR_ANDROID_CANDIDATE_KEY_PASSWORD",
+    "CCR_ANDROID_CANDIDATE_EXPECTED_CERT_SHA256",
+]
+def candidateValues = candidateNames.collectEntries { [(it): System.getenv(it)] }
+def configuredCount = candidateValues.values().count { it != null && !it.trim().isEmpty() }
+
+if (candidateMode != "1" && configuredCount != 0) {
+    throw new GradleException("CANDIDATE_MODE_OPT_IN_REQUIRED")
+}
+if (candidateMode == "1" && configuredCount != candidateNames.size()) {
+    throw new GradleException("CANDIDATE_SIGNING_INPUT_INCOMPLETE")
+}
+if (candidateMode == "1" &&
+    !(candidateValues["CCR_ANDROID_CANDIDATE_EXPECTED_CERT_SHA256"] ==~ /[a-f0-9]{64}/)) {
+    throw new GradleException("CANDIDATE_EXPECTED_CERT_INVALID")
+}
+
+if (candidateMode == "1") {
+    gradle.beforeProject { project ->
+        ["com.android.application", "com.android.test"].each { pluginId ->
+            project.pluginManager.withPlugin(pluginId) {
+                def androidComponents = project.extensions.getByName("androidComponents")
+                androidComponents.finalizeDsl { android ->
+                    def candidate = android.signingConfigs.findByName("ccrCandidate")
+                    if (candidate == null) {
+                        candidate = android.signingConfigs.create("ccrCandidate")
+                    }
+                    candidate.storeFile = new File(candidateValues["CCR_ANDROID_CANDIDATE_KEYSTORE_PATH"])
+                    candidate.storePassword = candidateValues["CCR_ANDROID_CANDIDATE_KEYSTORE_PASSWORD"]
+                    candidate.keyAlias = candidateValues["CCR_ANDROID_CANDIDATE_KEY_ALIAS"]
+                    candidate.keyPassword = candidateValues["CCR_ANDROID_CANDIDATE_KEY_PASSWORD"]
+                    android.buildTypes.findAll { it.name in ["debug", "benchmark"] }.each {
+                        it.signingConfig = candidate
+                    }
+                    project.extensions.extraProperties.set(
+                        "ccrCandidateSigningLineage",
+                        "ccr-internal-pilot-v1",
+                    )
+                }
+            }
+        }
+    }
+}

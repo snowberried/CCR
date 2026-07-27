@@ -54,6 +54,18 @@ Codex, Browser, Windows, 권한, 샌드박스, `Path/PATH`, `node_repl`, Vite �
 
 ## 현재 기록
 
+## 2026-07-27 Android debug signer를 장기 candidate 신원으로 사용한 문제
+
+상태: 원인 검증 완료 / `ccr-internal-pilot-v1` signing baseline 검증 완료
+
+자동 생성되는 Android debug key를 Alpha 6까지 장기 검증 신원으로 상속해 private key
+재현이 불가능해졌다. 제품 runtime 결함이 아니라 signing identity 경계 결함이다.
+공통 재발 방지 원칙은 공용 troubleshooting의 같은 날짜 항목을 따르고, 이 프로젝트의
+인증서 식별자·historical evidence·새 lineage 결정은
+`android/signing/SIGNING_INCIDENT_2026-07-27.md`에만 기록한다.
+2026-07-28 KST에 새 primary와 두 backup, 공개 certificate·policy 검증을 완료했으며,
+다음 단계는 signed candidate APK 네 개와 revision 5 artifact 세트 생성이다.
+
 ## 2026-07-10 FFmpeg setup 스크립트와 Windows PowerShell 5
 
 상태: 검증 완료

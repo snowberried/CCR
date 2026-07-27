@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,6 +17,51 @@ const provider = readFileSync(
   "utf8",
 );
 const signingExample = readFileSync(resolve(androidRoot, "signing.properties.example"), "utf8");
+const candidateSigningCommon = readFileSync(
+  resolve(androidRoot, "scripts/ccr-android-pilot-signing-common.ps1"),
+  "utf8",
+);
+const candidateSigningInitializer = readFileSync(
+  resolve(androidRoot, "scripts/initialize-ccr-android-pilot-signing.ps1"),
+  "utf8",
+);
+const candidateSigningPreflight = readFileSync(
+  resolve(androidRoot, "scripts/verify-ccr-android-pilot-signing.ps1"),
+  "utf8",
+);
+const candidateBuild = readFileSync(
+  resolve(androidRoot, "scripts/build-s24-alpha6-candidate.ps1"),
+  "utf8",
+);
+const candidateArtifacts = readFileSync(
+  resolve(androidRoot, "scripts/s24-alpha6-candidate-artifacts.ps1"),
+  "utf8",
+);
+const candidateSigningTests = readFileSync(
+  resolve(androidRoot, "scripts/test-ccr-android-pilot-signing.ps1"),
+  "utf8",
+);
+const candidateSigningInit = readFileSync(
+  resolve(androidRoot, "gradle/candidate-signing.init.gradle"),
+  "utf8",
+);
+const candidateSigningReadme = readFileSync(resolve(androidRoot, "signing/README.md"), "utf8");
+const candidateSigningIncident = readFileSync(
+  resolve(androidRoot, "signing/SIGNING_INCIDENT_2026-07-27.md"),
+  "utf8",
+);
+const candidateSigningRunbook = readFileSync(
+  resolve(androidRoot, "signing/SIGNING_RECOVERY_RUNBOOK.md"),
+  "utf8",
+);
+const candidatePublicPolicyFiles = [
+  "signing/ccr-internal-pilot-v1-cert.pem",
+  "signing/ccr-internal-pilot-v1-cert.sha256",
+  "signing/ccr-internal-pilot-v1-policy.json",
+];
+const candidatePublicPolicyPresence = candidatePublicPolicyFiles.map((path) =>
+  existsSync(resolve(androidRoot, path)),
+);
 const gitignore = readFileSync(resolve(repoRoot, ".gitignore"), "utf8");
 const workflow = readFileSync(resolve(repoRoot, ".github/workflows/android-ci.yml"), "utf8");
 const gitAttributes = readFileSync(resolve(repoRoot, ".gitattributes"), "utf8");
@@ -214,18 +259,126 @@ for (const name of [
 }
 requireContract(!build.includes("CCR_ANDROID_KEYSTORE_"), "legacy generic signing environment boundary remains");
 requireContract(signingExample.includes("internalStoreFile="), "internal signing example is missing");
+requireContract(
+  signingExample.includes("NOT the ccr-internal-pilot-v1 candidate boundary"),
+  "historical internal signing example is not separated from candidate signing",
+);
+for (const name of [
+  "CCR_ANDROID_CANDIDATE_KEYSTORE_PATH",
+  "CCR_ANDROID_CANDIDATE_KEYSTORE_PASSWORD",
+  "CCR_ANDROID_CANDIDATE_KEY_ALIAS",
+  "CCR_ANDROID_CANDIDATE_KEY_PASSWORD",
+  "CCR_ANDROID_CANDIDATE_EXPECTED_CERT_SHA256",
+]) {
+  requireContract(
+    candidateSigningCommon.includes(name) && candidateSigningInit.includes(name),
+    `candidate signing environment boundary ${name}`,
+  );
+}
+requireContract(
+  candidateSigningInit.includes('candidateMode != "1"') &&
+    candidateSigningInit.includes("CANDIDATE_MODE_OPT_IN_REQUIRED") &&
+    candidateSigningInit.includes("ccrCandidate"),
+  "candidate signing Gradle opt-in is not fail-closed",
+);
+requireContract(
+  candidateSigningInitializer.includes("Read-Host") &&
+    candidateSigningInitializer.includes("-AsSecureString") &&
+    candidateSigningInitializer.includes("CANDIDATE_SIGNING_TARGET_ALREADY_EXISTS") &&
+    candidateSigningInitializer.includes("verifiedBackups=2"),
+  "secure candidate signing initializer contract is missing",
+);
+for (const failure of [
+  "CANDIDATE_KEYSTORE_MISSING",
+  "CANDIDATE_ALIAS_MISSING",
+  "CANDIDATE_PRIVATE_KEY_UNAVAILABLE",
+  "CANDIDATE_CERT_MISMATCH",
+  "CANDIDATE_PUBLIC_CERT_MISMATCH",
+  "CANDIDATE_BACKUP_MISSING",
+  "CANDIDATE_BACKUP_HASH_MISMATCH",
+  "CANDIDATE_SIGNING_NOT_READY",
+]) {
+  requireContract(
+    candidateSigningPreflight.includes(failure) ||
+      candidateSigningCommon.includes(failure),
+    `candidate signing preflight failure ${failure}`,
+  );
+}
+requireContract(
+  candidateBuild.includes('"--no-daemon"') &&
+    candidateBuild.includes("signingReport") &&
+    candidateBuild.includes("expectedStorePath") &&
+    candidateBuild.includes("artifact-manifest-v5.json") &&
+    candidateBuild.includes("SIGNED_CANDIDATE"),
+  "candidate build wrapper contract is incomplete",
+);
+requireContract(
+  candidateArtifacts.includes("artifactSetRevision") &&
+    candidateArtifacts.includes("signingLineage") &&
+    candidateArtifacts.includes("expectedSigningCertificateSha256") &&
+    candidateArtifacts.includes("CANDIDATE_MANIFEST_SIGNING_MODE_MISMATCH"),
+  "revision 5 candidate artifact verifier is incomplete",
+);
+requireContract(
+  candidateSigningTests.includes("ephemeral-debug-rejected") &&
+    candidateSigningTests.includes("mixed-signer-rejected") &&
+    candidateSigningTests.includes("alpha4-legacy-signer-preserved"),
+  "candidate signing host-negative coverage is incomplete",
+);
+requireContract(
+  candidateSigningReadme.includes("SIGNING_BASELINE_READY") &&
+    candidateSigningReadme.includes(
+      "3a995765c4cb2502815b5bff31afd11aba220874be83f525fcd5ee64ab007e2e",
+    ) &&
+    candidateSigningReadme.includes("verified backup count: `2`") &&
+    candidateSigningReadme.includes("ccr-internal-pilot-v1") &&
+    candidateSigningIncident.includes("LEGACY_ALPHA4_DEBUG_SIGNING_KEY_LOST") &&
+    candidateSigningRunbook.includes("password manager"),
+  "candidate public policy and recovery documentation is incomplete",
+);
+requireContract(
+  candidatePublicPolicyPresence.every(Boolean) ||
+    candidatePublicPolicyPresence.every((present) => !present),
+  "candidate public policy files must be committed as one complete set",
+);
+if (candidatePublicPolicyPresence.every(Boolean)) {
+  const publicFingerprint = readFileSync(
+    resolve(androidRoot, "signing/ccr-internal-pilot-v1-cert.sha256"),
+    "utf8",
+  ).trim();
+  const publicPolicy = JSON.parse(
+    readFileSync(resolve(androidRoot, "signing/ccr-internal-pilot-v1-policy.json"), "utf8"),
+  );
+  requireContract(
+    /^[a-f0-9]{64}\s+ccr-internal-pilot-v1-cert\.pem$/.test(publicFingerprint) &&
+      publicPolicy.status === "SIGNING_BASELINE_READY" &&
+      publicPolicy.signingLineage === "ccr-internal-pilot-v1" &&
+      publicPolicy.signingMode === "SIGNED_CANDIDATE" &&
+      publicPolicy.artifactSetRevision === 5 &&
+      publicPolicy.certificateSha256 === publicFingerprint.slice(0, 64) &&
+      publicPolicy.expectedSigningCertificateSha256 === publicFingerprint.slice(0, 64) &&
+      publicPolicy.keyAlgorithm === "RSA-4096",
+    "candidate public policy set is invalid",
+  );
+}
 requireContract(gitignore.split(/\r?\n/).includes("*.jks"), "recursive JKS ignore is missing");
 requireContract(gitignore.split(/\r?\n/).includes("*.keystore"), "recursive keystore ignore is missing");
 requireContract(gitignore.split(/\r?\n/).includes("signing.properties"), "recursive signing properties ignore is missing");
 requireContract(workflow.includes('      - "codex/android-*"'), "Android CI codex/android-* push filter is missing");
 requireContract(workflow.includes("fetch-depth: 0"), "Android CI does not fetch frozen runtime history");
 requireContract(
-  workflow.includes("name: ccr-android-0.2.0-alpha.6-internal"),
+  workflow.includes("name: ccr-android-0.2.0-alpha.6-ci-ephemeral-debug"),
   "Android CI artifact identity is stale",
 );
 requireContract(
-  workflow.includes("name: ccr-android-0.2.0-alpha.6-test-tools"),
+  workflow.includes("name: ccr-android-0.2.0-alpha.6-ci-ephemeral-test-tools"),
   "Android CI test-tool artifact identity is stale",
+);
+requireContract(
+  workflow.includes("CCR_ANDROID_SIGNING_ROLE: CI_EPHEMERAL_DEBUG") &&
+    workflow.includes("S24 pinned manifest generation: `forbidden`") &&
+    workflow.includes("test-ccr-android-pilot-signing.ps1"),
+  "Android CI is not explicitly non-candidate",
 );
 requireContract(
   workflow.includes("verify-representative-resolution-fixtures.mjs --manifest-only"),

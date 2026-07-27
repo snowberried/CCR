@@ -38,4 +38,7 @@ android/local.properties
 signing.properties
 *.jks
 *.keystore
+*.p12
+*.pfx
+*.key
 android/reports/

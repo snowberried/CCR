@@ -98,15 +98,29 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-batter
 
 ## 내부 파일럿 서명 경계
 
-`internalDebug`의 debug key는 생산 키가 아니다. 장기 파일럿용 `internalRelease`는 무시되는 `signing.properties` 또는 아래 환경변수 네 개를 모두 제공한 경우에만 서명된다.
+`internalDebug`의 standard debug key는 IDE 실행과 compile/test 전용 임시 신원이다.
+보존 artifact, S24 pinned candidate 또는 장기 파일럿 신원으로 사용하지 않는다.
+GitHub CI의 secret 없는 build도 `CI_EPHEMERAL_DEBUG`이며 candidate가 아니다.
 
-- `CCR_ANDROID_INTERNAL_KEYSTORE_PATH`
-- `CCR_ANDROID_INTERNAL_KEYSTORE_PASSWORD`
-- `CCR_ANDROID_INTERNAL_KEY_ALIAS`
-- `CCR_ANDROID_INTERNAL_KEY_PASSWORD`
+새 candidate signing lineage는 `ccr-internal-pilot-v1`, artifact set revision은 `5`다.
+candidate APK 네 개는 `build-s24-alpha6-candidate.ps1`을 통한 명시적 opt-in에서만 만들며
+다음 전용 입력을 모두 요구한다.
 
-로컬 property 이름은 `signing.properties.example`을 따른다. 값이 일부만 있으면 비밀값을 출력하지 않고 빌드를 중단한다. internal key와 Play production key를 공유하지 않으며, 이번 단계에서는 Play App Signing·AAB 업로드를 하지 않는다. `*.jks`, `*.keystore`, `signing.properties`는 Git에서 재귀적으로 제외된다.
+- `CCR_ANDROID_CANDIDATE_KEYSTORE_PATH`
+- `CCR_ANDROID_CANDIDATE_KEYSTORE_PASSWORD`
+- `CCR_ANDROID_CANDIDATE_KEY_ALIAS`
+- `CCR_ANDROID_CANDIDATE_KEY_PASSWORD`
+- `CCR_ANDROID_CANDIDATE_EXPECTED_CERT_SHA256`
 
+wrapper는 `--no-daemon`과 전용 Gradle init script를 사용해 `debugApp`, `debugTest`,
+`benchmarkApp`, `macrobenchmarkTest`에 같은 signer를 적용한다. key·공개 인증서·두
+backup preflight, `signingReport`, APK signer 일치와 revision 5 manifest 검증 중 하나라도
+실패하면 candidate를 만들지 않는다. 실제 key path·password는 tracked 파일에 기록하지
+않으며 internal-pilot key를 standard debug 또는 Play production key와 공유하지 않는다.
+자세한 정책은 [signing/README.md](signing/README.md)를 따른다.
+
+기존 `CCR_ANDROID_INTERNAL_*`과 `signing.properties`는 historical `internalRelease`
+경계이며 candidate build 입력이 아니다.
 ## 실제 비식별 MP4 수동 파일럿 체크리스트
 
 합성 fixture 자동 게이트와 별도다. 실제 비식별 파일을 저장소에 복사하지 말고, 파일 하나당 아래 표 한 행을 로컬 검증 기록에 작성한다.
@@ -168,4 +182,12 @@ Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다.
 
 ## Alpha 6 검증 상태
 
-renderer cache-hit 게시와 single-decoder rolling reverse refill, random 최종 실행 plan 진단, pinned artifact v4 host runner를 구현했다. 실기기 측정은 보류 상태이므로 S24 exactness·tail·random·사용자 smoothness와 장기 Gate는 모두 Pending이며 release 합격으로 간주하지 않는다. 구조와 동일-artifact 실행 순서는 [ALPHA6_REVERSE_REFILL_VALIDATION.md](validation/ALPHA6_REVERSE_REFILL_VALIDATION.md)에 기록한다.
+renderer cache-hit 게시와 single-decoder rolling reverse refill, random 최종 실행 plan 진단,
+historical pinned artifact v4 host runner를 구현했다. v4의 `49379c…` signer private key는
+복구되지 않았고 historical evidence로만 보존한다. 새 candidate는
+`ccr-internal-pilot-v1`과 revision 5를 사용한다. primary와 두 backup, 공개 policy 검증은
+완료됐고 certificate SHA-256은
+`3a995765c4cb2502815b5bff31afd11aba220874be83f525fcd5ee64ab007e2e`다.
+signed candidate APK 네 개 생성, S24 exactness·tail·random·사용자 smoothness와 장기 Gate는
+모두 Pending이며 release 합격으로 간주하지 않는다. 구조와 동일-artifact 실행 순서는
+[ALPHA6_REVERSE_REFILL_VALIDATION.md](validation/ALPHA6_REVERSE_REFILL_VALIDATION.md)에 기록한다.

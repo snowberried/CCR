@@ -17,6 +17,19 @@
 - 공통화는 데이터 모델, 검증 규칙, 좌표계, 프로젝트 schema처럼 의미가 같아야 하는 영역에 우선 적용한다.
 - 데스크탑 프레임 이동의 hot path에는 불필요한 IPC, JSON 직렬화, 프로세스 재실행, 과한 추상화 비용을 넣지 않는다.
 
+## Android 서명 신원
+
+- 자동 생성되는 Android standard debug key는 임시 개발 신원이다. 장기 파일럿,
+  보존 artifact, S24 pinned candidate 또는 release 신원으로 사용하지 않는다.
+- 장기 candidate는 versioned signing lineage, 저장소의 공개 인증서 fingerprint,
+  저장소 밖 private key와 서로 다른 두 backup을 가져야 한다.
+- candidate build는 명시적 opt-in, key·backup·public policy preflight와 모든 APK의
+  signer 일치를 통과해야 한다. 일반 debug 또는 `CI_EPHEMERAL_DEBUG` 결과를 candidate로
+  승격하지 않는다.
+- private key, password와 실제 secret 값은 저장소·문서·채팅·명령행·로그에 남기지 않는다.
+- key 분실 시 무제한 검색이나 임시 key 재생성으로 기존 신원을 가장하지 않는다.
+  historical evidence를 보존하고 명시적인 새 signing lineage로 전환한다.
+
 ## 작업 순서
 
 1. 이해: 요청과 기존 구조를 먼저 확인한다.

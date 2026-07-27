@@ -4,11 +4,17 @@
 
 Android `0.2.0-alpha.6` 제품 runtime의 exactness 수정과 역방향 cache-only 게시·rolling refill 구현은 소스와 원격 Draft PR에 보존됐다. S24 Stage 1 correctness는 최종 후보에서 7/7 통과했지만, 첫 reverse performance 시나리오는 정상적인 `cached probe miss → 동일 요청 actor fallback → 단일 publish`를 macrobenchmark가 금지해 fail-closed했다.
 
-해당 측정기 계약은 제품 runtime을 변경하지 않고 수정해 host 검증과 CI를 통과했다. 다만 수정된 macrobenchmark test APK의 첫 로컬 빌드는 기존 고정 APK와 다른 debug 인증서로 서명돼 폐기 대상이다. 동일 인증서 test APK 재생성, 새 artifact manifest v4, Stage 1 전체 재실행과 Random 250은 아직 Pending이다.
+해당 측정기 계약은 제품 runtime을 변경하지 않고 수정해 host 검증과 CI를 통과했다.
+후속 조사에서 기존 `49379c…` 인증서의 private key를 복구하지 못했으며, 자동 생성
+debug key를 장기 candidate identity로 사용한 구조가 반복 blocker의 원인으로 확정됐다.
+revision 4는 historical evidence로만 보존하고, 새 candidate는 전용
+`ccr-internal-pilot-v1`과 artifact set revision 5를 사용한다. 2026-07-28 KST에 primary와
+두 backup, 공개 certificate·policy 검증을 완료했다. signed candidate artifact 생성,
+Stage 1 전체 재실행과 Random 250은 아직 Pending이다.
 
 현재 판정은 다음과 같다.
 
-`BLOCKED_FOR_RELEASE — corrected measurement APK, full same-artifact Stage 1, Random 250, and final user smoothness review are pending.`
+`BLOCKED_FOR_RELEASE — SIGNING_BASELINE_READY; SIGNED_CANDIDATE_APKS, S24 STAGE 1, RANDOM 250, AND USER SMOOTHNESS REVIEW PENDING`
 
 ## Git과 원격 기준
 
@@ -65,9 +71,10 @@ Android `0.2.0-alpha.6` 제품 runtime의 exactness 수정과 역방향 cache-on
 - Android CI 두 실행: PASS
 - 제품 runtime 입력: 변경 없음
 
-## 보존된 제품 artifact
+## historical revision 4 제품 artifact 기록
 
-읽기 전용 보존 위치:
+과거 읽기 전용 보존 위치였으나 현재 해당 `C:\tmp` 디렉터리는 존재하지 않는다. 추가 검색이나
+복구를 시도하지 않으며 아래 값은 historical evidence 식별자로만 유지한다.
 
 `C:\tmp\CCR-Android-0.2.0-alpha.6-09af185f8d6f-20260727-003105`
 
@@ -153,9 +160,13 @@ Performance:
 
 `49379c1b2a2fec8a50c320955a7027c515aff10f28483b08ae9c27b3ffcfbef0`
 
-`C:\Users\snowb\.android\debug.keystore`의 `androiddebugkey`는 요구 인증서와 일치한다. 현재 build output은 인증서가 다르므로 manifest에 넣거나 실기기에 설치하지 않는다. 새 APK를 생성한 뒤 `apksigner verify --print-certs`로 `49379c…` 일치를 확인하기 전에는 다음 단계로 넘어가지 않는다.
+후속 읽기 전용 검사에서 현재 사용자 standard debug keystore의 인증서는
+`db0a604f8d02d5d82cf9a4f0d89f1ba31400578cb36ec50869214a698be414b0`으로 확인돼
+`49379c…`와 일치하지 않았다. `49379c…`, 현재 `db0a604f…`, 폐기 APK의 `4122e9cf…`는
+새 candidate signer로 사용하지 않는다. 상세 내용은
+`android/signing/SIGNING_INCIDENT_2026-07-27.md`를 따른다.
 
-## 재개 전 필수 preflight
+## 새 candidate 재개 전 필수 preflight
 
 ```powershell
 git branch --show-current
@@ -170,13 +181,23 @@ git diff --check
 - worktree와 index가 clean
 - runtime source가 `c98264f…`
 - runtime input tree가 `3c932c…`
-- 새 macrobenchmarkTest 인증서가 `49379c…`
-- debugApp/debugTest/benchmarkApp SHA가 위 표와 byte-for-byte 동일
+- `ccr-internal-pilot-v1` primary와 두 backup 검증 완료
+- 공개 인증서·fingerprint·policy와 JKS 인증서 일치
+- 공개 certificate SHA-256:
+  `3a995765c4cb2502815b5bff31afd11aba220874be83f525fcd5ee64ab007e2e`
+- 네 APK 모두 같은 새 signer 사용
+- artifact set revision 5와 `signingLineage=ccr-internal-pilot-v1`
 - 새 manifest의 `harnessSourceSha`가 재개 시점의 clean HEAD와 동일
 
-새 보존 세트에는 `artifact-manifest-v4.json`, `SHA256SUMS.txt`, `PROVENANCE.txt`를 만들고 전체 파일을 read-only로 설정한다. `PROVENANCE.txt`에는 제품 APK 3개는 재빌드하지 않았고 macrobenchmark test만 측정기 수정으로 교체했다는 사실을 기록한다.
+새 보존 세트에는 `artifact-manifest-v5.json`, `SHA256SUMS.txt`, `PROVENANCE.txt`를 만들고
+전체 파일을 read-only로 설정한다. `PROVENANCE.txt`에는
+`signingMode=SIGNED_CANDIDATE`, lineage와 revision을 기록한다. `C:\tmp`는 사용하지 않는다.
 
-## 실기기 실행 순서
+## historical revision 4 실기기 명령
+
+아래 revision 4 명령은 기존 증거의 재현 형식을 보존한 historical 기록이다. private key가
+없는 `49379c…` signer를 새로 만들거나 revision 5 candidate에 재사용하지 않는다. 새 signing
+baseline과 revision 5 runner 연결이 완료된 뒤 별도 검토를 거쳐야 한다.
 
 1. 새 artifact 세트로 Stage 1 `-PreflightOnly`
 2. 새 runId와 새 출력 디렉터리로 Stage 1 전체 실행

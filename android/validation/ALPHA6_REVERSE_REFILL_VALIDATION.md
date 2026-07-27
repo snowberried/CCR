@@ -9,7 +9,10 @@
 - runtime source: `c98264f2a10026a908e94c961bb13e4af2d59e60`
 - runtime input tree: `3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468`
 - version: `0.2.0-alpha.6` / versionCode `7`
-- artifact set: revision `4`
+- historical artifact set: revision `4`
+- new signed candidate policy: revision `5`, signing lineage `ccr-internal-pilot-v1`
+- signing baseline: `READY`, certificate SHA-256
+  `3a995765c4cb2502815b5bff31afd11aba220874be83f525fcd5ee64ab007e2e`
 - applicationId: `com.snowberried.ctcinereviewer.internal`
 
 Alpha 4·5 runtime manifest와 보존된 APK·S24 evidence는 변경하거나 재생성하지 않는다. Alpha 6 runtime manifest는 위 runtime commit의 40개 입력과 현재 worktree가 byte-for-byte 일치할 때만 통과한다.
@@ -85,7 +88,14 @@ Stage 1 재실행은 Pending이다. 첫 candidate APK·manifest·실패 보고�
 
 ## 동일 artifact 실행 순서
 
-최종 clean HEAD에서 APK 4개와 외부 artifact manifest v4를 만든 뒤 manifest 자체 SHA-256까지 고정한다. 실기기 실행 스크립트는 build/assemble을 호출하지 않으며 실행 전후 APK를 다시 해시한다. `<...>` 값은 외부 manifest 생성 후 확정된 절대 경로와 실제 hash로 바꾼다.
+revision 4와 `49379c…` signer는 historical evidence로만 보존한다. 새 candidate는 최종
+clean HEAD에서 전용 wrapper가 APK 4개에 `ccr-internal-pilot-v1` signer를 적용하고 외부
+artifact manifest v5를 만든 뒤 manifest 자체 SHA-256까지 고정한다. 일반 debug와
+`CI_EPHEMERAL_DEBUG` APK는 candidate로 허용하지 않는다. 실기기 실행 스크립트는
+build/assemble을 호출하지 않으며 실행 전후 APK를 다시 해시한다.
+
+아래 명령은 revision 4 historical runner 형식을 보존한 기록이다. signing baseline은
+확정됐으며, 새 revision 5 candidate 생성과 runner 연결은 다음 별도 검증에서 수행한다.
 
 두 runner는 ADB 호출 자체를 `MaxMinutes`에 묶고 제한시간에 도달한 process를 bounded cleanup 뒤 종료한다. 이전 작업의 잔존값인 `stay_on_while_plugged_in=15` 또는 `screen_off_timeout=600000`을 발견하면 원래 사용자값을 추측하지 않고 중단한다. 신뢰 가능한 원래값을 확인한 경우에만 `-OriginalStayAwakeSetting` 또는 `-OriginalScreenTimeoutSetting`으로 전달한다. 강제종료 후 `-Resume`에서는 첫 시도의 외부 device-settings preflight JSON에 고정된 복구 기준과 현재 값이 원래값·도구 적용값 조합으로만 이루어진 경우에 한해 먼저 복구하며, 제3의 값이 있으면 사용자 변경 가능성 때문에 fail-closed한다. 관찰값·복구 기준·실행 전 복구 여부는 시도별 외부 JSON에 남긴다.
 
