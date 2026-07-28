@@ -30,7 +30,7 @@ $root = Join-Path ([System.IO.Path]::GetTempPath()) "ccr-alpha6-candidate-bridge
 [System.IO.Directory]::CreateDirectory($root) | Out-Null
 try {
   $repo = Get-CcrCandidateRepoRoot
-  $runtimeSource = "1" * 40
+  $runtimeSource = "c98264f2a10026a908e94c961bb13e4af2d59e60"
   $harnessSource = "2" * 40
   $runtimeTree = "3" * 64
   $certificate = Get-CcrCandidatePublicPolicyFingerprint
@@ -81,6 +81,10 @@ try {
     runtimeSourceSha = $runtimeSource
     harnessSourceSha = $harnessSource
     runtimeInputsTreeSha256 = $runtimeTree
+    embeddedRuntimeSourceSha = [PSCustomObject]@{
+      debugApp = $runtimeSource
+      benchmarkApp = $runtimeSource
+    }
     versionName = "0.2.0-alpha.6"
     versionCode = 7
     syntheticOnly = $true
@@ -212,6 +216,18 @@ try {
   Assert-CcrAlpha6CandidateBridgeThrows {
     Invoke-CcrAlpha6CandidateBridgeTestPreflight -Manifest $missingMode | Out-Null
   } "PINNED_MANIFEST_PROPERTY_MISSING:signingMode" "missing-signing-mode-rejected"
+  $embeddedMismatch = Copy-CcrAlpha6CandidateBridgeValue $manifest
+  $embeddedMismatch.embeddedRuntimeSourceSha.debugApp = $otherCertificate.Substring(0, 40)
+  Assert-CcrAlpha6CandidateBridgeThrows {
+    Invoke-CcrAlpha6CandidateBridgeTestPreflight -Manifest $embeddedMismatch | Out-Null
+  } "CANDIDATE_MANIFEST_EMBEDDED_RUNTIME_IDENTITY_MISMATCH:debugApp" `
+    "manifest-embedded-runtime-mismatch-rejected"
+  $missingEmbedded = Copy-CcrAlpha6CandidateBridgeValue $manifest
+  $missingEmbedded.PSObject.Properties.Remove("embeddedRuntimeSourceSha")
+  Assert-CcrAlpha6CandidateBridgeThrows {
+    Invoke-CcrAlpha6CandidateBridgeTestPreflight -Manifest $missingEmbedded | Out-Null
+  } "PINNED_MANIFEST_PROPERTY_MISSING:embeddedRuntimeSourceSha" `
+    "missing-embedded-runtime-identity-rejected"
 
   $identityCases = @(
     [PSCustomObject]@{ name = "actual-signer"; role = "debugApp"; property = "signingCertificateSha256"; value = $otherCertificate; error = "PINNED_ARTIFACT_CERTIFICATE_MISMATCH:debugApp" },

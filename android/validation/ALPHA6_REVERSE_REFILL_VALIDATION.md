@@ -1,5 +1,33 @@
 # Android 0.2.0-alpha.6 역방향 refill·random tail 검증 계약
 
+## compiled runtime identity 선행 Gate
+
+실패 run `a6s1-274e5f6-200204`의 candidate APK에는
+`BuildConfig.COMMIT_SHA=274e5f679b635b09424af73577b4e90ec5fd0a4b`가 포함됐고,
+instrumentation이 요구한 runtime source는
+`c98264f2a10026a908e94c961bb13e4af2d59e60`이었다. app Gradle의 해석 순서는
+`CCR_ANDROID_COMMIT_SHA`, `GITHUB_SHA`, `git rev-parse HEAD`이며 CI는 이미 첫 값을
+frozen runtime으로 설정했다. local candidate wrapper의 전달 누락 때문에 harness HEAD가
+APK identity로 들어간 것이 원인이다.
+
+수정 계약은 다음과 같다.
+
+- candidate Gradle child의 `CCR_ANDROID_COMMIT_SHA`는 항상 frozen runtime source다.
+- 성공·실패 후 호출자 process 환경을 정확히 복원한다.
+- debugApp과 benchmarkApp의 실제 DEX `BuildConfig.COMMIT_SHA`를 artifact 생성 전에
+  `apkanalyzer`로 확인한다.
+- manifest `runtimeSourceSha`와 embedded 두 값은 frozen runtime이며,
+  `harnessSourceSha`만 최종 clean harness commit이다.
+- revision 5 importer는 embedded identity가 없거나 다르면 거부한다.
+- S24 identity smoke는 `ValidationHarnessV2.requireIdentity`만 실행하고 fixture, decode,
+  performance와 settings write를 수행하지 않는다.
+- Stage 1은 identity smoke PASS 증거 뒤에만 settings를 변경한다.
+
+실패 artifact
+`CCR-Android-0.2.0-alpha.6-274e5f6-20260728-150221`은 signer가 유효한 보존
+evidence지만 embedded runtime identity 불일치로 device Gate, Resume와 Random에 사용할
+수 없다. 이 closure에서 제품 runtime Kotlin, frozen input 40개와 threshold 변경은 0이다.
+
 이 문서는 Alpha 5에서 확인된 역방향 주기적 끊김과 random seek tail을 줄이기 위한 Alpha 6 구조, 고정 source 경계, 아직 실행하지 않은 S24 Gate를 기록한다. 실제 사용자 영상, 파일명, URI, 경로 또는 source hash는 기록하지 않는다.
 
 ## 고정 기준

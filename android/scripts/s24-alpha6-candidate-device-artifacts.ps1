@@ -133,6 +133,67 @@ function Assert-CcrAlpha6CandidateDeviceIdentityUnchanged {
   return $true
 }
 
+function Get-CcrAlpha6CandidateDeviceSettingsSnapshot {
+  param([Parameter(Mandatory = $true)][object]$Context)
+  return [PSCustomObject][ordered]@{
+    stayAwake = Get-CcrPinnedDeviceSetting $Context "global" "stay_on_while_plugged_in"
+    brightnessMode = Get-CcrPinnedDeviceSetting $Context "system" "screen_brightness_mode"
+    brightness = Get-CcrPinnedDeviceSetting $Context "system" "screen_brightness"
+    screenTimeout = Get-CcrPinnedDeviceSetting $Context "system" "screen_off_timeout"
+    accelerometerRotation = Get-CcrPinnedDeviceSetting $Context "system" "accelerometer_rotation"
+    userRotation = Get-CcrPinnedDeviceSetting $Context "system" "user_rotation"
+  }
+}
+
+function Invoke-CcrAlpha6CandidateIdentitySmokeInstrumentation {
+  param(
+    [Parameter(Mandatory = $true)][object]$Context,
+    [Parameter(Mandatory = $true)][string]$RunId,
+    [Parameter(Mandatory = $true)][string]$EvidenceDirectory
+  )
+  Assert-CcrPinnedRunId $RunId | Out-Null
+  $directory = [System.IO.Path]::GetFullPath($EvidenceDirectory)
+  if (-not (Test-CcrPinnedPathWithin $directory ([string]$Context.OutputDirectory))) {
+    throw "ALPHA6_IDENTITY_SMOKE_EVIDENCE_PATH_FORBIDDEN"
+  }
+  if (Test-Path -LiteralPath $directory) {
+    throw "ALPHA6_IDENTITY_SMOKE_EVIDENCE_ALREADY_EXISTS"
+  }
+  [System.IO.Directory]::CreateDirectory($directory) | Out-Null
+  Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $Context | Out-Null
+  Install-CcrPinnedArtifactSet $Context "Debug"
+  $invocation = Invoke-CcrPinnedInstrumentation `
+    -Context $Context `
+    -TestRole "debugTest" `
+    -ClassName (
+      "com.snowberried.ctcinereviewer.gate.Alpha6CandidateIdentitySmokeTest" +
+      "#candidateIdentityMatchesInstalledRevisionFiveArtifacts"
+    ) `
+    -RunId $RunId `
+    -ExpectedTestCount 1 `
+    -FailureReportPath (Join-Path $directory "failure-alpha6-candidate-identity-smoke-v1.json")
+  Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $Context | Out-Null
+  return [PSCustomObject][ordered]@{
+    status = "PASS"
+    kind = "alpha6-candidate-identity-smoke-instrumentation"
+    runId = $RunId
+    executedTestCount = 1
+    runtimeSourceSha = [string]$Context.ArtifactSet.RuntimeSourceSha
+    harnessSourceSha = [string]$Context.ArtifactSet.HarnessSourceSha
+    runtimeInputsTreeSha256 = [string]$Context.ArtifactSet.RuntimeInputsTreeSha256
+    artifactSetRevision =
+      [int](Get-CcrPinnedRequiredProperty $Context.ArtifactSet.Manifest "artifactSetRevision")
+    installedDebugAppSha256 = [string](Get-CcrPinnedArtifact $Context "debugApp").sha256
+    installedDebugTestSha256 = [string](Get-CcrPinnedArtifact $Context "debugTest").sha256
+    expectedSigningCertificateSha256 =
+      [string]$Context.PublicSigningIdentity.expectedSigningCertificateSha256
+    packageName = [string](Get-CcrPinnedArtifact $Context "debugApp").packageName
+    instrumentationPackageName = [string](Get-CcrPinnedArtifact $Context "debugTest").packageName
+    instrumentationOutput = [string]$invocation.Output
+    buildCommandCount = 0L
+  }
+}
+
 function Invoke-CcrAlpha6CandidateDeviceHostPreflight {
   param(
     [Parameter(Mandatory = $true)][string]$ArtifactManifest,

@@ -10,13 +10,29 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "verify-ccr-android-pilot-signing.ps1")
 . (Join-Path $PSScriptRoot "s24-alpha6-candidate-artifacts.ps1")
 
+$script:CcrAlpha6RuntimeSourceSha = "c98264f2a10026a908e94c961bb13e4af2d59e60"
+$script:CcrAlpha6RuntimeInputsTreeSha256 = "3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468"
+
+function Assert-CcrCandidateRuntimeSourceSha {
+  param([Parameter(Mandatory = $true)][string]$Value)
+  if ($Value -cnotmatch "^[a-f0-9]{40}$") { throw "CANDIDATE_RUNTIME_SOURCE_SHA_INVALID" }
+  if ($Value -cne $script:CcrAlpha6RuntimeSourceSha) { throw "CANDIDATE_RUNTIME_SOURCE_SHA_MISMATCH" }
+  return $Value
+}
+
 function Invoke-CcrCandidateGradle {
   param(
     [Parameter(Mandatory = $true)][string]$AndroidRoot,
-    [Parameter(Mandatory = $true)][string[]]$Arguments
+    [Parameter(Mandatory = $true)][string[]]$Arguments,
+    [scriptblock]$TestOnlyProcessInvoker = $null
   )
+  Assert-CcrCandidateRuntimeSourceSha $script:CcrAlpha6RuntimeSourceSha | Out-Null
+  if ($null -ne $TestOnlyProcessInvoker -and $env:CCR_CANDIDATE_BUILD_TEST_MODE -cne "1") {
+    throw "CANDIDATE_GRADLE_TEST_HOOK_FORBIDDEN"
+  }
   $environmentNames = @(
     "CCR_ANDROID_CANDIDATE_MODE",
+    "CCR_ANDROID_COMMIT_SHA",
     "CCR_ANDROID_INTERNAL_KEYSTORE_PATH",
     "CCR_ANDROID_INTERNAL_KEYSTORE_PASSWORD",
     "CCR_ANDROID_INTERNAL_KEY_ALIAS",
@@ -28,22 +44,72 @@ function Invoke-CcrCandidateGradle {
   }
   try {
     [Environment]::SetEnvironmentVariable("CCR_ANDROID_CANDIDATE_MODE", "1", "Process")
+    [Environment]::SetEnvironmentVariable(
+      "CCR_ANDROID_COMMIT_SHA",
+      $script:CcrAlpha6RuntimeSourceSha,
+      "Process"
+    )
     foreach ($name in $environmentNames | Where-Object { $_ -like "CCR_ANDROID_INTERNAL_*" }) {
       [Environment]::SetEnvironmentVariable($name, $null, "Process")
+    }
+    if ($null -ne $TestOnlyProcessInvoker) {
+      $result = & $TestOnlyProcessInvoker $AndroidRoot $Arguments
+      if ($null -eq $result -or
+          -not $result.PSObject.Properties["exitCode"] -or
+          -not $result.PSObject.Properties["output"]) {
+        throw "CANDIDATE_GRADLE_TEST_RESULT_INVALID"
+      }
+      return [PSCustomObject]@{ exitCode = [int]$result.exitCode; output = [string]$result.output }
     }
     Push-Location $AndroidRoot
     try {
       $lines = @(& (Join-Path $AndroidRoot "gradlew.bat") @Arguments 2>&1)
       $exitCode = [int]$LASTEXITCODE
-    } finally {
-      Pop-Location
-    }
+    } finally { Pop-Location }
     return [PSCustomObject]@{ exitCode = $exitCode; output = ($lines -join "`n") }
   } finally {
     foreach ($name in $environmentNames) {
       [Environment]::SetEnvironmentVariable($name, $previous[$name], "Process")
     }
   }
+}
+
+function Get-CcrCandidateEmbeddedRuntimeSourceSha {
+  param(
+    [Parameter(Mandatory = $true)][string]$ApkPath,
+    [Parameter(Mandatory = $true)][string]$ApkAnalyzer,
+    [scriptblock]$TestOnlyAnalyzerInvoker = $null
+  )
+  if (-not (Test-Path -LiteralPath $ApkPath -PathType Leaf)) {
+    throw "CANDIDATE_APK_MISSING"
+  }
+  if ($null -ne $TestOnlyAnalyzerInvoker -and $env:CCR_CANDIDATE_BUILD_TEST_MODE -cne "1") {
+    throw "CANDIDATE_APK_ANALYZER_TEST_HOOK_FORBIDDEN"
+  }
+  $arguments = @(
+    "dex", "code",
+    "--class", "com.snowberried.ctcinereviewer.BuildConfig",
+    [System.IO.Path]::GetFullPath($ApkPath)
+  )
+  if ($null -ne $TestOnlyAnalyzerInvoker) {
+    $result = & $TestOnlyAnalyzerInvoker $ApkAnalyzer $arguments
+  } else {
+    $lines = @(& $ApkAnalyzer @arguments 2>&1)
+    $result = [PSCustomObject]@{ exitCode = [int]$LASTEXITCODE; output = ($lines -join "`n") }
+  }
+  if ($null -eq $result -or [int]$result.exitCode -ne 0) {
+    throw "CANDIDATE_APK_RUNTIME_IDENTITY_INSPECTION_FAILED"
+  }
+  $matches = @([regex]::Matches(
+      [string]$result.output,
+      '(?m)^\.field public static final COMMIT_SHA:Ljava/lang/String; = "([a-f0-9]{40})"\s*$'
+    ))
+  if ($matches.Count -ne 1) { throw "CANDIDATE_APK_RUNTIME_IDENTITY_PARSE_FAILED" }
+  $runtimeSourceSha = $matches[0].Groups[1].Value
+  if ($runtimeSourceSha -cne $script:CcrAlpha6RuntimeSourceSha) {
+    throw "CANDIDATE_APK_RUNTIME_IDENTITY_MISMATCH"
+  }
+  return $runtimeSourceSha
 }
 
 function Assert-CcrCandidateBuildSigningReady {
@@ -144,7 +210,6 @@ function Invoke-CcrS24Alpha6CandidateBuild {
       (Get-Date -Format "yyyyMMdd-HHmmss")
   )
   if (Test-Path -LiteralPath $setDirectory) { throw "CANDIDATE_OUTPUT_ALREADY_EXISTS" }
-  [System.IO.Directory]::CreateDirectory($setDirectory) | Out-Null
 
   $sourceArtifacts = [ordered]@{
     debugApp = Join-Path $androidRoot "app\build\outputs\apk\internal\debug\app-internal-debug.apk"
@@ -153,6 +218,13 @@ function Invoke-CcrS24Alpha6CandidateBuild {
     macrobenchmarkTest = Join-Path $androidRoot "macrobenchmark\build\outputs\apk\internal\benchmark\macrobenchmark-internal-benchmark.apk"
   }
   $tools = Get-CcrPinnedAndroidSdkTools
+  $embeddedRuntimeSourceSha = [ordered]@{}
+  foreach ($role in @("debugApp", "benchmarkApp")) {
+    $embeddedRuntimeSourceSha[$role] = Get-CcrCandidateEmbeddedRuntimeSourceSha `
+      -ApkPath $sourceArtifacts[$role] `
+      -ApkAnalyzer $tools.ApkAnalyzer
+  }
+  [System.IO.Directory]::CreateDirectory($setDirectory) | Out-Null
   $records = [System.Collections.Generic.List[object]]::new()
   foreach ($entry in $sourceArtifacts.GetEnumerator()) {
     if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {
@@ -187,9 +259,10 @@ function Invoke-CcrS24Alpha6CandidateBuild {
     signingMode = "SIGNED_CANDIDATE"
     candidateSigning = $true
     expectedSigningCertificateSha256 = [string]$preflight.certificateSha256
-    runtimeSourceSha = "c98264f2a10026a908e94c961bb13e4af2d59e60"
+    runtimeSourceSha = $script:CcrAlpha6RuntimeSourceSha
     harnessSourceSha = $head[0]
-    runtimeInputsTreeSha256 = "3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468"
+    runtimeInputsTreeSha256 = $script:CcrAlpha6RuntimeInputsTreeSha256
+    embeddedRuntimeSourceSha = [PSCustomObject]$embeddedRuntimeSourceSha
     versionName = "0.2.0-alpha.6"
     versionCode = 7
     syntheticOnly = $true
@@ -223,8 +296,10 @@ function Invoke-CcrS24Alpha6CandidateBuild {
 signingMode=SIGNED_CANDIDATE
 signingLineage=$($script:CcrCandidateSigningLineage)
 artifactSetRevision=5
-runtimeSourceSha=c98264f2a10026a908e94c961bb13e4af2d59e60
+runtimeSourceSha=$($script:CcrAlpha6RuntimeSourceSha)
 harnessSourceSha=$($head[0])
+embeddedDebugAppRuntimeSourceSha=$($embeddedRuntimeSourceSha.debugApp)
+embeddedBenchmarkAppRuntimeSourceSha=$($embeddedRuntimeSourceSha.benchmarkApp)
 ciEphemeralDebug=false
 "@,
     [System.Text.UTF8Encoding]::new($false)

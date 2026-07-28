@@ -41,6 +41,16 @@ function Import-CcrAlpha6CandidateArtifactManifest {
       (Get-CcrPinnedRequiredProperty $manifest "candidateSigning") -ne $true) {
     throw "CANDIDATE_MANIFEST_SIGNING_MODE_MISMATCH"
   }
+  if ($ExpectedRuntimeSourceSha -cne "c98264f2a10026a908e94c961bb13e4af2d59e60") {
+    throw "CANDIDATE_RUNTIME_SOURCE_SHA_MISMATCH"
+  }
+  $embeddedRuntimeSourceSha = Get-CcrPinnedRequiredProperty $manifest "embeddedRuntimeSourceSha"
+  foreach ($role in @("debugApp", "benchmarkApp")) {
+    if ([string](Get-CcrPinnedRequiredProperty $embeddedRuntimeSourceSha $role) -cne
+        $ExpectedRuntimeSourceSha) {
+      throw "CANDIDATE_MANIFEST_EMBEDDED_RUNTIME_IDENTITY_MISMATCH:$role"
+    }
+  }
   $policyFingerprint = Get-CcrCandidatePublicPolicyFingerprint $FingerprintPath
   $declaredFingerprint = [string](Get-CcrPinnedRequiredProperty $manifest "expectedSigningCertificateSha256")
   if ($declaredFingerprint -cne $policyFingerprint) {

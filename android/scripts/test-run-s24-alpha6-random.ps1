@@ -462,7 +462,7 @@ $runnerRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ccr-alpha6-random-run
 $previousRandomTestMode = $env:CCR_ALPHA6_RANDOM_TEST_MODE
 $env:CCR_ALPHA6_RANDOM_TEST_MODE = "1"
 try {
-  $runnerRuntimeSource = "1" * 40
+  $runnerRuntimeSource = "c98264f2a10026a908e94c961bb13e4af2d59e60"
   $runnerHarnessSource = "2" * 40
   $runnerRuntimeTree = "3" * 64
   $runnerCertificate = Get-CcrCandidatePublicPolicyFingerprint
@@ -513,6 +513,10 @@ try {
     runtimeSourceSha = $runnerRuntimeSource
     harnessSourceSha = $runnerHarnessSource
     runtimeInputsTreeSha256 = $runnerRuntimeTree
+    embeddedRuntimeSourceSha = [PSCustomObject]@{
+      debugApp = $runnerRuntimeSource
+      benchmarkApp = $runnerRuntimeSource
+    }
     versionName = "0.2.0-alpha.6"
     versionCode = 7
     syntheticOnly = $true

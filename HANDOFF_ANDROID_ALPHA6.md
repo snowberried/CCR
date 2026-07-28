@@ -1,5 +1,35 @@
 # CT Cine Reviewer Android Alpha 6 Handoff
 
+## 2026-07-28 compiled runtime identity blocker와 재개 조건
+
+`a6s1-274e5f6-200204` Stage 1은 제품 runtime이나 decoder 결함이 아니라 candidate
+APK의 compiled identity 불일치로 correctness 첫 단계에서 fail-closed됐다. 실패한
+debug/benchmark APK의 `BuildConfig.COMMIT_SHA`는 harness HEAD
+`274e5f679b635b09424af73577b4e90ec5fd0a4b`였지만, 고정된 제품 runtime source는
+`c98264f2a10026a908e94c961bb13e4af2d59e60`이다. CI는 기존부터
+`CCR_ANDROID_COMMIT_SHA=c98264f2…`를 사용했으나 local candidate wrapper가 이 값을
+Gradle child에 전달하지 않은 것이 원인이다.
+
+실패 artifact
+`C:\Users\snowb\Documents\CCR-Artifacts\CCR-Android-0.2.0-alpha.6-274e5f6-20260728-150221`
+는 `VALID_SIGNED_ARTIFACT_EVIDENCE`이지만
+`REJECTED_FOR_DEVICE_GATE_DUE_TO_EMBEDDED_RUNTIME_IDENTITY_MISMATCH`이며 Resume 또는
+Random에 사용할 수 없다. manifest, APK, archive와 실패 evidence는 수정하지 않는다.
+
+candidate wrapper는 signingReport와 assemble 모두에 canonical
+`CCR_ANDROID_COMMIT_SHA=c98264f2…`를 설정하고 호출자 환경을 `finally`에서 복원한다.
+artifact 디렉터리를 만들기 전에 SDK `apkanalyzer dex code`로 debugApp과 benchmarkApp의
+실제 `BuildConfig.COMMIT_SHA`를 확인하며, manifest와 PROVENANCE에도 두 embedded identity를
+기록한다. `runtimeSourceSha`는 frozen 제품 runtime이고 `harnessSourceSha`는 최종 clean
+runner/test/docs commit이므로 두 값이 서로 다른 것이 정상이다.
+
+새 revision 5 artifact의 full Stage 1 전에는
+`run-s24-alpha6-identity-smoke.ps1`을 실행한다. 이 gate는
+`ValidationHarnessV2.requireIdentity`를 재사용하며 fixture, frame decode, performance와
+device setting 변경 없이 설치 APK/test SHA와 source identity를 확인한다. Stage 1 runner도
+같은 smoke PASS를 settings 초기화보다 먼저 요구한다. 제품 runtime Kotlin, frozen 40개
+입력과 performance threshold 변경은 0이다.
+
 ## 결론
 
 Android `0.2.0-alpha.6` 제품 runtime의 exactness 수정과 역방향 cache-only 게시·rolling refill 구현은 소스와 원격 Draft PR에 보존됐다. S24 Stage 1 correctness는 최종 후보에서 7/7 통과했지만, 첫 reverse performance 시나리오는 정상적인 `cached probe miss → 동일 요청 actor fallback → 단일 publish`를 macrobenchmark가 금지해 fail-closed했다.

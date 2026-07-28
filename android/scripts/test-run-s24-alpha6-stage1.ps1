@@ -92,7 +92,7 @@ $root = Join-Path ([System.IO.Path]::GetTempPath()) "ccr-alpha6-stage1-$PID-$([G
 $previousTestMode = $env:CCR_ALPHA6_STAGE1_TEST_MODE
 $env:CCR_ALPHA6_STAGE1_TEST_MODE = "1"
 try {
-  $runtimeSource = "1" * 40
+  $runtimeSource = "c98264f2a10026a908e94c961bb13e4af2d59e60"
   $harnessSource = "2" * 40
   $runtimeTree = "3" * 64
   $certificate = Get-CcrCandidatePublicPolicyFingerprint
@@ -139,6 +139,10 @@ try {
     runtimeSourceSha = $runtimeSource
     harnessSourceSha = $harnessSource
     runtimeInputsTreeSha256 = $runtimeTree
+    embeddedRuntimeSourceSha = [PSCustomObject]@{
+      debugApp = $runtimeSource
+      benchmarkApp = $runtimeSource
+    }
     versionName = "0.2.0-alpha.6"
     versionCode = 7
     syntheticOnly = $true
@@ -155,6 +159,15 @@ try {
     return $identities[[string]$Artifact.role]
   }.GetNewClosure()
   $sourceVerifier = { param($Repo, $Runtime, $Harness) return $true }
+  $identitySmokeExecutor = {
+    param($Context, $IdentityRunId, $EvidenceDirectory)
+    return [PSCustomObject]@{
+      status = "PASS"
+      runId = $IdentityRunId
+      artifactSetRevision = 5
+      buildCommandCount = 0L
+    }
+  }
 
   $parseErrors = $null
   [System.Management.Automation.Language.Parser]::ParseFile($runner, [ref]$null, [ref]$parseErrors) | Out-Null
@@ -490,6 +503,45 @@ try {
     & $runner @longRunId | Out-Null
   } "ALPHA6_STAGE1_RUN_ID_TOO_LONG" "performance-child-run-id-length-fails-fast"
 
+  $identityFailureOutput = Join-Path $root "identity-smoke-failure-output"
+  $identityFailureState = New-Alpha6FakeAdbState
+  $identityFailureAdb = New-Alpha6FakeAdbInvoker $identityFailureState
+  $identityFailureArgs = @{} + $preflightArgs
+  $identityFailureArgs.Remove("PreflightOnly")
+  $identityFailureArgs.OutputDirectory = $identityFailureOutput
+  $identityFailureArgs.RunId = "alpha6-stage1-identity-fail"
+  $identityFailureArgs.OriginalScreenTimeoutSetting = "120000"
+  $identityFailureArgs.TestOnlyAdbInvoker = $identityFailureAdb
+  $identityFailureArgs.TestOnlyIdentitySmokeExecutor = {
+    param($Context, $IdentityRunId, $EvidenceDirectory)
+    throw "SYNTHETIC_IDENTITY_SMOKE_FAILURE"
+  }
+  $identityFailureArgs.TestOnlyStageExecutor = {
+    param($Stage, $Context, $StageDirectory)
+    throw "STAGE_MUST_NOT_RUN_AFTER_IDENTITY_SMOKE_FAILURE"
+  }
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @identityFailureArgs | Out-Null
+  } "SYNTHETIC_IDENTITY_SMOKE_FAILURE" "identity-smoke-failure-propagates"
+  Assert-Alpha6Stage1Test (
+    @($identityFailureState.Commands | Where-Object { $_ -match ' shell settings (put|delete) ' }).Count -eq 0
+  ) "identity-smoke-failure-before-settings-mutation"
+  Assert-Alpha6Stage1Test (
+    -not (Test-Path -LiteralPath (
+      Join-Path $identityFailureOutput "checkpoint-alpha6-stage1-device-settings-alpha6-stage1-identity-fail.json"
+    ))
+  ) "identity-smoke-failure-has-no-device-settings-checkpoint"
+  $identityFailureReports = @(
+    Get-ChildItem -LiteralPath $identityFailureOutput -Filter "failure-alpha6-stage1-*.json" -File
+  )
+  $identityFailureReport = [System.IO.File]::ReadAllText(
+    $identityFailureReports[0].FullName,
+    [System.Text.Encoding]::UTF8
+  ) | ConvertFrom-Json
+  Assert-Alpha6Stage1Test (
+    [string]$identityFailureReport.phase -ceq "identity-smoke"
+  ) "identity-smoke-failure-phase-recorded"
+
   $failureOutput = Join-Path $root "correctness-failure-output"
   $failureLog = Join-Path $root "correctness-failure-stage-log.txt"
   $failureState = New-Alpha6FakeAdbState
@@ -507,6 +559,7 @@ try {
   $failureArgs.RunId = "alpha6-stage1-correctness-fail"
   $failureArgs.OriginalScreenTimeoutSetting = "120000"
   $failureArgs.TestOnlyAdbInvoker = $failureAdb
+  $failureArgs.TestOnlyIdentitySmokeExecutor = $identitySmokeExecutor
   $failureArgs.TestOnlyStageExecutor = $failureExecutor
   Assert-Alpha6Stage1ThrowsLike {
     & $runner @failureArgs | Out-Null
@@ -606,6 +659,10 @@ try {
       [string]$successSummary.technicalGateStatus -ceq "PASS" -and $successSummary.releaseEligible -eq $false) "success-status"
   Assert-Alpha6Stage1Test ($successSummary.auxiliaryDecoderUsed -eq $false -and [string]$successSummary.userReverseSmoothness -ceq "PENDING_USER") "stage1-single-decoder-user-pending"
   Assert-Alpha6Stage1Test ([long]$successSummary.buildCommandCount -eq 0L) "success-build-count-zero"
+  Assert-Alpha6Stage1Test (
+    [string]$successSummary.identitySmoke.status -ceq "PASS" -and
+      [long]$successSummary.identitySmoke.deviceSettingsMutationCount -eq 0L
+  ) "identity-smoke-pass-recorded-before-stages"
   $successCorrectnessCheckpoint = [System.IO.File]::ReadAllText(
     (Join-Path $successOutput "checkpoint-alpha6-stage1-correctness-alpha6-stage1-success.json"),
     [System.Text.Encoding]::UTF8

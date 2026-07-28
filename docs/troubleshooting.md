@@ -1,5 +1,48 @@
 # Project Troubleshooting
 
+## 2026-07-28 Alpha 6 candidate APK compiled runtime identity 불일치
+
+상태: 원인 검증 완료 / candidate build와 S24 선행 Gate 수정
+
+### 증상
+
+Stage 1 run `a6s1-274e5f6-200204`가 correctness 시작 즉시
+`instrumentation was compiled against a different runtime source`로 중단됐다.
+
+### 원인
+
+`app/build.gradle.kts`는 `CCR_ANDROID_COMMIT_SHA`, `GITHUB_SHA`, Git HEAD 순으로
+`BuildConfig.COMMIT_SHA`를 결정한다. CI는 frozen runtime
+`c98264f2a10026a908e94c961bb13e4af2d59e60`을 명시했지만 local candidate wrapper는
+이를 Gradle child에 전달하지 않았다. 따라서 실패 APK에는 harness HEAD
+`274e5f679b635b09424af73577b4e90ec5fd0a4b`가 들어갔다. 이는 decoder/runtime 결함이
+아니며 `ValidationHarnessV2`의 equality 검사는 올바르게 fail-closed한 것이다.
+
+### 해결 절차
+
+- wrapper의 signingReport와 assemble child에 canonical `CCR_ANDROID_COMMIT_SHA`를
+  설정하고 `finally`에서 호출자 값을 복원한다.
+- artifact 생성 전에 SDK `apkanalyzer dex code`로 debugApp과 benchmarkApp의 실제
+  `BuildConfig.COMMIT_SHA`를 읽어 frozen runtime과 비교한다.
+- manifest에 두 embedded runtime identity를 기록하고 revision 5 importer에서 검증한다.
+- full Stage 1 전에 fixture와 settings write가 없는 identity-only instrumentation을
+  실행하고, Stage 1도 이 PASS 뒤에만 settings를 변경한다.
+
+### 검증 방법
+
+- candidate signing/build environment host test: 28 PASS
+- revision 5 candidate bridge host test: 30 PASS
+- identity smoke runner host test: 19 PASS
+- Stage 1 host test: 112 PASS
+- Random host test: 24 PASS
+- 실제 실패 APK를 SDK `apkanalyzer`로 읽어 embedded
+  `274e5f679b635b09424af73577b4e90ec5fd0a4b`를 재확인
+- 제품 runtime Kotlin, frozen 40개 입력과 performance threshold 변경 0
+
+기존 실패 artifact는 `VALID_SIGNED_ARTIFACT_EVIDENCE`이지만
+`REJECTED_FOR_DEVICE_GATE_DUE_TO_EMBEDDED_RUNTIME_IDENTITY_MISMATCH`로 분류하고 수정,
+Resume, Random 또는 새 artifact와의 혼합을 금지한다.
+
 이 문서는 **CT Cine Reviewer 프로젝트에서만 발생하는 문제와 검증된 해결 방법**을 기록한다.
 
 ## 기록 범위

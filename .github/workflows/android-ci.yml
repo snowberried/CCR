@@ -94,6 +94,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-alpha6-tail-contract.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-run-s24-alpha6-identity-smoke.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-run-s24-alpha6-stage1.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\test-run-s24-alpha6-random.ps1

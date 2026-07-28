@@ -29,6 +29,8 @@ $savedEnvironment = @{}
 foreach ($name in $script:CcrCandidateEnvironmentNames) {
   $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
 }
+$savedCommitSha = [Environment]::GetEnvironmentVariable("CCR_ANDROID_COMMIT_SHA", "Process")
+$savedBuildTestMode = [Environment]::GetEnvironmentVariable("CCR_CANDIDATE_BUILD_TEST_MODE", "Process")
 try {
   $certificate = "a" * 64
   $otherCertificate = "b" * 64
@@ -203,7 +205,7 @@ try {
   [System.IO.File]::Delete($backup2Path)
   [System.IO.File]::Copy($primary, $backup2Path, $false)
 
-  $runtimeSource = "1" * 40
+  $runtimeSource = "c98264f2a10026a908e94c961bb13e4af2d59e60"
   $harnessSource = "2" * 40
   $runtimeTree = "3" * 64
   $roles = @(
@@ -249,6 +251,10 @@ try {
     runtimeSourceSha = $runtimeSource
     harnessSourceSha = $harnessSource
     runtimeInputsTreeSha256 = $runtimeTree
+    embeddedRuntimeSourceSha = [PSCustomObject]@{
+      debugApp = $runtimeSource
+      benchmarkApp = $runtimeSource
+    }
     versionName = "0.2.0-alpha.6"
     versionCode = 7
     syntheticOnly = $true
@@ -346,6 +352,104 @@ try {
       $initSource.Contains('"debug", "benchmark"') -and
       $initSource.Contains("ccrCandidate")) "gradle-opt-in-and-four-apk-signing-boundary"
 
+  $observedGradleEnvironment = [System.Collections.Generic.List[object]]::new()
+  $gradleInvoker = {
+    param($AndroidRoot, $Arguments)
+    $observedGradleEnvironment.Add([PSCustomObject]@{
+      arguments = @($Arguments)
+      runtimeSourceSha = [Environment]::GetEnvironmentVariable("CCR_ANDROID_COMMIT_SHA", "Process")
+      candidateMode = [Environment]::GetEnvironmentVariable("CCR_ANDROID_CANDIDATE_MODE", "Process")
+      internalKeyStore = [Environment]::GetEnvironmentVariable("CCR_ANDROID_INTERNAL_KEYSTORE_PATH", "Process")
+    }) | Out-Null
+    return [PSCustomObject]@{ exitCode = 0; output = "safe-gradle-output" }
+  }.GetNewClosure()
+  [Environment]::SetEnvironmentVariable("CCR_CANDIDATE_BUILD_TEST_MODE", "1", "Process")
+  [Environment]::SetEnvironmentVariable("CCR_ANDROID_COMMIT_SHA", "caller-runtime-source", "Process")
+  [Environment]::SetEnvironmentVariable("CCR_ANDROID_INTERNAL_KEYSTORE_PATH", $secretSentinel, "Process")
+  Invoke-CcrCandidateGradle -AndroidRoot $root -Arguments @("signingReport") `
+    -TestOnlyProcessInvoker $gradleInvoker | Out-Null
+  Invoke-CcrCandidateGradle -AndroidRoot $root -Arguments @("assembleInternalDebug") `
+    -TestOnlyProcessInvoker $gradleInvoker | Out-Null
+  Assert-CcrCandidateTest (
+    $observedGradleEnvironment.Count -eq 2 -and
+      @($observedGradleEnvironment | Where-Object {
+        $_.runtimeSourceSha -cne $script:CcrAlpha6RuntimeSourceSha -or
+          $_.candidateMode -cne "1" -or $null -ne $_.internalKeyStore
+      }).Count -eq 0
+  ) "signing-and-assemble-use-canonical-runtime-source"
+  Assert-CcrCandidateTest (
+    [Environment]::GetEnvironmentVariable("CCR_ANDROID_COMMIT_SHA", "Process") -ceq
+      "caller-runtime-source" -and
+      [Environment]::GetEnvironmentVariable("CCR_ANDROID_INTERNAL_KEYSTORE_PATH", "Process") -ceq
+        $secretSentinel
+  ) "existing-caller-environment-restored"
+
+  [Environment]::SetEnvironmentVariable("CCR_ANDROID_COMMIT_SHA", $null, "Process")
+  Invoke-CcrCandidateGradle -AndroidRoot $root -Arguments @("signingReport") `
+    -TestOnlyProcessInvoker $gradleInvoker | Out-Null
+  Assert-CcrCandidateTest (
+    $null -eq [Environment]::GetEnvironmentVariable("CCR_ANDROID_COMMIT_SHA", "Process")
+  ) "unset-caller-environment-restored"
+
+  $failingGradleInvoker = {
+    param($AndroidRoot, $Arguments)
+    throw "EXPECTED_GRADLE_TEST_FAILURE"
+  }
+  [Environment]::SetEnvironmentVariable("CCR_ANDROID_COMMIT_SHA", "restore-after-failure", "Process")
+  Assert-CcrCandidateThrows {
+    Invoke-CcrCandidateGradle -AndroidRoot $root -Arguments @("assembleInternalDebug") `
+      -TestOnlyProcessInvoker $failingGradleInvoker | Out-Null
+  } "EXPECTED_GRADLE_TEST_FAILURE" "gradle-failure-restores-environment"
+  Assert-CcrCandidateTest (
+    [Environment]::GetEnvironmentVariable("CCR_ANDROID_COMMIT_SHA", "Process") -ceq
+      "restore-after-failure"
+  ) "runtime-source-restored-after-gradle-failure"
+  Assert-CcrCandidateThrows {
+    Assert-CcrCandidateRuntimeSourceSha "not-a-sha" | Out-Null
+  } "CANDIDATE_RUNTIME_SOURCE_SHA_INVALID" "malformed-runtime-source-rejected"
+  Assert-CcrCandidateThrows {
+    Assert-CcrCandidateRuntimeSourceSha ("f" * 40) | Out-Null
+  } "CANDIDATE_RUNTIME_SOURCE_SHA_MISMATCH" "different-runtime-source-rejected"
+
+  $fakeApk = Join-Path $root "embedded-runtime.apk"
+  [System.IO.File]::WriteAllText($fakeApk, "fake-apk", [System.Text.UTF8Encoding]::new($false))
+  $matchingAnalyzer = {
+    param($Tool, $Arguments)
+    return [PSCustomObject]@{
+      exitCode = 0
+      output = ".field public static final COMMIT_SHA:Ljava/lang/String; = `"$script:CcrAlpha6RuntimeSourceSha`""
+    }
+  }
+  Assert-CcrCandidateTest (
+    (Get-CcrCandidateEmbeddedRuntimeSourceSha -ApkPath $fakeApk -ApkAnalyzer "fake" `
+      -TestOnlyAnalyzerInvoker $matchingAnalyzer) -ceq $script:CcrAlpha6RuntimeSourceSha
+  ) "actual-apk-runtime-identity-match"
+  $mismatchingAnalyzer = {
+    param($Tool, $Arguments)
+    return [PSCustomObject]@{
+      exitCode = 0
+      output = ".field public static final COMMIT_SHA:Ljava/lang/String; = `"$('f' * 40)`""
+    }
+  }
+  Assert-CcrCandidateThrows {
+    Get-CcrCandidateEmbeddedRuntimeSourceSha -ApkPath $fakeApk -ApkAnalyzer "fake" `
+      -TestOnlyAnalyzerInvoker $mismatchingAnalyzer | Out-Null
+  } "CANDIDATE_APK_RUNTIME_IDENTITY_MISMATCH" "actual-apk-runtime-identity-mismatch"
+  $malformedAnalyzer = {
+    param($Tool, $Arguments)
+    return [PSCustomObject]@{ exitCode = 0; output = "no BuildConfig identity" }
+  }
+  Assert-CcrCandidateThrows {
+    Get-CcrCandidateEmbeddedRuntimeSourceSha -ApkPath $fakeApk -ApkAnalyzer "fake" `
+      -TestOnlyAnalyzerInvoker $malformedAnalyzer | Out-Null
+  } "CANDIDATE_APK_RUNTIME_IDENTITY_PARSE_FAILED" "actual-apk-runtime-identity-missing"
+  Assert-CcrCandidateTest (
+    $script:CcrAlpha6RuntimeSourceSha -cne $harnessSource
+  ) "runtime-and-harness-source-are-distinct-identities"
+  Assert-CcrCandidateTest (
+    $secretSentinel -notin @($observedGradleEnvironment | ForEach-Object { $_.runtimeSourceSha })
+  ) "candidate-gradle-observation-does-not-expose-secret"
+
   Assert-CcrCandidateThrows {
     Assert-CcrCandidateBuildSigningReady `
       -BackupDirectory1 $backup1 `
@@ -360,6 +464,8 @@ try {
   foreach ($name in $script:CcrCandidateEnvironmentNames) {
     [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], "Process")
   }
+  [Environment]::SetEnvironmentVariable("CCR_ANDROID_COMMIT_SHA", $savedCommitSha, "Process")
+  [Environment]::SetEnvironmentVariable("CCR_CANDIDATE_BUILD_TEST_MODE", $savedBuildTestMode, "Process")
   if (Test-Path -LiteralPath $root) {
     Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
       ForEach-Object { $_.IsReadOnly = $false }

@@ -16,6 +16,7 @@ param(
   [Parameter(DontShow = $true)][scriptblock]$TestOnlyIdentityReader = $null,
   [Parameter(DontShow = $true)][scriptblock]$TestOnlySourceIdentityVerifier = $null,
   [Parameter(DontShow = $true)][scriptblock]$TestOnlyAdbInvoker = $null,
+  [Parameter(DontShow = $true)][scriptblock]$TestOnlyIdentitySmokeExecutor = $null,
   [Parameter(DontShow = $true)][scriptblock]$TestOnlyStageExecutor = $null
 )
 
@@ -34,7 +35,7 @@ $tailContractPath = Join-Path $PSScriptRoot "alpha6-tail-contract.ps1"
 
 $testHookUsed = $null -ne $TestOnlyAndroidTools -or $null -ne $TestOnlyIdentityReader -or
   $null -ne $TestOnlySourceIdentityVerifier -or $null -ne $TestOnlyAdbInvoker -or
-  $null -ne $TestOnlyStageExecutor
+  $null -ne $TestOnlyIdentitySmokeExecutor -or $null -ne $TestOnlyStageExecutor
 if ($testHookUsed -and $env:CCR_ALPHA6_STAGE1_TEST_MODE -cne "1") {
   throw "ALPHA6_STAGE1_TEST_HOOK_FORBIDDEN"
 }
@@ -173,6 +174,23 @@ function Assert-CcrAlpha6Stage1Identity {
   if (($Actual | ConvertTo-Json -Depth 30 -Compress) -cne ($expected | ConvertTo-Json -Depth 30 -Compress)) {
     throw "ALPHA6_STAGE1_RESUME_IDENTITY_MISMATCH"
   }
+  return $true
+}
+
+function Assert-CcrAlpha6Stage1IdentitySmokeCheckpoint {
+  param(
+    [Parameter(Mandatory = $true)][object]$Checkpoint,
+    [Parameter(Mandatory = $true)][object]$Context
+  )
+  $result = Get-CcrPinnedRequiredProperty $Checkpoint "result"
+  if ([string](Get-CcrPinnedRequiredProperty $Checkpoint "kind") -cne "alpha6-stage1-identity-smoke" -or
+      [string](Get-CcrPinnedRequiredProperty $Checkpoint "status") -cne "PASS" -or
+      [long](Get-CcrPinnedRequiredProperty $Checkpoint "deviceSettingsMutationCount") -ne 0L -or
+      [long](Get-CcrPinnedRequiredProperty $Checkpoint "buildCommandCount") -ne 0L -or
+      [string](Get-CcrPinnedRequiredProperty $result "status") -cne "PASS") {
+    throw "ALPHA6_STAGE1_IDENTITY_SMOKE_CHECKPOINT_INVALID"
+  }
+  Assert-CcrAlpha6Stage1Identity (Get-CcrPinnedRequiredProperty $Checkpoint "identity") $Context | Out-Null
   return $true
 }
 
@@ -931,6 +949,8 @@ if ($Resume) {
           (Get-CcrPinnedRequiredProperty $summary "containsRealMediaMetadata") -ne $false) {
         throw "ALPHA6_STAGE1_RESUME_SUMMARY_CONTRACT_MISMATCH"
       }
+      Assert-CcrAlpha6Stage1IdentitySmokeCheckpoint `
+        (Get-CcrPinnedRequiredProperty $summary "identitySmoke") $context | Out-Null
       if (-not (Test-Path -LiteralPath $correctnessCheckpointPath -PathType Leaf) -or
           -not (Test-Path -LiteralPath $performanceCheckpointPath -PathType Leaf)) {
         throw "ALPHA6_STAGE1_RESUME_COMPLETED_CHECKPOINT_MISSING"
@@ -960,7 +980,7 @@ if ($Resume) {
     originalStayAwakeSetting = $OriginalStayAwakeSetting
     originalScreenTimeoutSetting = $OriginalScreenTimeoutSetting
     identity = $identity
-    stageOrder = @("Correctness", "Performance")
+    stageOrder = @("IdentitySmoke", "Correctness", "Performance")
     resumeContract = "completed-stage-only; exact artifact, helper hash, source and device identity"
     correctnessFailureBlocksPerformance = $true
     buildCommandCount = 0L
@@ -981,7 +1001,7 @@ if ($PreflightOnly) {
     status = "PREFLIGHT_PASS"
     identity = $identity
     maxMinutes = $MaxMinutes
-    stageOrder = @("Correctness", "Performance")
+    stageOrder = @("IdentitySmoke", "Correctness", "Performance")
     plannedCorrectnessTestCount = 7
     plannedPerformanceScenarios = @(
       [ordered]@{ scenario = "1080p-hold-plus-one"; fixtureIdentity = "h264-bframes"; fixture = "1080p-h264-bframes.mp4"; stride = 1 },
@@ -1011,12 +1031,15 @@ if ($PreflightOnly) {
 $remoteTraceDirectories = [System.Collections.Generic.List[string]]::new()
 $cleanupFailures = [System.Collections.Generic.List[string]]::new()
 $settingsSaved = $false
-$currentPhase = "device-settings"
+$currentPhase = "identity-smoke"
 $primaryFailure = $null
+$identitySmokeCheckpoint = $null
 $correctnessCheckpoint = $null
 $performanceCheckpoint = $null
 $postRunArtifactRehash = $null
 $settingsPreflight = $null
+$identitySmokeSettingsBefore = $null
+$identitySmokeSettingsAfter = $null
 $resumeRestoreBaseline = $null
 if ($Resume) {
   $initialSettingsPath = Join-Path $context.OutputDirectory "checkpoint-alpha6-stage1-device-settings-$RunId.json"
@@ -1032,6 +1055,45 @@ if ($Resume) {
   }
 }
 try {
+  $identitySmokeSettingsBefore = Get-CcrAlpha6CandidateDeviceSettingsSnapshot $context
+  $identitySmokeDirectory = Join-Path $context.OutputDirectory "attempt-$hostPreflightRunId-stage-identity-smoke"
+  $identitySmokeResult = if ($null -ne $TestOnlyIdentitySmokeExecutor) {
+    & $TestOnlyIdentitySmokeExecutor $context "$RunId-id" $identitySmokeDirectory
+  } else {
+    Invoke-CcrAlpha6CandidateIdentitySmokeInstrumentation `
+      -Context $context `
+      -RunId "$RunId-id" `
+      -EvidenceDirectory $identitySmokeDirectory
+  }
+  if ($null -eq $identitySmokeResult -or [string]$identitySmokeResult.status -cne "PASS") {
+    throw "ALPHA6_STAGE1_IDENTITY_SMOKE_FAILED"
+  }
+  $identitySmokeSettingsAfter = Get-CcrAlpha6CandidateDeviceSettingsSnapshot $context
+  if (($identitySmokeSettingsBefore | ConvertTo-Json -Compress) -cne
+      ($identitySmokeSettingsAfter | ConvertTo-Json -Compress)) {
+    throw "DEVICE_SETTINGS_MUTATED_DURING_IDENTITY_SMOKE"
+  }
+  Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $context | Out-Null
+  $identitySmokeCheckpoint = [PSCustomObject][ordered]@{
+    schemaVersion = 1
+    kind = "alpha6-stage1-identity-smoke"
+    status = "PASS"
+    runId = $RunId
+    attemptRunId = $hostPreflightRunId
+    identity = $identity
+    result = $identitySmokeResult
+    deviceSettingsBefore = $identitySmokeSettingsBefore
+    deviceSettingsAfter = $identitySmokeSettingsAfter
+    deviceSettingsMutationCount = 0L
+    buildCommandCount = 0L
+  }
+  Assert-CcrAlpha6Stage1IdentitySmokeCheckpoint $identitySmokeCheckpoint $context | Out-Null
+  $identitySmokeCheckpointPath = Join-Path $context.OutputDirectory (
+    "checkpoint-alpha6-stage1-identity-smoke-$hostPreflightRunId.json"
+  )
+  Write-CcrAlpha6Stage1ImmutableJson $identitySmokeCheckpointPath $identitySmokeCheckpoint | Out-Null
+
+  $currentPhase = "device-settings"
   $settingsSaved = $true
   $settingsPreflight = Initialize-CcrAlpha6PinnedDeviceSettings `
     -Context $context `
@@ -1145,6 +1207,16 @@ try {
     try { Assert-CcrAlpha6Stage1SettingsRestored $context | Out-Null } catch {
       $cleanupFailures.Add("SETTINGS_RESTORE:$($_.Exception.Message)") | Out-Null
     }
+  } elseif ($currentPhase -ceq "identity-smoke" -and $null -ne $identitySmokeSettingsBefore) {
+    try {
+      $identitySmokeSettingsAfter = Get-CcrAlpha6CandidateDeviceSettingsSnapshot $context
+      if (($identitySmokeSettingsBefore | ConvertTo-Json -Compress) -cne
+          ($identitySmokeSettingsAfter | ConvertTo-Json -Compress)) {
+        $cleanupFailures.Add("DEVICE_SETTINGS_MUTATED_DURING_IDENTITY_SMOKE") | Out-Null
+      }
+    } catch {
+      $cleanupFailures.Add("IDENTITY_SMOKE_SETTINGS_READBACK:$($_.Exception.Message)") | Out-Null
+    }
   }
   try { Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $context | Out-Null } catch {
     $cleanupFailures.Add("FINAL_ARTIFACT_REHASH:$($_.Exception.Message)") | Out-Null
@@ -1174,6 +1246,7 @@ $summary = [ordered]@{
   releaseEligible = $false
   identity = $identity
   maxMinutes = $MaxMinutes
+  identitySmoke = $identitySmokeCheckpoint
   correctness = $correctnessCheckpoint
   performance = $performanceCheckpoint
   deviceSettingsPreflight = $settingsPreflight

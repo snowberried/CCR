@@ -198,6 +198,21 @@ const alpha6RandomTests = readFileSync(
   resolve(androidRoot, "scripts/test-run-s24-alpha6-random.ps1"),
   "utf8",
 );
+const alpha6IdentitySmokeRunner = readFileSync(
+  resolve(androidRoot, "scripts/run-s24-alpha6-identity-smoke.ps1"),
+  "utf8",
+);
+const alpha6IdentitySmokeTests = readFileSync(
+  resolve(androidRoot, "scripts/test-run-s24-alpha6-identity-smoke.ps1"),
+  "utf8",
+);
+const alpha6IdentitySmokeInstrumentation = readFileSync(
+  resolve(
+    androidRoot,
+    "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/Alpha6CandidateIdentitySmokeTest.kt",
+  ),
+  "utf8",
+);
 const alpha6RandomEvidence = [
   "Alpha5RandomSeekExactnessTest.kt",
   "Alpha5RandomSeekPerformanceTest.kt",
@@ -317,20 +332,32 @@ requireContract(
     candidateBuild.includes("signingReport") &&
     candidateBuild.includes("expectedStorePath") &&
     candidateBuild.includes("artifact-manifest-v5.json") &&
-    candidateBuild.includes("SIGNED_CANDIDATE"),
+    candidateBuild.includes("SIGNED_CANDIDATE") &&
+    candidateBuild.includes(
+      '$script:CcrAlpha6RuntimeSourceSha = "c98264f2a10026a908e94c961bb13e4af2d59e60"',
+    ) &&
+    candidateBuild.includes('"CCR_ANDROID_COMMIT_SHA"') &&
+    candidateBuild.includes("Get-CcrCandidateEmbeddedRuntimeSourceSha") &&
+    candidateBuild.includes("com.snowberried.ctcinereviewer.BuildConfig") &&
+    candidateBuild.includes("embeddedRuntimeSourceSha"),
   "candidate build wrapper contract is incomplete",
 );
 requireContract(
   candidateArtifacts.includes("artifactSetRevision") &&
     candidateArtifacts.includes("signingLineage") &&
     candidateArtifacts.includes("expectedSigningCertificateSha256") &&
+    candidateArtifacts.includes("embeddedRuntimeSourceSha") &&
+    candidateArtifacts.includes("CANDIDATE_MANIFEST_EMBEDDED_RUNTIME_IDENTITY_MISMATCH") &&
     candidateArtifacts.includes("CANDIDATE_MANIFEST_SIGNING_MODE_MISMATCH"),
   "revision 5 candidate artifact verifier is incomplete",
 );
 requireContract(
-  candidateSigningTests.includes("ephemeral-debug-rejected") &&
+    candidateSigningTests.includes("ephemeral-debug-rejected") &&
     candidateSigningTests.includes("mixed-signer-rejected") &&
-    candidateSigningTests.includes("alpha4-legacy-signer-preserved"),
+    candidateSigningTests.includes("alpha4-legacy-signer-preserved") &&
+    candidateSigningTests.includes("signing-and-assemble-use-canonical-runtime-source") &&
+    candidateSigningTests.includes("existing-caller-environment-restored") &&
+    candidateSigningTests.includes("actual-apk-runtime-identity-mismatch"),
   "candidate signing host-negative coverage is incomplete",
 );
 requireContract(
@@ -417,6 +444,7 @@ for (const scriptName of [
   "test-s24-alpha6-pinned-artifacts.ps1",
   "test-s24-alpha6-candidate-device-artifacts.ps1",
   "test-alpha6-tail-contract.ps1",
+  "test-run-s24-alpha6-identity-smoke.ps1",
   "test-run-s24-alpha6-stage1.ps1",
   "test-run-s24-alpha6-random.ps1",
 ]) {
@@ -677,9 +705,33 @@ requireContract(
 requireContract(
   alpha6Stage1Tests.includes("Alpha 6 Stage 1 host-only tests passed") &&
     alpha6Stage1Tests.includes("revision5-signing-identity-recorded") &&
+    alpha6Stage1Tests.includes("identity-smoke-failure-before-settings-mutation") &&
+    alpha6IdentitySmokeTests.includes("Alpha 6 identity smoke runner host tests passed") &&
+    alpha6IdentitySmokeTests.includes("runner-never-writes-settings") &&
+    alpha6IdentitySmokeTests.includes("wrong-test-sha-rejected") &&
     alpha6RandomTests.includes("Alpha6 random runner host tests passed") &&
     alpha6RandomTests.includes("revision5-runner-preflight-and-resume"),
   "Alpha 6 runner host-negative tests are incomplete",
+);
+for (const marker of [
+  "Invoke-CcrAlpha6CandidateDeviceHostPreflight",
+  "Invoke-CcrAlpha6CandidateIdentitySmokeInstrumentation",
+  "Get-CcrAlpha6CandidateDeviceSettingsSnapshot",
+  "DEVICE_SETTINGS_MUTATED_DURING_IDENTITY_SMOKE",
+  "preRunPublicSigningIdentity",
+  "postRunPublicSigningIdentity",
+  "deviceSettingsMutationCount = 0L",
+  "buildCommandCount = 0L",
+]) {
+  requireContract(
+    alpha6IdentitySmokeRunner.includes(marker),
+    `Alpha 6 identity smoke runner missing ${marker}`,
+  );
+}
+requireContract(
+  alpha6IdentitySmokeInstrumentation.includes("ValidationHarnessV2.requireIdentity") &&
+    !/fixture|decode|performance/i.test(alpha6IdentitySmokeInstrumentation),
+  "Alpha 6 identity smoke instrumentation is not identity-only",
 );
 for (const marker of [
   "measuredWindowBuildAssociatedLongGapCount",
@@ -692,10 +744,19 @@ for (const marker of [
   "ALPHA6_STAGE1_RESUME_SUMMARY_CONTRACT_MISMATCH",
   "ALPHA6_STAGE1_RESUME_PREFLIGHT_SUMMARY_CONTRACT_MISMATCH",
   'checkpoint-alpha6-stage1-device-settings-$hostPreflightRunId.json',
+  "Invoke-CcrAlpha6CandidateIdentitySmokeInstrumentation",
+  "DEVICE_SETTINGS_MUTATED_DURING_IDENTITY_SMOKE",
   '"h264-bframes.mp4", "long-gop.mp4", "hevc-main8.mp4", "vfr.mp4"',
 ]) {
   requireContract(alpha6Stage1Runner.includes(marker), `Alpha 6 Stage 1 contract missing ${marker}`);
 }
+requireContract(
+  alpha6Stage1Runner.indexOf("Invoke-CcrAlpha6CandidateIdentitySmokeInstrumentation") <
+    alpha6Stage1Runner.indexOf("Initialize-CcrAlpha6PinnedDeviceSettings") &&
+    alpha6Stage1Runner.indexOf("Invoke-CcrAlpha6CandidateIdentitySmokeInstrumentation") <
+      alpha6Stage1Runner.indexOf('Set-CcrPinnedDeviceSetting $context "global"'),
+  "Alpha 6 Stage 1 identity smoke is not before device settings mutation",
+);
 for (const marker of [
   "ALPHA6_RANDOM_STAGE2_NOT_IMPLEMENTED",
   "ALPHA6_RANDOM_TARGET_SET_IDENTITY_MISMATCH",
