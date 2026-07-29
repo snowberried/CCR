@@ -74,6 +74,7 @@ class S24RepresentativeResolutionAccuracyTest {
     private var writeOpenCount = 0
     private lateinit var identity: ValidationHarnessIdentity
     private var startedAtElapsedRealtimeNs = 0L
+    private var surfaceFailureEvidence: JSONObject? = null
 
     @Test
     fun representativeResolutionExactSubsetRemainsExact() {
@@ -87,20 +88,20 @@ class S24RepresentativeResolutionAccuracyTest {
         val fixtureReports = JSONArray()
         val outcome = runCatching {
             ActivityScenario.launch(GateActivity::class.java).use { scenario ->
-                val activity = AtomicReference<GateActivity>()
-                val ready = CountDownLatch(1)
-                scenario.onActivity {
-                    activity.set(it)
-                    ready.countDown()
-                }
-                assertTrue("GateActivity unavailable", ready.await(5, TimeUnit.SECONDS))
-                val gate = activity.get()
-                assertTrue("EGL Surface unavailable", gate.awaitSurface())
-                for (name in REQUIRED_FIXTURES) {
-                    val golden = loadGolden(name)
-                    assertEquals(golden.sourceSha256, assetSha256(golden.fixture))
-                    val plan = selectionPlan(golden)
-                    fixtureReports.put(exerciseFixture(gate, golden, plan))
+                val stableGate = Alpha6StableGateActivity(scenario)
+                try {
+                    stableGate.awaitStableCurrent()
+                    for (name in REQUIRED_FIXTURES) {
+                        val golden = loadGolden(name)
+                        assertEquals(golden.sourceSha256, assetSha256(golden.fixture))
+                        val plan = selectionPlan(golden)
+                        fixtureReports.put(exerciseFixture(stableGate, golden, plan))
+                    }
+                } catch (failure: Throwable) {
+                    surfaceFailureEvidence = stableGate.failureEvidenceJson(
+                        failure = failure,
+                    )
+                    throw failure
                 }
             }
             writeOpenCount = ReadOnlyFixtureProvider.writeOpenCount.get()
@@ -112,12 +113,13 @@ class S24RepresentativeResolutionAccuracyTest {
     }
 
     private fun exerciseFixture(
-        activity: GateActivity,
+        stableGate: Alpha6StableGateActivity,
         golden: Golden,
         plan: SelectionPlan,
     ): JSONObject {
-        activity.clearResults()
-        onMain(activity) { activity.openFixture(uri(golden.fixture)) }
+        val activity = stableGate.openFixtureAfterStableAction(uri(golden.fixture)) {
+            it.clearResults()
+        }.activity
         val indexed = requireNotNull(activity.awaitIndex(30)) { "${golden.fixture}: INDEX_TIMEOUT" }
         val metadata = requireNotNull(activity.awaitMetadata(30)) { "${golden.fixture}: METADATA_TIMEOUT" }
         validateIndex(golden, indexed)
@@ -479,9 +481,24 @@ class S24RepresentativeResolutionAccuracyTest {
             instrumentationExpectedTestCount = 1,
         )
         outcome.exceptionOrNull()?.let {
+            val surfaceFailure = requireNotNull(surfaceFailureEvidence) {
+                "SURFACE_FAILURE_EVIDENCE_MISSING"
+            }
             report.put("failure", JSONObject()
                 .put("type", it.javaClass.simpleName)
-                .put("code", it.message?.takeIf { message -> message.matches(ERROR_PATTERN) } ?: "UNCLASSIFIED"))
+                .put("code", it.message?.takeIf { message -> message.matches(ERROR_PATTERN) } ?: "UNCLASSIFIED")
+                .put("classification", surfaceFailure.getString("classification"))
+                .put("stageCode", surfaceFailure.getString("stageCode"))
+                .put("exceptionClass", surfaceFailure.getString("exceptionClass"))
+                .put("sanitizedDetail", surfaceFailure.getString("sanitizedDetail"))
+                .put(
+                    "providerOrExtractorEntered",
+                    surfaceFailure.getBoolean("providerOrExtractorEntered"),
+                )
+                .put(
+                    "activitySurfaceEvidence",
+                    surfaceFailure.getJSONObject("activitySurfaceEvidence"),
+                ))
         }
         File(context.filesDir, REPORT_FILE).writeText(report.toString(2))
     }

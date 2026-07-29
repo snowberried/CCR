@@ -208,6 +208,8 @@ function Invoke-CcrAlpha6CandidateIdentitySmokeInstrumentation {
       [string]$Context.PublicSigningIdentity.expectedSigningCertificateSha256
     packageName = [string](Get-CcrPinnedArtifact $Context "debugApp").packageName
     instrumentationPackageName = [string](Get-CcrPinnedArtifact $Context "debugTest").packageName
+    debugArtifactInstallSetCount = 1L
+    debugArtifactInstallCommandCount = 2L
     instrumentationOutput = [string]$invocation.Output
     buildCommandCount = 0L
   }
@@ -562,6 +564,299 @@ function Invoke-CcrAlpha6CandidateFixtureOpenInstrumentation {
     fullFrameDecodeCount = 0L
     performanceScenarioCount = 0L
   }
+}
+
+function Assert-CcrAlpha6RenderOpenReport {
+  param(
+    [Parameter(Mandatory = $true)][object]$Report,
+    [Parameter(Mandatory = $true)][object]$Context,
+    [Parameter(Mandatory = $true)][string]$RunId,
+    [Parameter(Mandatory = $true)][ValidateSet("PASS", "FAIL")][string]$ExpectedStatus,
+    [long]$MinimumStartedAtElapsedRealtimeNs = 0
+  )
+  Assert-CcrPinnedReport `
+    -Report $Report -ArtifactSet $Context.ArtifactSet -RunId $RunId `
+    -AppRole "debugApp" -TestRole "debugTest" `
+    -MinimumStartedAtElapsedRealtimeNs $MinimumStartedAtElapsedRealtimeNs `
+    -ExpectedKind "alpha6-render-open-smoke" -ExpectedStatus $ExpectedStatus | Out-Null
+  $app = Get-CcrPinnedArtifact $Context "debugApp"
+  $device = Get-CcrPinnedRequiredProperty $Report "device"
+  if ([int](Get-CcrPinnedRequiredProperty $Report "schemaVersion") -ne 1 -or
+      [string](Get-CcrPinnedRequiredProperty $Report "fixture") -cne "h264-ip.mp4" -or
+      [string](Get-CcrPinnedRequiredProperty $Report "applicationId") -cne
+        [string]$app.packageName -or
+      [string](Get-CcrPinnedRequiredProperty $Report "appVersionName") -cne
+        [string]$app.versionName -or
+      [long](Get-CcrPinnedRequiredProperty $Report "appVersionCode") -ne
+        [long]$app.versionCode -or
+      [string](Get-CcrPinnedRequiredProperty $device "manufacturer") -cne "samsung" -or
+      [string](Get-CcrPinnedRequiredProperty $device "model") -cne [string]$Context.Model -or
+      [string](Get-CcrPinnedRequiredProperty $device "fingerprint") -cne
+        [string]$Context.Fingerprint -or
+      [string](Get-CcrPinnedRequiredProperty $device "securityPatch") -cne
+        [string]$Context.SecurityPatch -or
+      [int](Get-CcrPinnedRequiredProperty $device "sdk") -ne [int]$Context.Sdk -or
+      [long](Get-CcrPinnedRequiredProperty $Report "stableIntervalMs") -ne 300L -or
+      [long](Get-CcrPinnedRequiredProperty $Report "writeOpenCount") -ne 0L -or
+      [long](Get-CcrPinnedRequiredProperty $Report "performanceScenarioCount") -ne 0L) {
+    throw "ALPHA6_RENDER_OPEN_REPORT_IDENTITY_OR_ZERO_CONTRACT_MISMATCH"
+  }
+  $evidence = Get-CcrPinnedRequiredProperty $Report "activitySurfaceEvidence"
+  foreach ($name in @("beforeOpen", "afterOpen", "statusSequence")) {
+    if (-not (Test-CcrPinnedProperty $evidence $name)) {
+      throw "ALPHA6_RENDER_OPEN_SURFACE_EVIDENCE_MISSING:$name"
+    }
+  }
+  if ($ExpectedStatus -ceq "FAIL") {
+    $failure = Get-CcrPinnedRequiredProperty $Report "failure"
+    $classification = [string](Get-CcrPinnedRequiredProperty $failure "classification")
+    if ($classification -notin @(
+        "SURFACE_NOT_STABLE_BEFORE_OPEN",
+        "SURFACE_LOST_DURING_OPEN",
+        "STALE_ACTIVITY_INSTANCE",
+        "PROVIDER_OR_EXTRACTOR_OPEN_FAILURE",
+        "DECODER_SURFACE_UNAVAILABLE",
+        "UNCLASSIFIED_AFTER_STABLE_SURFACE"
+      )) {
+      throw "ALPHA6_RENDER_OPEN_FAILURE_CLASSIFICATION_INVALID:$classification"
+    }
+    foreach ($name in @("stageCode", "exceptionClass", "sanitizedDetail")) {
+      if ([string]::IsNullOrWhiteSpace([string](Get-CcrPinnedRequiredProperty $failure $name))) {
+        throw "ALPHA6_RENDER_OPEN_FAILURE_DETAIL_MISSING:$name"
+      }
+    }
+    return $Report
+  }
+  foreach ($contract in @(
+    @("activityInstanceDriftCount", 0L),
+    @("surfaceGenerationDriftCount", 0L),
+    @("surfaceLossCount", 0L),
+    @("videoOpenFailedCount", 0L),
+    @("fullFrameDecodeCount", 1L)
+  )) {
+    if ([long](Get-CcrPinnedRequiredProperty $Report ([string]$contract[0])) -ne
+        [long]$contract[1]) {
+      throw "ALPHA6_RENDER_OPEN_REPORT_COUNTER_MISMATCH:$($contract[0])"
+    }
+  }
+  foreach ($name in @(
+    "providerOrExtractorEntered",
+    "indexReceived",
+    "metadataReceived",
+    "firstFramePublished",
+    "hardwareAccelerated"
+  )) {
+    if ((Get-CcrPinnedRequiredProperty $Report $name) -ne $true) {
+      throw "ALPHA6_RENDER_OPEN_REPORT_BOOLEAN_MISMATCH:$name"
+    }
+  }
+  $beforeOpen = Get-CcrPinnedRequiredProperty $evidence "beforeOpen"
+  $afterOpen = Get-CcrPinnedRequiredProperty $evidence "afterOpen"
+  $statusSequence = @((Get-CcrPinnedRequiredProperty $evidence "statusSequence"))
+  $beforeActivityId = [string](Get-CcrPinnedRequiredProperty $beforeOpen "activityInstanceId")
+  $afterActivityId = [string](Get-CcrPinnedRequiredProperty $afterOpen "activityInstanceId")
+  $beforeGeneration = [long](Get-CcrPinnedRequiredProperty $beforeOpen "surfaceGeneration")
+  $afterGeneration = [long](Get-CcrPinnedRequiredProperty $afterOpen "surfaceGeneration")
+  foreach ($snapshot in @($beforeOpen, $afterOpen)) {
+    if ([string](Get-CcrPinnedRequiredProperty $snapshot "scenarioState") -cne "RESUMED" -or
+        (Get-CcrPinnedRequiredProperty $snapshot "activityFinishing") -ne $false -or
+        (Get-CcrPinnedRequiredProperty $snapshot "activityDestroyed") -ne $false -or
+        (Get-CcrPinnedRequiredProperty $snapshot "decorAttached") -ne $true -or
+        (Get-CcrPinnedRequiredProperty $snapshot "surfaceViewPresent") -ne $true -or
+        (Get-CcrPinnedRequiredProperty $snapshot "surfaceValid") -ne $true -or
+        (Get-CcrPinnedRequiredProperty $snapshot "decoderSurfaceAvailable") -ne $true) {
+      throw "ALPHA6_RENDER_OPEN_SURFACE_SNAPSHOT_NOT_CURRENT"
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($beforeActivityId) -or
+      $beforeActivityId -cne $afterActivityId -or
+      $beforeGeneration -lt 1L -or $beforeGeneration -ne $afterGeneration) {
+    throw "ALPHA6_RENDER_OPEN_SURFACE_SNAPSHOT_DRIFT"
+  }
+  if ($statusSequence.Count -lt 1) {
+    throw "ALPHA6_RENDER_OPEN_STATUS_SEQUENCE_EMPTY"
+  }
+  $lastStatusTimestamp = 0L
+  for ($index = 0; $index -lt $statusSequence.Count; $index += 1) {
+    $status = $statusSequence[$index]
+    $timestamp = [long](Get-CcrPinnedRequiredProperty $status "capturedAtElapsedRealtimeNs")
+    if ([long](Get-CcrPinnedRequiredProperty $status "ordinal") -ne $index -or
+        [long](Get-CcrPinnedRequiredProperty $status "sequence") -ne $index -or
+        $timestamp -le 0L -or $timestamp -lt $lastStatusTimestamp -or
+        [string]::IsNullOrWhiteSpace(
+          [string](Get-CcrPinnedRequiredProperty $status "status")
+        )) {
+      throw "ALPHA6_RENDER_OPEN_STATUS_SEQUENCE_INVALID:$index"
+    }
+    $lastStatusTimestamp = $timestamp
+  }
+  $expectedFrameKey = Get-CcrPinnedRequiredProperty $Report "expectedFrameKey"
+  $actualFrameKey = Get-CcrPinnedRequiredProperty $Report "actualFrameKey"
+  foreach ($frameKey in @($expectedFrameKey, $actualFrameKey)) {
+    if ([long](Get-CcrPinnedRequiredProperty $frameKey "displayFrameIndex") -ne 0L -or
+        [long](Get-CcrPinnedRequiredProperty $frameKey "duplicateOrdinal") -lt 0L) {
+      throw "ALPHA6_RENDER_OPEN_REPORT_FRAME_KEY_INVALID"
+    }
+    [void](Get-CcrPinnedRequiredProperty $frameKey "ptsUs")
+  }
+  if ([long](Get-CcrPinnedRequiredProperty $Report "providerReadOpenCount") -lt 1L -or
+      [string]::IsNullOrWhiteSpace([string](Get-CcrPinnedRequiredProperty $Report "codecComponent")) -or
+      ($expectedFrameKey | ConvertTo-Json -Compress) -cne
+        ($actualFrameKey | ConvertTo-Json -Compress) -or
+      [long](Get-CcrPinnedRequiredProperty $Report "expectedTextureTimestampNs") -ne
+        [long](Get-CcrPinnedRequiredProperty $Report "actualTextureTimestampNs")) {
+    throw "ALPHA6_RENDER_OPEN_REPORT_FRAME_CONTRACT_MISMATCH"
+  }
+  return $Report
+}
+
+function Receive-CcrAlpha6RenderOpenReport {
+  param(
+    [Parameter(Mandatory = $true)][object]$Context,
+    [Parameter(Mandatory = $true)][string]$RunId,
+    [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
+    [long]$MinimumStartedAtElapsedRealtimeNs = 0
+  )
+  $reportName = "s24-alpha6-render-open-smoke-v1.json"
+  $packageName = [string](Get-CcrPinnedArtifact $Context "debugApp").packageName
+  $result = Invoke-CcrPinnedAdb $Context @(
+    "-s", $Context.Serial, "exec-out", "run-as", $packageName, "cat", "files/$reportName"
+  )
+  if ($result.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$result.output)) {
+    throw "ALPHA6_RENDER_OPEN_REPORT_PULL_FAILED"
+  }
+  $target = Join-Path $EvidenceDirectory $reportName
+  if (Test-Path -LiteralPath $target) { throw "ALPHA6_RENDER_OPEN_REPORT_ALREADY_EXISTS" }
+  [System.IO.File]::WriteAllText(
+    $target,
+    [string]$result.output,
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  (Get-Item -LiteralPath $target).IsReadOnly = $true
+  try { $report = $result.output | ConvertFrom-Json } catch {
+    throw "ALPHA6_RENDER_OPEN_REPORT_JSON_INVALID"
+  }
+  $status = [string](Get-CcrPinnedRequiredProperty $report "status")
+  if ($status -notin @("PASS", "FAIL")) { throw "ALPHA6_RENDER_OPEN_REPORT_STATUS_INVALID" }
+  Assert-CcrAlpha6RenderOpenReport `
+    -Report $report -Context $Context -RunId $RunId -ExpectedStatus $status `
+    -MinimumStartedAtElapsedRealtimeNs $MinimumStartedAtElapsedRealtimeNs | Out-Null
+  $item = Get-Item -LiteralPath $target
+  return [PSCustomObject][ordered]@{
+    Path = $target
+    Bytes = [long]$item.Length
+    Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash.ToLowerInvariant()
+    Report = $report
+  }
+}
+
+function Invoke-CcrAlpha6CandidateRenderOpenInstrumentation {
+  param(
+    [Parameter(Mandatory = $true)][object]$Context,
+    [Parameter(Mandatory = $true)][string]$RunId,
+    [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
+    [switch]$SkipInstall
+  )
+  Assert-CcrPinnedRunId $RunId | Out-Null
+  $directory = [System.IO.Path]::GetFullPath($EvidenceDirectory)
+  if (-not (Test-CcrPinnedPathWithin $directory ([string]$Context.OutputDirectory))) {
+    throw "ALPHA6_RENDER_OPEN_EVIDENCE_PATH_FORBIDDEN"
+  }
+  if (Test-Path -LiteralPath $directory) {
+    throw "ALPHA6_RENDER_OPEN_EVIDENCE_ALREADY_EXISTS"
+  }
+  [System.IO.Directory]::CreateDirectory($directory) | Out-Null
+  Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $Context | Out-Null
+  if (-not $SkipInstall) {
+    Install-CcrPinnedArtifactSet $Context "Debug"
+  } else {
+    Assert-CcrPinnedInstalledArtifact $Context "debugApp"
+    Assert-CcrPinnedInstalledArtifact $Context "debugTest"
+  }
+  Clear-CcrPinnedRemoteReport `
+    -Context $Context `
+    -PackageName ([string](Get-CcrPinnedArtifact $Context "debugApp").packageName) `
+    -ReportName "s24-alpha6-render-open-smoke-v1.json"
+  $minimumStartedAt = Get-CcrPinnedDeviceElapsedRealtimeNs $Context
+  $instrumentationFailure = $null
+  $invocation = $null
+  try {
+    $invocation = Invoke-CcrPinnedInstrumentation `
+      -Context $Context -TestRole "debugTest" `
+      -ClassName (
+        "com.snowberried.ctcinereviewer.gate.Alpha6RenderOpenSmokeTest" +
+          "#h264IpRendersFirstExactFrameOnStableCurrentSurface"
+      ) `
+      -RunId $RunId -ExpectedTestCount 1 `
+      -FailureReportPath (Join-Path $directory "failure-alpha6-render-open-instrumentation-v1.json")
+  } catch {
+    $instrumentationFailure = $_
+  }
+  $received = $null
+  $receiveFailure = $null
+  try {
+    $received = Receive-CcrAlpha6RenderOpenReport `
+      -Context $Context -RunId $RunId -EvidenceDirectory $directory `
+      -MinimumStartedAtElapsedRealtimeNs $minimumStartedAt
+  } catch {
+    $receiveFailure = $_
+  }
+  if ($null -ne $receiveFailure) {
+    if ($null -ne $instrumentationFailure) {
+      throw "PRIMARY=$($instrumentationFailure.Exception.Message); REPORT=$($receiveFailure.Exception.Message)"
+    }
+    throw $receiveFailure
+  }
+  Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $Context | Out-Null
+  $report = $received.Report
+  $common = [ordered]@{
+    kind = "alpha6-candidate-render-open-smoke-instrumentation"
+    runId = $RunId
+    reportPath = [string]$received.Path
+    reportBytes = [long]$received.Bytes
+    reportSha256 = [string]$received.Sha256
+    runtimeSourceSha = [string]$Context.ArtifactSet.RuntimeSourceSha
+    harnessSourceSha = [string]$Context.ArtifactSet.HarnessSourceSha
+    runtimeInputsTreeSha256 = [string]$Context.ArtifactSet.RuntimeInputsTreeSha256
+    artifactSetRevision =
+      [int](Get-CcrPinnedRequiredProperty $Context.ArtifactSet.Manifest "artifactSetRevision")
+    buildCommandCount = 0L
+    performanceScenarioCount = 0L
+  }
+  if ($null -ne $instrumentationFailure -or [string]$report.status -cne "PASS") {
+    $failure = if ([string]$report.status -ceq "FAIL") {
+      Get-CcrPinnedRequiredProperty $report "failure"
+    } else {
+      [PSCustomObject][ordered]@{
+        stageCode = "INSTRUMENTATION"
+        classification = "UNCLASSIFIED_AFTER_STABLE_SURFACE"
+        exceptionClass = "HostInstrumentationFailure"
+        sanitizedDetail = "SEE_PINNED_INSTRUMENTATION_FAILURE_REPORT"
+      }
+    }
+    return [PSCustomObject]($common + [ordered]@{
+      status = "FAIL"
+      failure = $failure
+      instrumentationFailure = $(if ($null -ne $instrumentationFailure) {
+          [string]$instrumentationFailure.Exception.Message
+        } else {
+          $null
+        })
+    })
+  }
+  return [PSCustomObject]($common + [ordered]@{
+    status = "PASS"
+    stableIntervalMs = [long]$report.stableIntervalMs
+    activityInstanceId =
+      [string](Get-CcrPinnedRequiredProperty $report.activitySurfaceEvidence.beforeOpen "activityInstanceId")
+    surfaceGeneration =
+      [long](Get-CcrPinnedRequiredProperty $report.activitySurfaceEvidence.beforeOpen "surfaceGeneration")
+    activityInstanceDriftCount = [long]$report.activityInstanceDriftCount
+    surfaceGenerationDriftCount = [long]$report.surfaceGenerationDriftCount
+    surfaceLossCount = [long]$report.surfaceLossCount
+    videoOpenFailedCount = [long]$report.videoOpenFailedCount
+    instrumentationOutput = [string]$invocation.Output
+  })
 }
 
 function Invoke-CcrAlpha6CandidateDeviceHostPreflight {

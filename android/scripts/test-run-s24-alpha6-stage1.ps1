@@ -41,6 +41,13 @@ function New-Alpha6FakeAdbState {
       "system/accelerometer_rotation" = "1"
       "system/user_rotation" = "2"
     }
+    Wakefulness = "Awake"
+    DisplayState = "ON"
+    SurfaceOrientation = 0L
+    Configuration = "mcc310-mnc260-en-rUS-sw411dp-w891dp-h411dp-normal-long-port"
+    ProcessIds = @{}
+    SettleSampleReadCount = 0L
+    SettleSampleMutator = $null
     Commands = [System.Collections.Generic.List[string]]::new()
   }
 }
@@ -63,6 +70,54 @@ function New-Alpha6FakeAdbInvoker {
         default { "unknown" }
       }
       return [PSCustomObject]@{ exitCode = 0; output = $value }
+    }
+    if ($Arguments.Count -ge 5 -and $Arguments[2] -ceq "shell" -and
+        $Arguments[3] -ceq "dumpsys" -and $Arguments[4] -ceq "power") {
+      $State.SettleSampleReadCount += 1L
+      if ($null -ne $State.SettleSampleMutator) {
+        & $State.SettleSampleMutator $State ([long]$State.SettleSampleReadCount)
+      }
+      return [PSCustomObject]@{
+        exitCode = 0
+        output = "mWakefulness=$([string]$State.Wakefulness)"
+      }
+    }
+    if ($Arguments.Count -ge 5 -and $Arguments[2] -ceq "shell" -and
+        $Arguments[3] -ceq "dumpsys" -and $Arguments[4] -ceq "display") {
+      return [PSCustomObject]@{
+        exitCode = 0
+        output = "mDisplayState=$([string]$State.DisplayState)"
+      }
+    }
+    if ($Arguments.Count -ge 5 -and $Arguments[2] -ceq "shell" -and
+        $Arguments[3] -ceq "dumpsys" -and $Arguments[4] -ceq "input") {
+      return [PSCustomObject]@{
+        exitCode = 0
+        output = "SurfaceOrientation: $([long]$State.SurfaceOrientation)"
+      }
+    }
+    if ($Arguments.Count -ge 6 -and $Arguments[2] -ceq "shell" -and
+        $Arguments[3] -ceq "cmd" -and $Arguments[4] -ceq "activity" -and
+        $Arguments[5] -ceq "get-config") {
+      return [PSCustomObject]@{ exitCode = 0; output = [string]$State.Configuration }
+    }
+    if ($Arguments.Count -ge 5 -and $Arguments[2] -ceq "shell" -and
+        $Arguments[3] -ceq "pidof") {
+      $packageName = [string]$Arguments[4]
+      $processIdText = if ($State.ProcessIds.ContainsKey($packageName)) {
+        [string]$State.ProcessIds[$packageName]
+      } else {
+        ""
+      }
+      return [PSCustomObject]@{
+        exitCode = if ([string]::IsNullOrWhiteSpace($processIdText)) { 1 } else { 0 }
+        output = $processIdText
+      }
+    }
+    if ($Arguments.Count -ge 6 -and $Arguments[2] -ceq "shell" -and
+        $Arguments[3] -ceq "am" -and $Arguments[4] -ceq "force-stop") {
+      $State.ProcessIds[[string]$Arguments[5]] = ""
+      return [PSCustomObject]@{ exitCode = 0; output = "" }
     }
     if ($Arguments.Count -ge 7 -and $Arguments[2] -ceq "shell" -and $Arguments[3] -ceq "settings") {
       $operation = [string]$Arguments[4]
@@ -165,6 +220,8 @@ try {
       status = "PASS"
       runId = $IdentityRunId
       artifactSetRevision = 5
+      debugArtifactInstallSetCount = 1L
+      debugArtifactInstallCommandCount = 2L
       buildCommandCount = 0L
     }
   }
@@ -188,6 +245,69 @@ try {
         (Get-FileHash -Algorithm SHA256 -LiteralPath $reportItem.FullName).Hash.ToLowerInvariant()
       fullFrameDecodeCount = 0L
       performanceScenarioCount = 0L
+      buildCommandCount = 0L
+    }
+  }
+  $settingsSettleExecutor = {
+    param($Context, $AttemptRunId)
+    $targetSettings = [PSCustomObject][ordered]@{
+      stayAwake = "7"
+      brightnessMode = "0"
+      brightness = "128"
+      screenTimeout = "1800000"
+      accelerometerRotation = "0"
+      userRotation = "0"
+    }
+    $samples = @(0..2 | ForEach-Object {
+      [PSCustomObject][ordered]@{
+        sampledAtUtc = [DateTime]::UtcNow.ToString("o")
+        settings = $targetSettings
+        wakefulnessAwake = $true
+        displayOn = $true
+        surfaceOrientation = 0L
+        configurationSignatureSha256 = "4" * 64
+        priorValidationProcessCount = 0L
+        ready = $true
+        stabilityKeySha256 = "5" * 64
+      }
+    })
+    return [PSCustomObject][ordered]@{
+      kind = "alpha6-stage1-device-settings-settle"
+      status = "PASS"
+      targetSettings = $targetSettings
+      pollIntervalMs = 250L
+      requiredConsecutiveSamples = 3L
+      stableIntervalMs = 500L
+      timeoutMs = 10000L
+      observedConsecutiveSamples = 3L
+      preparationFailures = @()
+      lastReadFailure = $null
+      samples = $samples
+      buildCommandCount = 0L
+    }
+  }
+  $renderOpenSmokeExecutor = {
+    param($Context, $RenderRunId, $EvidenceDirectory)
+    [System.IO.Directory]::CreateDirectory($EvidenceDirectory) | Out-Null
+    $reportPath = Join-Path $EvidenceDirectory "render-open-smoke.json"
+    [System.IO.File]::WriteAllText(
+      $reportPath,
+      '{"kind":"host-only-render-open-smoke","status":"PASS"}',
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    $reportItem = Get-Item -LiteralPath $reportPath
+    return [PSCustomObject][ordered]@{
+      status = "PASS"
+      runId = $RenderRunId
+      reportPath = $reportItem.FullName
+      reportBytes = [long]$reportItem.Length
+      reportSha256 =
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $reportItem.FullName).Hash.ToLowerInvariant()
+      stableIntervalMs = 300L
+      activityInstanceDriftCount = 0L
+      surfaceGenerationDriftCount = 0L
+      surfaceLossCount = 0L
+      videoOpenFailedCount = 0L
       buildCommandCount = 0L
     }
   }
@@ -222,12 +342,276 @@ try {
   }, $true))
   Assert-Alpha6Stage1Test ($settingsAssertionAst.Count -eq 1) "settings-restore-assertion-defined-once"
   Invoke-Expression $settingsAssertionAst[0].Extent.Text
+  foreach ($functionName in @(
+    "Get-CcrAlpha6Stage1Sha256Text",
+    "Get-CcrAlpha6Stage1TargetSettings",
+    "Get-CcrAlpha6Stage1DeviceSettleSample",
+    "Wait-CcrAlpha6Stage1DeviceSettingsSettled",
+    "Get-CcrAlpha6Stage1CleanupVerification"
+  )) {
+    $functionAst = @($runnerAst.FindAll({
+      param($node)
+      $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -ceq $functionName
+    }.GetNewClosure(), $true))
+    Assert-Alpha6Stage1Test ($functionAst.Count -eq 1) "actual-settle-function-defined-once-$functionName"
+    Invoke-Expression $functionAst[0].Extent.Text
+  }
+  $actualSettleState = New-Alpha6FakeAdbState
+  foreach ($entry in @{
+    "global/stay_on_while_plugged_in" = "7"
+    "system/screen_brightness_mode" = "0"
+    "system/screen_brightness" = "128"
+    "system/screen_off_timeout" = "1800000"
+    "system/accelerometer_rotation" = "0"
+    "system/user_rotation" = "0"
+  }.GetEnumerator()) {
+    $actualSettleState.Settings[$entry.Key] = [string]$entry.Value
+  }
+  $actualSettleState.SettleSampleMutator = {
+    param($State, $SampleIndex)
+    if ($SampleIndex -eq 1L) {
+      $State.Configuration = "stable-config-a"
+      $State.ProcessIds[$script:CcrPinnedAppPackage] = ""
+      $State.ProcessIds[$script:CcrPinnedMacrobenchmarkPackage] = ""
+    } elseif ($SampleIndex -eq 2L) {
+      $State.Configuration = "stable-config-b"
+      $State.ProcessIds[$script:CcrPinnedAppPackage] = ""
+      $State.ProcessIds[$script:CcrPinnedMacrobenchmarkPackage] = ""
+    } elseif ($SampleIndex -eq 3L) {
+      $State.Configuration = "stable-config-b"
+      $State.ProcessIds[$script:CcrPinnedAppPackage] = ""
+      $State.ProcessIds[$script:CcrPinnedMacrobenchmarkPackage] = "9301"
+    } else {
+      $State.Configuration = "stable-config-b"
+      $State.ProcessIds[$script:CcrPinnedAppPackage] = ""
+      $State.ProcessIds[$script:CcrPinnedMacrobenchmarkPackage] = ""
+    }
+  }.GetNewClosure()
+  $actualSettleContext = [PSCustomObject]@{
+    Adb = "fake-adb"
+    AdbInvoker = New-Alpha6FakeAdbInvoker $actualSettleState
+    Serial = "FAKE-S24"
+  }
+  $deadlineUtc = [DateTime]::UtcNow.AddSeconds(5)
+  $adbDeadlineState = [PSCustomObject]@{
+    ValidationDeadlineUtc = $deadlineUtc
+    CleanupMode = $false
+    CleanupDeadlineUtc = $deadlineUtc
+  }
+  $actualSettleStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+  $actualSettle = Wait-CcrAlpha6Stage1DeviceSettingsSettled $actualSettleContext
+  $actualSettleStopwatch.Stop()
+  Assert-Alpha6Stage1Test (
+    [string]$actualSettle.status -ceq "PASS" -and
+      [long]$actualSettle.observedConsecutiveSamples -eq 3L -and
+      @($actualSettle.samples).Count -eq 6 -and
+      [string]$actualSettle.lastReadFailure -ceq ""
+  ) "actual-settings-settle-positive"
+  Assert-Alpha6Stage1Test (
+    $actualSettle.samples[0].ready -eq $true -and
+      $actualSettle.samples[1].ready -eq $true -and
+      [string]$actualSettle.samples[0].configurationSignatureSha256 -cne
+        [string]$actualSettle.samples[1].configurationSignatureSha256 -and
+      $actualSettle.samples[2].ready -eq $false -and
+      [long]$actualSettle.samples[2].priorValidationProcessCount -eq 1L -and
+      [long]$actualSettle.samples[2].priorValidationProcessCounts.PSObject.Properties[
+        $script:CcrPinnedMacrobenchmarkPackage
+      ].Value -eq 1L -and
+      (@($actualSettle.samples[3..5] | ForEach-Object {
+        [string]$_.stabilityKeySha256
+      } | Select-Object -Unique)).Count -eq 1
+  ) "actual-settings-settle-resets-on-config-and-process-drift"
+  Assert-Alpha6Stage1Test (
+    $actualSettleStopwatch.ElapsedMilliseconds -ge 1000L -and
+      $actualSettleStopwatch.ElapsedMilliseconds -lt 3500L -and
+      [long]$actualSettle.pollIntervalMs -eq 250L -and
+      [long]$actualSettle.stableIntervalMs -eq 500L -and
+      [long]$actualSettle.timeoutMs -eq 10000L
+  ) "actual-settings-settle-stable-window-and-bounds"
+  Assert-Alpha6Stage1Test (
+    @($actualSettleState.Commands | Where-Object { $_ -match 'dumpsys power$' }).Count -eq 6 -and
+      @($actualSettleState.Commands | Where-Object { $_ -match 'cmd activity get-config$' }).Count -eq 6 -and
+      @($actualSettleState.Commands | Where-Object { $_ -match 'shell pidof ' }).Count -eq 18 -and
+      @($actualSettleState.Commands | Where-Object { $_ -match 'am force-stop' }).Count -eq 3
+  ) "actual-settings-settle-reads-device-config-and-processes"
+
+  $boundedSettleState = New-Alpha6FakeAdbState
+  foreach ($entry in @{
+    "global/stay_on_while_plugged_in" = "7"
+    "system/screen_brightness_mode" = "0"
+    "system/screen_brightness" = "128"
+    "system/screen_off_timeout" = "1800000"
+    "system/accelerometer_rotation" = "0"
+    "system/user_rotation" = "0"
+  }.GetEnumerator()) {
+    $boundedSettleState.Settings[$entry.Key] = [string]$entry.Value
+  }
+  $boundedSettleState.DisplayState = "OFF"
+  $boundedSettleContext = [PSCustomObject]@{
+    Adb = "fake-adb"
+    AdbInvoker = New-Alpha6FakeAdbInvoker $boundedSettleState
+    Serial = "FAKE-S24"
+  }
+  $deadlineUtc = [DateTime]::UtcNow.AddMilliseconds(900)
+  $adbDeadlineState = [PSCustomObject]@{
+    ValidationDeadlineUtc = $deadlineUtc
+    CleanupMode = $false
+    CleanupDeadlineUtc = $deadlineUtc
+  }
+  $boundedSettleStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+  $boundedSettle = Wait-CcrAlpha6Stage1DeviceSettingsSettled $boundedSettleContext
+  $boundedSettleStopwatch.Stop()
+  Assert-Alpha6Stage1Test (
+    [string]$boundedSettle.status -ceq "FAIL" -and
+      [long]$boundedSettle.observedConsecutiveSamples -eq 0L -and
+      @($boundedSettle.samples).Count -ge 1 -and
+      @($boundedSettle.samples | Where-Object { $_.ready -eq $true }).Count -eq 0 -and
+      @($boundedSettle.samples | Where-Object { $_.displayOn -eq $true }).Count -eq 0
+  ) "actual-settings-settle-rejects-display-off"
+  Assert-Alpha6Stage1Test (
+    $boundedSettleStopwatch.ElapsedMilliseconds -lt 2500L
+  ) "actual-settings-settle-timeout-bounded"
+  $autoBrightnessState = New-Alpha6FakeAdbState
+  $autoBrightnessState.Settings["system/screen_off_timeout"] = "120000"
+  $autoBrightnessState.Settings["system/screen_brightness"] = "99"
+  $autoBrightnessContext = [PSCustomObject]@{
+    Adb = "fake-adb"
+    AdbInvoker = New-Alpha6FakeAdbInvoker $autoBrightnessState
+    Serial = "FAKE-S24"
+    SavedSettings = [PSCustomObject]@{
+      stayAwake = "0"
+      brightnessMode = "1"
+      brightness = "77"
+      screenTimeout = "120000"
+      accelerometerRotation = "1"
+      userRotation = "2"
+    }
+  }
+  $autoBrightnessCleanup =
+    Get-CcrAlpha6Stage1CleanupVerification $autoBrightnessContext
+  Assert-Alpha6Stage1Test (
+    [string]$autoBrightnessCleanup.status -ceq "PASS" -and
+      $autoBrightnessCleanup.settingsRestored -eq $true -and
+      $autoBrightnessCleanup.rawBrightnessExactRequired -eq $false
+  ) "cleanup-verification-allows-auto-brightness-recalculation"
+  $manualBrightnessState = New-Alpha6FakeAdbState
+  $manualBrightnessState.Settings["system/screen_brightness_mode"] = "0"
+  $manualBrightnessState.Settings["system/screen_off_timeout"] = "120000"
+  $manualBrightnessState.Settings["system/screen_brightness"] = "99"
+  $manualBrightnessContext = [PSCustomObject]@{
+    Adb = "fake-adb"
+    AdbInvoker = New-Alpha6FakeAdbInvoker $manualBrightnessState
+    Serial = "FAKE-S24"
+    SavedSettings = [PSCustomObject]@{
+      stayAwake = "0"
+      brightnessMode = "0"
+      brightness = "77"
+      screenTimeout = "120000"
+      accelerometerRotation = "1"
+      userRotation = "2"
+    }
+  }
+  $manualBrightnessCleanup =
+    Get-CcrAlpha6Stage1CleanupVerification $manualBrightnessContext
+  Assert-Alpha6Stage1Test (
+    [string]$manualBrightnessCleanup.status -ceq "FAIL" -and
+      $manualBrightnessCleanup.settingsRestored -eq $false -and
+      $manualBrightnessCleanup.rawBrightnessExactRequired -eq $true
+  ) "cleanup-verification-requires-manual-brightness-exact"
   Assert-Alpha6Stage1Test ($source.Contains("Invoke-CcrAlpha6CandidateDeviceHostPreflight")) "candidate-host-preflight-connected"
   Assert-Alpha6Stage1Test ($source.Contains("Assert-CcrAlpha6CandidateDeviceIdentityUnchanged")) "candidate-identity-rehash-connected"
   Assert-Alpha6Stage1Test (-not $source.Contains("artifactSetRevision = 4")) "active-revision4-hardcode-removed"
   Assert-Alpha6Stage1Test ($source.Contains("Invoke-CcrPinnedCleanup")) "package-cleanup-finally"
   Assert-Alpha6Stage1Test ($source.Contains("Recover-CcrAlpha6Stage1Traces")) "trace-recovery-hook"
   Assert-Alpha6Stage1Test ($source -notmatch '(?m)^\s*\$\w*(?:Sha|Sha256)\w*\s*=\s*"[0-9a-f]{40,64}"') "no-final-hash-placeholder"
+  Assert-Alpha6Stage1Test (
+    $source.Contains("Wait-CcrAlpha6Stage1DeviceSettingsSettled") -and
+      $source.Contains("Invoke-CcrAlpha6Stage1RenderOpenSmoke") -and
+      $source.Contains("ALPHA6_STAGE1_DEVICE_SETTINGS_NOT_SETTLED") -and
+      $source.Contains("ALPHA6_STAGE1_RENDER_OPEN_SMOKE_FAILED") -and
+      $source.Contains("Invoke-CcrAlpha6CandidateRenderOpenInstrumentation") -and
+      $source.Contains("-SkipInstall")
+  ) "settings-settle-render-open-smoke-wired"
+  $correctnessAst = @($runnerAst.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -ceq "Invoke-CcrAlpha6Stage1Correctness"
+  }, $true))
+  Assert-Alpha6Stage1Test ($correctnessAst.Count -eq 1) "correctness-defined-once"
+  $correctnessSource = $correctnessAst[0].Extent.Text
+  Assert-Alpha6Stage1Test (
+    -not $correctnessSource.Contains("Install-CcrPinnedArtifactSet") -and
+      $correctnessSource.Contains(
+        'Assert-CcrPinnedInstalledArtifact $Context "debugApp"'
+      ) -and
+      $correctnessSource.Contains(
+        'Assert-CcrPinnedInstalledArtifact $Context "debugTest"'
+      )
+  ) "correctness-reverifies-debug-set-without-reinstall"
+  Invoke-Expression $correctnessAst[0].Extent.Text
+  $originalInstalledArtifactAssertion =
+    (Get-Command Assert-CcrPinnedInstalledArtifact -CommandType Function).ScriptBlock
+  $originalInstrumentationInvocation =
+    (Get-Command Invoke-CcrPinnedInstrumentation -CommandType Function).ScriptBlock
+  $installedArtifactRoles = [System.Collections.Generic.List[string]]::new()
+  $instrumentationInvocationCount = 0L
+  try {
+    Set-Item -LiteralPath Function:\Assert-CcrPinnedInstalledArtifact -Value {
+      param($Context, $Role)
+      $installedArtifactRoles.Add([string]$Role) | Out-Null
+      if ([string]$Role -ceq "debugTest") {
+        throw "PINNED_INSTALLED_ARTIFACT_SHA_MISMATCH:debugTest"
+      }
+      return $true
+    }.GetNewClosure()
+    Set-Item -LiteralPath Function:\Invoke-CcrPinnedInstrumentation -Value {
+      $instrumentationInvocationCount += 1L
+      throw "UNEXPECTED_CORRECTNESS_INSTRUMENTATION_ENTRY"
+    }.GetNewClosure()
+    $TestOnlyStageExecutor = $null
+    $installedDriftStageDirectory = Join-Path $root "installed-sha-drift-correctness"
+    Assert-Alpha6Stage1ThrowsLike {
+      Invoke-CcrAlpha6Stage1Correctness `
+        ([PSCustomObject]@{}) $installedDriftStageDirectory | Out-Null
+    } "PINNED_INSTALLED_ARTIFACT_SHA_MISMATCH:debugTest" `
+      "installed-sha-drift-blocks-correctness-instrumentation"
+    Assert-Alpha6Stage1Test (
+      ($installedArtifactRoles -join ",") -ceq "debugApp,debugTest" -and
+        $instrumentationInvocationCount -eq 0L
+    ) "installed-sha-drift-correctness-instrumentation-count-zero"
+  } finally {
+    Set-Item -LiteralPath Function:\Assert-CcrPinnedInstalledArtifact `
+      -Value $originalInstalledArtifactAssertion
+    Set-Item -LiteralPath Function:\Invoke-CcrPinnedInstrumentation `
+      -Value $originalInstrumentationInvocation
+  }
+  $candidateBridgeSource = [System.IO.File]::ReadAllText(
+    $candidateBridge,
+    [System.Text.Encoding]::UTF8
+  )
+  $candidateBridgeAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $candidateBridge,
+    [ref]$null,
+    [ref]$null
+  )
+  $identityInstrumentationAst = @($candidateBridgeAst.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -ceq "Invoke-CcrAlpha6CandidateIdentitySmokeInstrumentation"
+  }, $true))
+  Assert-Alpha6Stage1Test (
+    $identityInstrumentationAst.Count -eq 1
+  ) "candidate-identity-smoke-defined-once"
+  $identityInstrumentationSource = $identityInstrumentationAst[0].Extent.Text
+  Assert-Alpha6Stage1Test (
+    ([regex]::Matches(
+      $identityInstrumentationSource,
+      'Install-CcrPinnedArtifactSet\s+\$Context\s+"Debug"'
+    )).Count -eq 1 -and
+      $identityInstrumentationSource.Contains("debugArtifactInstallSetCount = 1L") -and
+      $identityInstrumentationSource.Contains("debugArtifactInstallCommandCount = 2L")
+  ) "identity-smoke-installs-debug-set-exactly-once"
   Assert-Alpha6Stage1Test ($source -match 'scenarioCount\s*=\s*10' -and $source -match 'independentTraceCount\s*=\s*30') "ten-scenarios-thirty-traces"
   Assert-Alpha6Stage1Test ($source.Contains("ALPHA6_STAGE1_BENCHMARK_FIXTURE_IDENTITY_MISMATCH")) "fixture-identity-fail-closed"
   Assert-Alpha6Stage1Test (
@@ -405,7 +789,7 @@ try {
   Assert-Alpha6Stage1Test ([string]$preflight.status -ceq "PREFLIGHT_PASS") "preflight-status"
   Assert-Alpha6Stage1Test (
     (@($preflight.stageOrder) -join "|") -ceq
-      "IdentitySmoke|FixtureOpenSmoke|Correctness|Performance"
+      "IdentitySmoke|FixtureOpenSmoke|DeviceSettings|SettingsSettle|RenderOpenSmoke|Correctness|Performance"
   ) "preflight-stage-order"
   Assert-Alpha6Stage1Test ([long]$preflight.buildCommandCount -eq 0L -and [long]$preflight.deviceMutationCount -eq 0L) "preflight-no-build-no-mutation"
   $plannedPerformance = @($preflight.plannedPerformanceScenarios)
@@ -466,6 +850,32 @@ try {
   Assert-Alpha6Stage1ThrowsLike {
     & $runner @preflightResume | Out-Null
   } "ALPHA6_STAGE1_RESUME_IDENTITY_MISMATCH" "policy-identity-drift-rejected"
+  [System.IO.File]::WriteAllText($preflightSessionPath, $preflightSessionRaw, [System.Text.UTF8Encoding]::new($false))
+  $oldStageOrderSession = $preflightSessionRaw | ConvertFrom-Json
+  $oldStageOrderSession.stageOrder = @(
+    "IdentitySmoke", "FixtureOpenSmoke", "Correctness", "Performance"
+  )
+  [System.IO.File]::WriteAllText(
+    $preflightSessionPath,
+    ($oldStageOrderSession | ConvertTo-Json -Depth 50),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @preflightResume | Out-Null
+  } "ALPHA6_STAGE1_SESSION_CONTRACT_MISMATCH" "legacy-four-stage-session-rejected"
+  [System.IO.File]::WriteAllText($preflightSessionPath, $preflightSessionRaw, [System.Text.UTF8Encoding]::new($false))
+  $oldIdentityStageOrderSession = $preflightSessionRaw | ConvertFrom-Json
+  $oldIdentityStageOrderSession.identity.stageOrder = @(
+    "IdentitySmoke", "FixtureOpenSmoke", "Correctness", "Performance"
+  )
+  [System.IO.File]::WriteAllText(
+    $preflightSessionPath,
+    ($oldIdentityStageOrderSession | ConvertTo-Json -Depth 50),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @preflightResume | Out-Null
+  } "ALPHA6_STAGE1_RESUME_IDENTITY_MISMATCH" "legacy-four-stage-identity-rejected"
   [System.IO.File]::WriteAllText($preflightSessionPath, $preflightSessionRaw, [System.Text.UTF8Encoding]::new($false))
   (Get-Item -LiteralPath $preflightSessionPath).IsReadOnly = $true
   $preflightSummaryRaw = [System.IO.File]::ReadAllText($preflightSummaryPath, [System.Text.Encoding]::UTF8)
@@ -536,6 +946,271 @@ try {
     & $runner @longRunId | Out-Null
   } "ALPHA6_STAGE1_RUN_ID_TOO_LONG" "performance-child-run-id-length-fails-fast"
 
+  $gatePreflightConflict = @{} + $preflightArgs
+  $gatePreflightConflict.SurfaceTransitionGateOnly = $true
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @gatePreflightConflict | Out-Null
+  } "ALPHA6_STAGE1_SURFACE_TRANSITION_MODE_CONFLICT" `
+    "surface-transition-gate-rejects-preflight-combination"
+  $gateResumeConflict = @{} + $preflightArgs
+  $gateResumeConflict.Remove("PreflightOnly")
+  $gateResumeConflict.Resume = $true
+  $gateResumeConflict.SurfaceTransitionGateOnly = $true
+  $gateResumeConflict.OutputDirectory = Join-Path $root "gate-resume-conflict"
+  $gateResumeConflict.RunId = "alpha6-gate-resume-conflict"
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @gateResumeConflict | Out-Null
+  } "ALPHA6_STAGE1_SURFACE_TRANSITION_MODE_CONFLICT" `
+    "surface-transition-gate-rejects-resume-combination"
+  Assert-Alpha6Stage1Test ($adbWasCalled.Count -eq 0) `
+    "surface-transition-mode-conflicts-before-adb"
+
+  $gateSuccessOutput = Join-Path $root "surface-transition-gate-success"
+  $gateSuccessState = New-Alpha6FakeAdbState
+  $gateSuccessRunIds = [System.Collections.Generic.List[string]]::new()
+  $gateSuccessDownstreamCount = 0L
+  $gateSuccessRenderExecutor = {
+    param($Context, $RenderRunId, $EvidenceDirectory)
+    $gateSuccessRunIds.Add([string]$RenderRunId) | Out-Null
+    $gateSuccessState.ProcessIds[$script:CcrPinnedAppPackage] = "9401"
+    $gateSuccessState.ProcessIds[$script:CcrPinnedDebugTestPackage] = "9402"
+    $gateSuccessState.ProcessIds[$script:CcrPinnedMacrobenchmarkPackage] = "9403"
+    [System.IO.Directory]::CreateDirectory($EvidenceDirectory) | Out-Null
+    $reportPath = Join-Path $EvidenceDirectory "render-$RenderRunId.json"
+    [System.IO.File]::WriteAllText(
+      $reportPath,
+      '{"kind":"host-only-render-open-smoke","status":"PASS"}',
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    (Get-Item -LiteralPath $reportPath).IsReadOnly = $true
+    $reportItem = Get-Item -LiteralPath $reportPath
+    return [PSCustomObject]@{
+      status = "PASS"
+      runId = $RenderRunId
+      reportPath = $reportItem.FullName
+      reportBytes = [long]$reportItem.Length
+      reportSha256 =
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $reportItem.FullName).Hash.ToLowerInvariant()
+      stableIntervalMs = 300L
+      activityInstanceDriftCount = 0L
+      surfaceGenerationDriftCount = 0L
+      surfaceLossCount = 0L
+      videoOpenFailedCount = 0L
+      buildCommandCount = 0L
+    }
+  }.GetNewClosure()
+  $gateSuccessArgs = @{} + $preflightArgs
+  $gateSuccessArgs.Remove("PreflightOnly")
+  $gateSuccessArgs.OutputDirectory = $gateSuccessOutput
+  $gateSuccessArgs.RunId = "alpha6-surface-gate"
+  $gateSuccessArgs.OriginalScreenTimeoutSetting = "120000"
+  $gateSuccessArgs.SurfaceTransitionGateOnly = $true
+  $gateSuccessArgs.TestOnlyAdbInvoker = New-Alpha6FakeAdbInvoker $gateSuccessState
+  $gateSuccessArgs.TestOnlyIdentitySmokeExecutor = $identitySmokeExecutor
+  $gateSuccessArgs.TestOnlyFixtureOpenSmokeExecutor = $fixtureOpenSmokeExecutor
+  $gateSuccessArgs.TestOnlySettingsSettleExecutor = $settingsSettleExecutor
+  $gateSuccessArgs.TestOnlyRenderOpenSmokeExecutor = $gateSuccessRenderExecutor
+  $gateSuccessArgs.TestOnlyStageExecutor = {
+    param($Stage, $Context, $StageDirectory)
+    $gateSuccessDownstreamCount += 1L
+    throw "SURFACE_TRANSITION_GATE_DOWNSTREAM_STAGE_FORBIDDEN:$Stage"
+  }.GetNewClosure()
+  & $runner @gateSuccessArgs | Out-Null
+  $expectedGateRunIds = @(1..10 | ForEach-Object {
+    "alpha6-surface-gate-g{0:D2}-ro" -f $_
+  })
+  Assert-Alpha6Stage1Test (
+    ($gateSuccessRunIds -join "|") -ceq ($expectedGateRunIds -join "|") -and
+      @($gateSuccessRunIds | Select-Object -Unique).Count -eq 10 -and
+      $gateSuccessDownstreamCount -eq 0L
+  ) "surface-transition-gate-ten-unique-render-runs-no-downstream"
+  $gateSuccessSummaryPath = Join-Path $gateSuccessOutput (
+    "alpha6-stage1-summary-alpha6-surface-gate.json"
+  )
+  $gateSuccessSummary = [System.IO.File]::ReadAllText(
+    $gateSuccessSummaryPath,
+    [System.Text.Encoding]::UTF8
+  ) | ConvertFrom-Json
+  Assert-Alpha6Stage1Test (
+    [string]$gateSuccessSummary.kind -ceq
+      "alpha6-stage1-surface-transition-gate" -and
+      [string]$gateSuccessSummary.status -ceq "PASS" -and
+      [long]$gateSuccessSummary.renderOpenSmokeRequiredCount -eq 10L -and
+      [long]$gateSuccessSummary.renderOpenSmokePassCount -eq 10L -and
+      [long]$gateSuccessSummary.renderOpenAttemptCleanupPassCount -eq 10L -and
+      [long]$gateSuccessSummary.correctnessExecutedTestCount -eq 0L -and
+      [long]$gateSuccessSummary.performanceScenarioCount -eq 0L -and
+      $gateSuccessSummary.fullStage1Executed -eq $false
+  ) "surface-transition-gate-summary-counts"
+  Assert-Alpha6Stage1Test (
+    (@($gateSuccessSummary.executedStageOrder) -join "|") -ceq
+      "IdentitySmoke|FixtureOpenSmoke|DeviceSettings|SettingsSettle|RenderOpenSmoke" -and
+      (@($gateSuccessSummary.skippedStageOrder) -join "|") -ceq
+      "Correctness|Performance" -and
+      [string]$gateSuccessSummary.s24GateStatus -ceq
+      "SURFACE_TRANSITION_GATE_PASS_STAGE1_PENDING" -and
+      [string]$gateSuccessSummary.nextRequiredAction -ceq
+      "RUN_FRESH_FULL_STAGE1_WITH_THE_SURFACE_STABLE_REV5_ARTIFACT_SET"
+  ) "surface-transition-gate-stage-and-next-action"
+  $gateSuccessCheckpoints = @(
+    Get-ChildItem -LiteralPath $gateSuccessOutput `
+      -Filter "checkpoint-alpha6-stage1-render-open-smoke-alpha6-surface-gate-g*.json" `
+      -File
+  )
+  Assert-Alpha6Stage1Test (
+    $gateSuccessCheckpoints.Count -eq 10 -and
+      @($gateSuccessCheckpoints | Where-Object { -not $_.IsReadOnly }).Count -eq 0 -and
+      @($gateSuccessSummary.renderOpenSmokeCheckpointFiles).Count -eq 10
+  ) "surface-transition-gate-ten-immutable-checkpoints"
+  Assert-Alpha6Stage1Test (
+    @($gateSuccessSummary.renderOpenSmokes | Where-Object {
+        [string]$_.attemptCleanup.status -cne "PASS" -or
+          [long]$_.attemptCleanup.totalValidationProcessCount -ne 0L
+      }).Count -eq 0
+  ) "surface-transition-gate-ten-attempt-cleanups-pass"
+  Assert-Alpha6Stage1Test (
+    @($gateSuccessState.Commands | Where-Object {
+      $_ -match 'shell am force-stop'
+    }).Count -ge 30
+  ) "surface-transition-gate-each-attempt-force-stopped"
+  Assert-Alpha6Stage1Test (
+    -not (Test-Path -LiteralPath (
+      Join-Path $gateSuccessOutput "checkpoint-alpha6-stage1-correctness-alpha6-surface-gate.json"
+    )) -and
+      -not (Test-Path -LiteralPath (
+        Join-Path $gateSuccessOutput "checkpoint-alpha6-stage1-performance-alpha6-surface-gate.json"
+      ))
+  ) "surface-transition-gate-no-correctness-or-performance-checkpoint"
+  Assert-Alpha6Stage1Test (
+    [string]$gateSuccessState.Settings["global/stay_on_while_plugged_in"] -ceq "0" -and
+      [string]$gateSuccessState.Settings["system/screen_off_timeout"] -ceq "120000"
+  ) "surface-transition-gate-settings-restored"
+  Assert-Alpha6Stage1Test (
+    [string]$gateSuccessSummary.cleanupVerification.status -ceq "PASS" -and
+      $gateSuccessSummary.cleanupVerification.settingsRestored -eq $true -and
+      $gateSuccessSummary.cleanupVerification.debugTestPackageInstalled -eq $false -and
+      $gateSuccessSummary.cleanupVerification.macrobenchmarkTestPackageInstalled -eq $false -and
+      [long]$gateSuccessSummary.cleanupVerification.totalValidationProcessCount -eq 0L -and
+      (Get-Item -LiteralPath (
+        [string]$gateSuccessSummary.cleanupVerificationCheckpointFile.path
+      )).IsReadOnly
+  ) "surface-transition-gate-cleanup-evidence"
+
+  $gateRenderFailureOutput = Join-Path $root "surface-transition-gate-render-failure"
+  $gateRenderFailureState = New-Alpha6FakeAdbState
+  $gateRenderFailureRunIds = [System.Collections.Generic.List[string]]::new()
+  $gateRenderFailureDownstreamCount = 0L
+  $gateRenderFailureExecutor = {
+    param($Context, $RenderRunId, $EvidenceDirectory)
+    $gateRenderFailureRunIds.Add([string]$RenderRunId) | Out-Null
+    [System.IO.Directory]::CreateDirectory($EvidenceDirectory) | Out-Null
+    $status = if ($gateRenderFailureRunIds.Count -eq 4) { "FAIL" } else { "PASS" }
+    $reportPath = Join-Path $EvidenceDirectory "render-$RenderRunId.json"
+    [System.IO.File]::WriteAllText(
+      $reportPath,
+      "{`"kind`":`"host-only-render-open-smoke`",`"status`":`"$status`"}",
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    (Get-Item -LiteralPath $reportPath).IsReadOnly = $true
+    $reportItem = Get-Item -LiteralPath $reportPath
+    return [PSCustomObject]@{
+      status = $status
+      runId = $RenderRunId
+      reportPath = $reportItem.FullName
+      reportBytes = [long]$reportItem.Length
+      reportSha256 =
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $reportItem.FullName).Hash.ToLowerInvariant()
+      stableIntervalMs = 300L
+      activityInstanceDriftCount = 0L
+      surfaceGenerationDriftCount = 0L
+      surfaceLossCount = if ($status -ceq "FAIL") { 1L } else { 0L }
+      videoOpenFailedCount = 0L
+      buildCommandCount = 0L
+    }
+  }.GetNewClosure()
+  $gateRenderFailureArgs = @{} + $gateSuccessArgs
+  $gateRenderFailureArgs.OutputDirectory = $gateRenderFailureOutput
+  $gateRenderFailureArgs.RunId = "alpha6-gate-render-fail"
+  $gateRenderFailureArgs.TestOnlyAdbInvoker =
+    New-Alpha6FakeAdbInvoker $gateRenderFailureState
+  $gateRenderFailureArgs.TestOnlyRenderOpenSmokeExecutor =
+    $gateRenderFailureExecutor
+  $gateRenderFailureArgs.TestOnlyStageExecutor = {
+    param($Stage, $Context, $StageDirectory)
+    $gateRenderFailureDownstreamCount += 1L
+    throw "SURFACE_TRANSITION_GATE_DOWNSTREAM_STAGE_FORBIDDEN:$Stage"
+  }.GetNewClosure()
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @gateRenderFailureArgs | Out-Null
+  } "ALPHA6_STAGE1_RENDER_OPEN_SMOKE_FAILED" `
+    "surface-transition-gate-fourth-render-failure-propagates"
+  Assert-Alpha6Stage1Test (
+    $gateRenderFailureRunIds.Count -eq 4 -and
+      $gateRenderFailureDownstreamCount -eq 0L
+  ) "surface-transition-gate-render-failure-stops-at-four"
+  $gateRenderFailureCheckpoints = @(
+    Get-ChildItem -LiteralPath $gateRenderFailureOutput `
+      -Filter "checkpoint-alpha6-stage1-render-open-smoke-*.json" -File
+  )
+  Assert-Alpha6Stage1Test (
+    $gateRenderFailureCheckpoints.Count -eq 4 -and
+      @($gateRenderFailureCheckpoints | Where-Object { -not $_.IsReadOnly }).Count -eq 0 -and
+      -not (Test-Path -LiteralPath (
+        Join-Path $gateRenderFailureOutput (
+          "checkpoint-alpha6-stage1-correctness-alpha6-gate-render-fail.json"
+        )
+      ))
+  ) "surface-transition-gate-render-failure-checkpoint-and-downstream-zero"
+  $gateRenderFailureReport = @(
+    Get-ChildItem -LiteralPath $gateRenderFailureOutput `
+      -Filter "failure-alpha6-stage1-*.json" -File
+  )[0]
+  $gateRenderFailureRecord = [System.IO.File]::ReadAllText(
+    $gateRenderFailureReport.FullName,
+    [System.Text.Encoding]::UTF8
+  ) | ConvertFrom-Json
+  Assert-Alpha6Stage1Test (
+    [string]$gateRenderFailureRecord.phase -ceq "render-open-smoke" -and
+      [string]$gateRenderFailureState.Settings["global/stay_on_while_plugged_in"] -ceq "0" -and
+      [string]$gateRenderFailureState.Settings["system/screen_off_timeout"] -ceq "120000"
+  ) "surface-transition-gate-render-failure-cleanup"
+
+  $gateSettleFailureOutput = Join-Path $root "surface-transition-gate-settle-failure"
+  $gateSettleFailureState = New-Alpha6FakeAdbState
+  $gateSettleFailureRenderCount = 0L
+  $gateSettleFailureDownstreamCount = 0L
+  $gateSettleFailureArgs = @{} + $gateSuccessArgs
+  $gateSettleFailureArgs.OutputDirectory = $gateSettleFailureOutput
+  $gateSettleFailureArgs.RunId = "alpha6-gate-settle-fail"
+  $gateSettleFailureArgs.TestOnlyAdbInvoker =
+    New-Alpha6FakeAdbInvoker $gateSettleFailureState
+  $gateSettleFailureArgs.TestOnlySettingsSettleExecutor = {
+    param($Context, $AttemptRunId)
+    $failed = & $settingsSettleExecutor $Context $AttemptRunId
+    $failed.status = "FAIL"
+    return $failed
+  }.GetNewClosure()
+  $gateSettleFailureArgs.TestOnlyRenderOpenSmokeExecutor = {
+    param($Context, $RenderRunId, $EvidenceDirectory)
+    $gateSettleFailureRenderCount += 1L
+    throw "SURFACE_TRANSITION_GATE_RENDER_MUST_NOT_RUN"
+  }.GetNewClosure()
+  $gateSettleFailureArgs.TestOnlyStageExecutor = {
+    param($Stage, $Context, $StageDirectory)
+    $gateSettleFailureDownstreamCount += 1L
+    throw "SURFACE_TRANSITION_GATE_DOWNSTREAM_STAGE_FORBIDDEN:$Stage"
+  }.GetNewClosure()
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @gateSettleFailureArgs | Out-Null
+  } "ALPHA6_STAGE1_DEVICE_SETTINGS_NOT_SETTLED" `
+    "surface-transition-gate-settle-failure-propagates"
+  Assert-Alpha6Stage1Test (
+    $gateSettleFailureRenderCount -eq 0L -and
+      $gateSettleFailureDownstreamCount -eq 0L -and
+      [string]$gateSettleFailureState.Settings["global/stay_on_while_plugged_in"] -ceq "0" -and
+      [string]$gateSettleFailureState.Settings["system/screen_off_timeout"] -ceq "120000"
+  ) "surface-transition-gate-settle-failure-blocks-and-restores"
+
   $identityFailureOutput = Join-Path $root "identity-smoke-failure-output"
   $identityFailureState = New-Alpha6FakeAdbState
   $identityFailureAdb = New-Alpha6FakeAdbInvoker $identityFailureState
@@ -586,6 +1261,8 @@ try {
   $fixtureFailureArgs.OriginalScreenTimeoutSetting = "120000"
   $fixtureFailureArgs.TestOnlyAdbInvoker = $fixtureFailureAdb
   $fixtureFailureArgs.TestOnlyIdentitySmokeExecutor = $identitySmokeExecutor
+  $fixtureFailureArgs.TestOnlySettingsSettleExecutor = $settingsSettleExecutor
+  $fixtureFailureArgs.TestOnlyRenderOpenSmokeExecutor = $renderOpenSmokeExecutor
   $fixtureFailureArgs.TestOnlyFixtureOpenSmokeExecutor = {
     param($Context, $FixtureRunId, $EvidenceDirectory)
     [System.IO.Directory]::CreateDirectory($EvidenceDirectory) | Out-Null
@@ -649,6 +1326,114 @@ try {
       [string]$fixtureFailureReport.fixtureOpenSmokeResult.reportPath -cmatch
         "fixture-failure\.json$"
   ) "fixture-smoke-failure-evidence-identity"
+
+  $settingsSettleFailureOutput = Join-Path $root "settings-settle-failure-output"
+  $settingsSettleFailureArgs = @{} + $fixtureFailureArgs
+  $settingsSettleFailureArgs.OutputDirectory = $settingsSettleFailureOutput
+  $settingsSettleFailureArgs.RunId = "alpha6-stage1-settle-fail"
+  $settingsSettleFailureArgs.TestOnlyFixtureOpenSmokeExecutor = $fixtureOpenSmokeExecutor
+  $settingsSettleFailureArgs.TestOnlySettingsSettleExecutor = {
+    param($Context, $AttemptRunId)
+    $result = & $settingsSettleExecutor $Context $AttemptRunId
+    $result.status = "FAIL"
+    $result.observedConsecutiveSamples = 2L
+    return $result
+  }.GetNewClosure()
+  $settingsSettleRenderCallCount = [PSCustomObject]@{ Count = 0 }
+  $settingsSettleStageCallCount = [PSCustomObject]@{ Count = 0 }
+  $settingsSettleFailureArgs.TestOnlyRenderOpenSmokeExecutor = {
+    param($Context, $RenderRunId, $EvidenceDirectory)
+    $settingsSettleRenderCallCount.Count += 1
+    throw "RENDER_MUST_NOT_RUN_AFTER_SETTINGS_SETTLE_FAILURE"
+  }.GetNewClosure()
+  $settingsSettleFailureArgs.TestOnlyStageExecutor = {
+    param($Stage, $Context, $StageDirectory)
+    $settingsSettleStageCallCount.Count += 1
+    throw "STAGE_MUST_NOT_RUN_AFTER_SETTINGS_SETTLE_FAILURE"
+  }.GetNewClosure()
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @settingsSettleFailureArgs | Out-Null
+  } "ALPHA6_STAGE1_DEVICE_SETTINGS_NOT_SETTLED" "settings-settle-fails-closed"
+  $settingsSettleFailureCheckpointPath = Join-Path $settingsSettleFailureOutput (
+    "checkpoint-alpha6-stage1-settings-settle-alpha6-stage1-settle-fail.json"
+  )
+  $settingsSettleFailureCheckpoint = [System.IO.File]::ReadAllText(
+    $settingsSettleFailureCheckpointPath,
+    [System.Text.Encoding]::UTF8
+  ) | ConvertFrom-Json
+  Assert-Alpha6Stage1Test (
+    [string]$settingsSettleFailureCheckpoint.status -ceq "FAIL" -and
+      (Get-Item -LiteralPath $settingsSettleFailureCheckpointPath).IsReadOnly -and
+      $settingsSettleRenderCallCount.Count -eq 0 -and
+      $settingsSettleStageCallCount.Count -eq 0
+  ) "settings-settle-failure-evidence-is-immutable-and-blocking"
+  $settingsSettleFailureReport = [System.IO.File]::ReadAllText(
+    @(
+      Get-ChildItem -LiteralPath $settingsSettleFailureOutput `
+        -Filter "failure-alpha6-stage1-*.json" -File
+    )[0].FullName,
+    [System.Text.Encoding]::UTF8
+  ) | ConvertFrom-Json
+  Assert-Alpha6Stage1Test (
+    [string]$settingsSettleFailureReport.phase -ceq "settings-settle" -and
+      [string]$settingsSettleFailureReport.settingsSettleCheckpoint.status -ceq "FAIL" -and
+      -not (Test-Path -LiteralPath (
+        Join-Path $settingsSettleFailureOutput (
+          "checkpoint-alpha6-stage1-correctness-alpha6-stage1-settle-fail.json"
+        )
+      ))
+  ) "settings-settle-failure-report-and-downstream-block"
+
+  $renderOpenFailureOutput = Join-Path $root "render-open-smoke-failure-output"
+  $renderOpenFailureArgs = @{} + $fixtureFailureArgs
+  $renderOpenFailureArgs.OutputDirectory = $renderOpenFailureOutput
+  $renderOpenFailureArgs.RunId = "alpha6-stage1-render-fail"
+  $renderOpenFailureArgs.TestOnlyFixtureOpenSmokeExecutor = $fixtureOpenSmokeExecutor
+  $renderOpenFailureArgs.TestOnlySettingsSettleExecutor = $settingsSettleExecutor
+  $renderOpenFailureArgs.TestOnlyRenderOpenSmokeExecutor = {
+    param($Context, $RenderRunId, $EvidenceDirectory)
+    $result = & $renderOpenSmokeExecutor $Context $RenderRunId $EvidenceDirectory
+    $result.status = "FAIL"
+    $result.videoOpenFailedCount = 1L
+    return $result
+  }.GetNewClosure()
+  $renderOpenFailureStageCallCount = [PSCustomObject]@{ Count = 0 }
+  $renderOpenFailureArgs.TestOnlyStageExecutor = {
+    param($Stage, $Context, $StageDirectory)
+    $renderOpenFailureStageCallCount.Count += 1
+    throw "STAGE_MUST_NOT_RUN_AFTER_RENDER_OPEN_SMOKE_FAILURE"
+  }.GetNewClosure()
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @renderOpenFailureArgs | Out-Null
+  } "ALPHA6_STAGE1_RENDER_OPEN_SMOKE_FAILED" "render-open-smoke-fails-closed"
+  $renderOpenFailureCheckpointPath = Join-Path $renderOpenFailureOutput (
+    "checkpoint-alpha6-stage1-render-open-smoke-alpha6-stage1-render-fail.json"
+  )
+  $renderOpenFailureCheckpoint = [System.IO.File]::ReadAllText(
+    $renderOpenFailureCheckpointPath,
+    [System.Text.Encoding]::UTF8
+  ) | ConvertFrom-Json
+  Assert-Alpha6Stage1Test (
+    [string]$renderOpenFailureCheckpoint.status -ceq "FAIL" -and
+      (Get-Item -LiteralPath $renderOpenFailureCheckpointPath).IsReadOnly -and
+      $renderOpenFailureStageCallCount.Count -eq 0
+  ) "render-open-smoke-failure-evidence-is-immutable-and-blocking"
+  $renderOpenFailureReport = [System.IO.File]::ReadAllText(
+    @(
+      Get-ChildItem -LiteralPath $renderOpenFailureOutput `
+        -Filter "failure-alpha6-stage1-*.json" -File
+    )[0].FullName,
+    [System.Text.Encoding]::UTF8
+  ) | ConvertFrom-Json
+  Assert-Alpha6Stage1Test (
+    [string]$renderOpenFailureReport.phase -ceq "render-open-smoke" -and
+      [string]$renderOpenFailureReport.renderOpenSmokeCheckpoint.status -ceq "FAIL" -and
+      -not (Test-Path -LiteralPath (
+        Join-Path $renderOpenFailureOutput (
+          "checkpoint-alpha6-stage1-correctness-alpha6-stage1-render-fail.json"
+        )
+      ))
+  ) "render-smoke-failure-skips-correctness-and-performance"
 
   $firstResumeAfterFixtureFailure = @{} + $fixtureFailureArgs
   $firstResumeAfterFixtureFailure.Resume = $true
@@ -734,6 +1519,8 @@ try {
   $failureArgs.TestOnlyAdbInvoker = $failureAdb
   $failureArgs.TestOnlyIdentitySmokeExecutor = $identitySmokeExecutor
   $failureArgs.TestOnlyFixtureOpenSmokeExecutor = $fixtureOpenSmokeExecutor
+  $failureArgs.TestOnlySettingsSettleExecutor = $settingsSettleExecutor
+  $failureArgs.TestOnlyRenderOpenSmokeExecutor = $renderOpenSmokeExecutor
   $failureArgs.TestOnlyStageExecutor = $failureExecutor
   Assert-Alpha6Stage1ThrowsLike {
     & $runner @failureArgs | Out-Null
@@ -756,7 +1543,12 @@ try {
     Assert-Alpha6Stage1Test ([string]$failureState.Settings[$entry.Key] -ceq [string]$entry.Value) "setting-restored-$($entry.Key)"
   }
   Assert-Alpha6Stage1Test (@($failureState.Commands | Where-Object { $_ -match 'pm list packages' }).Count -ge 2) "test-package-cleanup-queried"
-  Assert-Alpha6Stage1Test (@($failureState.Commands | Where-Object { $_ -match 'am force-stop' }).Count -eq 1) "app-force-stopped"
+  Assert-Alpha6Stage1Test (
+    @($failureState.Commands | Where-Object { $_ -match 'am force-stop' }).Count -eq 4 -and
+      @($failureState.Commands | Where-Object {
+        $_ -match ("am force-stop " + [regex]::Escape($script:CcrPinnedAppPackage) + "$")
+      }).Count -eq 2
+  ) "app-force-stopped"
   $settingsRecordPath = Join-Path $failureOutput "checkpoint-alpha6-stage1-device-settings-alpha6-stage1-correctness-fail.json"
   $settingsRecord = [System.IO.File]::ReadAllText($settingsRecordPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
   Assert-Alpha6Stage1Test ($settingsRecord.staleScreenTimeoutDetected -eq $true -and
@@ -800,6 +1592,30 @@ try {
   Assert-Alpha6Stage1Test (
     $fixtureSmokeAttempts.Count -eq 2 -and $fixtureSmokeChildRunIds.Count -eq 2
   ) "partial-resume-reruns-fixture-smoke-with-unique-child-run-id"
+  $settingsSettleAttempts = @(
+    Get-ChildItem -LiteralPath $failureOutput `
+      -Filter "checkpoint-alpha6-stage1-settings-settle-*.json" -File
+  )
+  $settingsSettleAttemptRunIds = @($settingsSettleAttempts | ForEach-Object {
+    $checkpoint = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8) |
+      ConvertFrom-Json
+    [string]$checkpoint.attemptRunId
+  } | Select-Object -Unique)
+  Assert-Alpha6Stage1Test (
+    $settingsSettleAttempts.Count -eq 2 -and $settingsSettleAttemptRunIds.Count -eq 2
+  ) "partial-resume-reruns-settings-settle-with-unique-attempt-id"
+  $renderOpenAttempts = @(
+    Get-ChildItem -LiteralPath $failureOutput `
+      -Filter "checkpoint-alpha6-stage1-render-open-smoke-*.json" -File
+  )
+  $renderOpenChildRunIds = @($renderOpenAttempts | ForEach-Object {
+    $checkpoint = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8) |
+      ConvertFrom-Json
+    [string]$checkpoint.result.runId
+  } | Select-Object -Unique)
+  Assert-Alpha6Stage1Test (
+    $renderOpenAttempts.Count -eq 2 -and $renderOpenChildRunIds.Count -eq 2
+  ) "partial-resume-reruns-render-open-smoke-with-unique-child-run-id"
   $resumeSettingsRecord = @($settingsAttempts | Where-Object { $_.Name -cne "checkpoint-alpha6-stage1-device-settings-alpha6-stage1-correctness-fail.json" })[0]
   $resumeSettings = [System.IO.File]::ReadAllText($resumeSettingsRecord.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
   Assert-Alpha6Stage1Test ($resumeSettings.interruptedAttemptStateDetected -eq $true -and
@@ -835,10 +1651,49 @@ try {
   $successArgs.OutputDirectory = $successOutput
   $successArgs.RunId = "alpha6-stage1-success"
   $successArgs.TestOnlyAdbInvoker = $successAdb
+  $successArgs.TestOnlyIdentitySmokeExecutor = {
+    param($Context, $IdentityRunId, $EvidenceDirectory)
+    [System.IO.File]::AppendAllText(
+      $successLog,
+      "IdentitySmoke`n",
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    return & $identitySmokeExecutor $Context $IdentityRunId $EvidenceDirectory
+  }.GetNewClosure()
+  $successArgs.TestOnlyFixtureOpenSmokeExecutor = {
+    param($Context, $FixtureRunId, $EvidenceDirectory)
+    [System.IO.File]::AppendAllText(
+      $successLog,
+      "FixtureOpenSmoke`n",
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    return & $fixtureOpenSmokeExecutor $Context $FixtureRunId $EvidenceDirectory
+  }.GetNewClosure()
+  $successArgs.TestOnlySettingsSettleExecutor = {
+    param($Context, $AttemptRunId)
+    [System.IO.File]::AppendAllText(
+      $successLog,
+      "DeviceSettings`nSettingsSettle`n",
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    return & $settingsSettleExecutor $Context $AttemptRunId
+  }.GetNewClosure()
+  $successArgs.TestOnlyRenderOpenSmokeExecutor = {
+    param($Context, $RenderRunId, $EvidenceDirectory)
+    [System.IO.File]::AppendAllText(
+      $successLog,
+      "RenderOpenSmoke`n",
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    return & $renderOpenSmokeExecutor $Context $RenderRunId $EvidenceDirectory
+  }.GetNewClosure()
   $successArgs.TestOnlyStageExecutor = $successExecutor
   & $runner @successArgs | Out-Null
   $successStages = @(Get-Content -Encoding UTF8 -LiteralPath $successLog)
-  Assert-Alpha6Stage1Test (($successStages -join ",") -ceq "Correctness,Performance") "stage-order"
+  Assert-Alpha6Stage1Test (
+    ($successStages -join ",") -ceq
+      "IdentitySmoke,FixtureOpenSmoke,DeviceSettings,SettingsSettle,RenderOpenSmoke,Correctness,Performance"
+  ) "stage-order"
   $successSummaryPath = Join-Path $successOutput "alpha6-stage1-summary-alpha6-stage1-success.json"
   $successSummary = [System.IO.File]::ReadAllText($successSummaryPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
   Assert-Alpha6Stage1Test ([string]$successSummary.status -ceq "PENDING_USER" -and
@@ -854,6 +1709,18 @@ try {
       [long]$successSummary.fixtureOpenSmoke.result.fixtureCount -eq 17L -and
       [long]$successSummary.fixtureOpenSmoke.deviceSettingsMutationCount -eq 0L
   ) "fixture-open-smoke-17-pass-recorded-before-stages"
+  Assert-Alpha6Stage1Test (
+    (@($successSummary.stageOrder) -join "|") -ceq
+      "IdentitySmoke|FixtureOpenSmoke|DeviceSettings|SettingsSettle|RenderOpenSmoke|Correctness|Performance" -and
+      [string]$successSummary.settingsSettle.status -ceq "PASS" -and
+      [string]$successSummary.renderOpenSmoke.status -ceq "PASS" -and
+      [long]$successSummary.debugArtifactInstallSetCount -eq 1L -and
+      [long]$successSummary.debugArtifactInstallCommandCount -eq 2L
+  ) "seven-stage-summary-and-single-debug-install-set"
+  Assert-Alpha6Stage1Test (
+    (Test-Path -LiteralPath ([string]$successSummary.settingsSettleCheckpointFile.path) -PathType Leaf) -and
+      (Test-Path -LiteralPath ([string]$successSummary.renderOpenSmokeCheckpointFile.path) -PathType Leaf)
+  ) "settle-and-render-checkpoint-files-recorded"
   $successCorrectnessCheckpoint = [System.IO.File]::ReadAllText(
     (Join-Path $successOutput "checkpoint-alpha6-stage1-correctness-alpha6-stage1-success.json"),
     [System.Text.Encoding]::UTF8
@@ -864,7 +1731,7 @@ try {
   $successResume = @{} + $successArgs
   $successResume.Resume = $true
   & $runner @successResume | Out-Null
-  Assert-Alpha6Stage1Test (@(Get-Content -Encoding UTF8 -LiteralPath $successLog).Count -eq 2) "resume-skips-completed-stages"
+  Assert-Alpha6Stage1Test (@(Get-Content -Encoding UTF8 -LiteralPath $successLog).Count -eq 7) "resume-skips-completed-stages"
 
   $successSummaryRaw = [System.IO.File]::ReadAllText($successSummaryPath, [System.Text.Encoding]::UTF8)
   $successSummaryItem = Get-Item -LiteralPath $successSummaryPath
@@ -887,6 +1754,22 @@ try {
     & $runner @successResume | Out-Null
   } "PINNED_MANIFEST_PROPERTY_MISSING:fixtureOpenSmoke" `
     "resume-rejects-completed-summary-without-fixture-smoke"
+  [System.IO.File]::WriteAllText(
+    $successSummaryPath,
+    $successSummaryRaw,
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  $missingRenderSummary = $successSummaryRaw | ConvertFrom-Json
+  $missingRenderSummary.PSObject.Properties.Remove("renderOpenSmoke")
+  [System.IO.File]::WriteAllText(
+    $successSummaryPath,
+    ($missingRenderSummary | ConvertTo-Json -Depth 50),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @successResume | Out-Null
+  } "PINNED_MANIFEST_PROPERTY_MISSING:renderOpenSmoke" `
+    "resume-rejects-completed-summary-without-render-open-smoke"
   [System.IO.File]::WriteAllText(
     $successSummaryPath,
     $successSummaryRaw,

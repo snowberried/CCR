@@ -55,14 +55,62 @@ open smoke를 추가했다. smoke는 asset → provider/PFD → fd-only extracto
 video track/sample → hardware decoder candidate까지만 확인하며 full-frame decode와
 performance는 0이다. 진단 probe만 explicit offset/range extractor와 codec
 configure/start를 추가로 확인하되 input/output buffer를 queue하지 않는다.
-Stage 1 순서는 identity → fixture-open smoke → settings → correctness → performance로
-고정했으며 앞 Gate가 실패하면 settings와 뒤 단계는 실행하지 않는다.
+Stage 1 순서는 identity → fixture-open smoke → settings → settings settle →
+render-open smoke → correctness → performance로 고정했으며 앞 Gate가 실패하면 뒤
+단계는 실행하지 않는다.
 
 현재 판정은
 `FIXTURE_OPEN_DIAGNOSTIC_AND_SMOKE_HOST_READY; S24 DIAGNOSTIC/SMOKE PENDING`이다.
 이번 closure에서는 Stage 1/Random `-PreflightOnly`, identity smoke, 필요 시 단일
 diagnostic, 17-fixture smoke까지만 새 signed revision 5 artifact로 실행한다. Full
 Stage 1과 Random 250은 그 다음 작업으로 남긴다.
+
+## 2026-07-29 Stage 1 Surface 전환 race와 재개 조건
+
+후속 run `a6s1-362001a-104314`은 identity와 fixture-open smoke `17/17` 뒤
+correctness의 첫 `h264-ip` open에서 `VIDEO_OPEN_FAILED`로 중단됐다. 보존된 시간
+순서에서는 correctness process 시작 직전 기기가 `DOZE_SUSPEND`였고, 같은
+`GateActivity`가 resume 직후 pause/stop되면서 Surface가 create 후 약 20ms 만에
+destroy됐다. 기존 `awaitSurface()`의 one-shot latch는 과거 create 성공을 현재
+readiness로 재사용했다. EGL release 뒤 `beginFile()`이 provider/extractor 전에
+실패할 수 있는 코드 경로와 실제 provider/extractor 진입 0도 일치한다.
+
+최종 root cause는
+`STAGE1_SURFACE_LIFECYCLE_AND_TRANSITION_RACE`이며 세부 분류는
+`DISPLAY_DOZE_INDUCED_ACTIVITY_STOP + STALE_ONE_SHOT_SURFACE_READINESS`다.
+제품 runtime, decoder, cache, reverse refill과 fixture 결함은 아니다.
+
+debug `GateActivity`는 frozen 40개 runtime 입력에 포함되므로 직접 변경하지 않는다.
+대신 AndroidTest 공통 helper가 open 직전에 `ActivityScenario`의 현재 RESUMED
+Activity를 다시 취득하고 holder validity, decoder availability,
+finishing/destroyed와 Surface generation을 함께 검사한다. 같은 generation의 300ms
+안정 구간을 통과한 동일 인스턴스에만 open을 전달한다. dispatch 전 drift만 안정화부터
+다시 시작하고 dispatch 뒤 drift는 즉시 구체적 failure로 남긴다.
+
+Stage 1은 Debug app/test를 identity 전에 한 세트만 설치한다. fixture smoke,
+render-open smoke와 correctness는 설치된 artifact identity를 다시 확인해 재사용한다.
+settings 적용 뒤에는 250ms 간격 3개 연속 sample에서 6개 target 값, awake/display,
+configuration/rotation과 관련 process 0을 확인한다. 이어 단일 `h264-ip` render-open
+smoke가 index, metadata와 정확한 frame 0을 확인해야 correctness가 시작된다.
+
+이 closure의 실기기 범위는 새 signed revision 5 artifact의 Stage 1/Random
+`-PreflightOnly`, identity, fixture `17/17`, settings settle, 서로 다른 runId의
+render-open smoke `10/10`과 cleanup까지다. Full Stage 1, Resume와 Random 250은
+실행하지 않는다. 위 제한 검증이 모두 통과한 뒤의 다음 고정 작업은
+`RUN_FRESH_FULL_STAGE1_WITH_THE_SURFACE_STABLE_REV5_ARTIFACT_SET`이다.
+동일 Stage 1 settle 경로를 재사용하는 공개 제한 모드
+`-SurfaceTransitionGateOnly`가 Debug 설치 1세트 뒤 render-open smoke를 고정 10회
+수행하고 correctness/performance는 0회로 종료한다. 이 모드는 `-Resume` 또는
+`-PreflightOnly`와 함께 사용할 수 없다.
+settings settle은 app, debugTest, macrobenchmarkTest 세 패키지의 process 0을
+검증한다. 각 render-open 회차 뒤에도 세 패키지를 force-stop하고 process 0을 확인한
+immutable attempt cleanup을 해당 회차 checkpoint에 포함한다.
+
+local host 검증은 candidate bridge `54`, render-open runner `15`, 실제 Surface 상태 머신
+`19`, Stage 1 `178`,
+전체 기존 host regression, PowerShell parser 47개, source contract, frozen runtime
+`40/40`과 CI 동일 Android lint/unit/assemble까지 통과했다. CI, 새 signed revision 5
+artifact와 S24 제한 검증은 Pending이다.
 
 ## 결론
 

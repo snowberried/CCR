@@ -246,6 +246,43 @@ const alpha6FixtureOpenSmokeTests = readFileSync(
   resolve(androidRoot, "scripts/test-run-s24-alpha6-fixture-open-smoke.ps1"),
   "utf8",
 );
+const alpha6StableGateActivity = readFileSync(
+  resolve(
+    androidRoot,
+    "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/Alpha6StableGateActivity.kt",
+  ),
+  "utf8",
+);
+const alpha6SurfaceStabilityMachine = readFileSync(
+  resolve(
+    androidRoot,
+    "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/Alpha6SurfaceStabilityMachine.java",
+  ),
+  "utf8",
+);
+const alpha6SurfaceStabilityHostTest = readFileSync(
+  resolve(androidRoot, "tools/Alpha6SurfaceStabilityMachineHostTest.java"),
+  "utf8",
+);
+const alpha6SurfaceStabilityHostRunner = readFileSync(
+  resolve(androidRoot, "scripts/test-alpha6-surface-stability-machine.ps1"),
+  "utf8",
+);
+const alpha6RenderOpenSmokeInstrumentation = readFileSync(
+  resolve(
+    androidRoot,
+    "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/Alpha6RenderOpenSmokeTest.kt",
+  ),
+  "utf8",
+);
+const alpha6RenderOpenSmokeRunner = readFileSync(
+  resolve(androidRoot, "scripts/run-s24-alpha6-render-open-smoke.ps1"),
+  "utf8",
+);
+const alpha6RenderOpenSmokeTests = readFileSync(
+  resolve(androidRoot, "scripts/test-run-s24-alpha6-render-open-smoke.ps1"),
+  "utf8",
+);
 const alpha6RandomEvidence = [
   "Alpha5RandomSeekExactnessTest.kt",
   "Alpha5RandomSeekPerformanceTest.kt",
@@ -259,6 +296,13 @@ const verifyApkPrivacy = readFileSync(
 );
 const s24FrameAccuracyTest = readFileSync(
   resolve(androidRoot, "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/S24FrameAccuracyTest.kt"),
+  "utf8",
+);
+const s24RepresentativeResolutionAccuracyTest = readFileSync(
+  resolve(
+    androidRoot,
+    "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/S24RepresentativeResolutionAccuracyTest.kt",
+  ),
   "utf8",
 );
 const validationHarnessV2 = readFileSync(
@@ -479,6 +523,7 @@ for (const scriptName of [
   "test-alpha6-tail-contract.ps1",
   "test-run-s24-alpha6-identity-smoke.ps1",
   "test-run-s24-alpha6-fixture-open-smoke.ps1",
+  "test-run-s24-alpha6-render-open-smoke.ps1",
   "test-run-s24-alpha6-stage1.ps1",
   "test-run-s24-alpha6-random.ps1",
 ]) {
@@ -752,6 +797,7 @@ requireContract(
     alpha6IdentitySmokeTests.includes("Alpha 6 identity smoke runner host tests passed") &&
     alpha6IdentitySmokeTests.includes("runner-never-writes-settings") &&
     alpha6IdentitySmokeTests.includes("wrong-test-sha-rejected") &&
+    alpha6RenderOpenSmokeTests.includes("Alpha 6 render-open smoke runner host tests passed") &&
     alpha6RandomTests.includes("Alpha6 random runner host tests passed") &&
     alpha6RandomTests.includes("revision5-runner-preflight-and-resume"),
   "Alpha 6 runner host-negative tests are incomplete",
@@ -887,6 +933,285 @@ requireContract(
     alpha6Stage1Tests.includes("fixture-smoke-failure-before-settings-mutation") &&
     alpha6Stage1Tests.includes("fixture-smoke-failure-skips-correctness-and-performance"),
   "Alpha 6 fixture-open smoke fail-closed host coverage is incomplete",
+);
+for (const marker of [
+  "ActivityScenario<GateActivity>",
+  "Lifecycle.State.RESUMED",
+  "surfaceAvailabilityGeneration",
+  "awaitSurfaceAvailabilityAfter",
+  "holder?.surface?.isValid",
+  "isFinishing",
+  "isDestroyed",
+]) {
+  requireContract(
+    alpha6StableGateActivity.includes(marker),
+    `Alpha 6 stable GateActivity helper missing ${marker}`,
+  );
+}
+const alpha6StableWaitStart = alpha6StableGateActivity.indexOf(
+  "fun awaitStableCurrent",
+);
+const alpha6StableOpenStart = alpha6StableGateActivity.indexOf(
+  "private fun openFixtureInternal",
+);
+const alpha6StableObserveStart = alpha6StableGateActivity.indexOf(
+  "private fun observeCurrent",
+);
+const alpha6StableWaitSource = alpha6StableGateActivity.slice(
+  alpha6StableWaitStart,
+  alpha6StableOpenStart,
+);
+const alpha6StableOpenSource = alpha6StableGateActivity.slice(
+  alpha6StableOpenStart,
+  alpha6StableObserveStart,
+);
+const alpha6StableDispatch = alpha6StableOpenSource.indexOf(
+  "current.openFixture(uri)",
+);
+requireContract(
+  alpha6StableWaitStart >= 0 &&
+    alpha6StableOpenStart > alpha6StableWaitStart &&
+    alpha6StableObserveStart > alpha6StableOpenStart &&
+    alpha6StableWaitSource.includes("Alpha6SurfaceStabilityMachine()") &&
+    alpha6StableWaitSource.includes("stability.observe(") &&
+    alpha6StableWaitSource.includes("stability.validateLease(") &&
+    alpha6StableWaitSource.includes("awaitSurfaceAvailabilityAfter") &&
+    !alpha6StableWaitSource.includes("activityInstanceDriftCount += 1") &&
+    !alpha6StableWaitSource.includes("surfaceGenerationDriftCount += 1") &&
+    !alpha6StableWaitSource.includes("surfaceLossCount += 1") &&
+    alpha6SurfaceStabilityMachine.includes(
+      "public static final long STABLE_INTERVAL_MS = 300L",
+    ) &&
+    alpha6SurfaceStabilityMachine.includes("public Decision observe(") &&
+    alpha6SurfaceStabilityMachine.includes("public Decision validateLease("),
+  "Alpha 6 stable Surface acquisition does not restart cleanly before the 300ms lease",
+);
+for (const marker of [
+  "available-true-to-false-resets",
+  "stale-latch-cannot-pass",
+  "generation-change-restarts",
+  "stable-300ms-ready",
+  "finishing-activity-rejected",
+  "destroyed-activity-rejected",
+  "stale-activity-lease-rejected",
+  "recreated-current-activity-used",
+  "timeout-at-deadline",
+]) {
+  requireContract(
+    alpha6SurfaceStabilityHostTest.includes(marker),
+    `Alpha 6 Surface stability host test missing ${marker}`,
+  );
+}
+requireContract(
+  alpha6SurfaceStabilityHostRunner.includes("Alpha6SurfaceStabilityMachine.java") &&
+    alpha6SurfaceStabilityHostRunner.includes("javac") &&
+    alpha6SurfaceStabilityHostRunner.includes("java.exe") &&
+    workflow.includes("test-alpha6-surface-stability-machine.ps1"),
+  "Alpha 6 actual Surface stability machine is not connected to the host/CI gate",
+);
+requireContract(
+  alpha6StableDispatch >= 0 &&
+    alpha6StableOpenSource.indexOf("current !== lease.activity") < alpha6StableDispatch &&
+    alpha6StableOpenSource.indexOf(
+      "beforeSnapshot.surfaceGeneration != lease.snapshot.surfaceGeneration",
+    ) < alpha6StableDispatch &&
+    alpha6StableOpenSource.indexOf("!beforeSnapshot.isReadyForOpen()") <
+      alpha6StableDispatch &&
+    alpha6StableOpenSource.includes("if (dispatched) throw lastFailure") &&
+    alpha6StableOpenSource.includes(
+      "dispatched -> Alpha6SurfaceFailureClassification.SURFACE_LOST_DURING_OPEN",
+    ),
+  "Alpha 6 current-Activity lease is not revalidated before dispatch or fail-closed afterward",
+);
+requireContract(
+  alpha6StableGateActivity.includes("lastOpenAttemptEvidence") &&
+    alpha6StableGateActivity.includes("GATE_STABILITY_BEGIN") &&
+    alpha6StableGateActivity.includes("GATE_PRE_DISPATCH") &&
+    alpha6StableGateActivity.includes("OPEN_DISPATCHED") &&
+    alpha6StableGateActivity.includes("failureEvidenceJson") &&
+    alpha6StableGateActivity.includes(
+      "providerReadOpenCountAfter > attempt.providerReadOpenCountBefore",
+    ) &&
+    alpha6RenderOpenSmokeInstrumentation.includes("mergeGateEvents") &&
+    alpha6RenderOpenSmokeInstrumentation.includes(
+      "beforeOpen = beforeOpen ?: attemptEvidence?.beforeOpen",
+    ) &&
+    s24FrameAccuracyTest.includes("failureEvidenceJson") &&
+    s24FrameAccuracyTest.includes('"classification"') &&
+    s24RepresentativeResolutionAccuracyTest.includes("failureEvidenceJson") &&
+    s24RepresentativeResolutionAccuracyTest.includes('"classification"'),
+  "Alpha 6 render/correctness Surface failure evidence is not structured and shared",
+);
+requireContract(
+  !s24FrameAccuracyTest.includes(".awaitSurface()") &&
+    s24FrameAccuracyTest.includes("Alpha6StableGateActivity(scenario)") &&
+    s24FrameAccuracyTest.includes("stableGate.openFixture(") &&
+    !s24RepresentativeResolutionAccuracyTest.includes(".awaitSurface()") &&
+    s24RepresentativeResolutionAccuracyTest.includes(
+      "Alpha6StableGateActivity(scenario)",
+    ) &&
+    s24RepresentativeResolutionAccuracyTest.includes(
+      "stableGate.openFixtureAfterStableAction(",
+    ),
+  "Alpha 6 correctness open paths still reuse legacy one-shot Surface readiness",
+);
+for (const marker of [
+  "ValidationHarnessV2.requireIdentity",
+  "Alpha6StableGateActivity",
+  "h264-ip",
+  "openFixture",
+  "awaitIndex",
+  "awaitMetadata",
+  "awaitResult",
+  "FrameResult.Published",
+  "validatedOutcome",
+  "capturedAtElapsedRealtimeNs",
+  "isRenderReadySnapshot",
+]) {
+  requireContract(
+    alpha6RenderOpenSmokeInstrumentation.includes(marker),
+    `Alpha 6 render-open instrumentation missing ${marker}`,
+  );
+}
+for (const marker of [
+  "Invoke-CcrAlpha6CandidateDeviceHostPreflight",
+  "Get-CcrAlpha6CandidateDeviceSettingsSnapshot",
+  "Assert-CcrAlpha6CandidateDeviceIdentityUnchanged",
+  "buildCommandCount = 0L",
+]) {
+  requireContract(
+    alpha6RenderOpenSmokeRunner.includes(marker),
+    `Alpha 6 render-open smoke runner missing ${marker}`,
+  );
+}
+for (const marker of [
+  "Alpha6RenderOpenSmokeTest",
+  "SURFACE_NOT_STABLE_BEFORE_OPEN",
+  "SURFACE_LOST_DURING_OPEN",
+  "STALE_ACTIVITY_INSTANCE",
+  "PROVIDER_OR_EXTRACTOR_OPEN_FAILURE",
+  "DECODER_SURFACE_UNAVAILABLE",
+  "UNCLASSIFIED_AFTER_STABLE_SURFACE",
+  "$report.activitySurfaceEvidence.beforeOpen",
+]) {
+  requireContract(
+    alpha6CandidateDeviceBridge.includes(marker),
+    `Alpha 6 render-open candidate bridge missing ${marker}`,
+  );
+}
+requireContract(
+  alpha6RenderOpenSmokeTests.includes("render-open-smoke-failure") &&
+    alpha6RenderOpenSmokeTests.includes("build-command-count-zero"),
+  "Alpha 6 render-open smoke host fail-closed coverage is incomplete",
+);
+const alpha6Stage1Order =
+  '@("IdentitySmoke", "FixtureOpenSmoke", "DeviceSettings", "SettingsSettle", "RenderOpenSmoke", "Correctness", "Performance")';
+const alpha6Stage1CorrectnessStart = alpha6Stage1Runner.indexOf(
+  "function Invoke-CcrAlpha6Stage1Correctness",
+);
+const alpha6Stage1PerformanceStart = alpha6Stage1Runner.indexOf(
+  "function Invoke-CcrAlpha6Stage1Performance",
+  alpha6Stage1CorrectnessStart,
+);
+const alpha6Stage1CorrectnessSource = alpha6Stage1Runner.slice(
+  alpha6Stage1CorrectnessStart,
+  alpha6Stage1PerformanceStart,
+);
+requireContract(
+  alpha6Stage1CorrectnessStart >= 0 &&
+    alpha6Stage1PerformanceStart > alpha6Stage1CorrectnessStart &&
+    alpha6Stage1CorrectnessSource.includes(
+      'Assert-CcrPinnedInstalledArtifact $Context "debugApp"',
+    ) &&
+    alpha6Stage1CorrectnessSource.includes(
+      'Assert-CcrPinnedInstalledArtifact $Context "debugTest"',
+    ) &&
+    !alpha6Stage1CorrectnessSource.includes(
+      'Install-CcrPinnedArtifactSet $Context "Debug"',
+    ) &&
+    alpha6Stage1Runner.includes("debugArtifactInstallSetCount = 1L") &&
+    alpha6Stage1Runner.includes("debugArtifactInstallCommandCount = 2L"),
+  "Alpha 6 Stage 1 does not enforce one Debug install set with installed-artifact revalidation",
+);
+const alpha6Stage1SettingsSettleInvocation = alpha6Stage1Runner.lastIndexOf(
+  "Wait-CcrAlpha6Stage1DeviceSettingsSettled",
+);
+const alpha6Stage1RenderOpenInvocation = alpha6Stage1Runner.lastIndexOf(
+  "Invoke-CcrAlpha6Stage1RenderOpenSmoke",
+);
+const alpha6Stage1CorrectnessInvocation = alpha6Stage1Runner.lastIndexOf(
+  "Invoke-CcrAlpha6Stage1Correctness",
+);
+const alpha6Stage1PerformanceInvocation = alpha6Stage1Runner.lastIndexOf(
+  "Invoke-CcrAlpha6Stage1Performance",
+);
+requireContract(
+  alpha6Stage1Runner.includes(alpha6Stage1Order) &&
+    alpha6Stage1Runner.includes("ALPHA6_STAGE1_DEVICE_SETTINGS_NOT_SETTLED") &&
+    alpha6Stage1Runner.includes("ALPHA6_STAGE1_RENDER_OPEN_SMOKE_FAILED") &&
+    alpha6Stage1Runner.includes("alpha6-stage1-render-open-smoke") &&
+    alpha6Stage1SettingsSettleInvocation >= 0 &&
+    alpha6Stage1SettingsSettleInvocation < alpha6Stage1RenderOpenInvocation &&
+    alpha6Stage1RenderOpenInvocation < alpha6Stage1CorrectnessInvocation &&
+    alpha6Stage1CorrectnessInvocation < alpha6Stage1PerformanceInvocation &&
+    alpha6Stage1Tests.includes("ALPHA6_STAGE1_RENDER_OPEN_SMOKE_FAILED") &&
+    alpha6Stage1Tests.includes("render-smoke-failure-skips-correctness-and-performance"),
+  "Alpha 6 Stage 1 settings/render transition is not ordered and fail-closed",
+);
+requireContract(
+  alpha6Stage1Runner.includes("[switch]$SurfaceTransitionGateOnly") &&
+    alpha6Stage1Runner.includes(
+      "$script:CcrAlpha6SurfaceTransitionRenderOpenRequiredCount = 10L",
+    ) &&
+    alpha6Stage1Runner.includes(
+      "ALPHA6_STAGE1_SURFACE_TRANSITION_MODE_CONFLICT",
+    ) &&
+    alpha6Stage1Runner.includes(
+      'kind = "alpha6-stage1-surface-transition-gate"',
+    ) &&
+    alpha6Stage1Runner.includes("renderOpenSmokeRequiredCount") &&
+    alpha6Stage1Runner.includes("correctnessExecutedTestCount = 0L") &&
+    alpha6Stage1Runner.includes("performanceScenarioCount = 0L") &&
+    alpha6Stage1Runner.includes("Get-CcrAlpha6Stage1CleanupVerification") &&
+    alpha6Stage1Runner.includes(
+      "function Invoke-CcrAlpha6Stage1RenderAttemptCleanup",
+    ) &&
+    alpha6Stage1Runner.includes("renderOpenAttemptCleanupPassCount") &&
+    alpha6Stage1Runner.includes("priorValidationProcessCounts") &&
+    alpha6Stage1Runner.includes("totalValidationProcessCount") &&
+    alpha6Stage1Runner.includes("$rawBrightnessExactRequired") &&
+    alpha6Stage1Runner.includes("if (-not $SurfaceTransitionGateOnly)") &&
+    alpha6Stage1Tests.includes(
+      "surface-transition-gate-ten-unique-render-runs-no-downstream",
+    ) &&
+    alpha6Stage1Tests.includes(
+      "surface-transition-gate-fourth-render-failure-propagates",
+    ) &&
+    alpha6Stage1Tests.includes(
+      "surface-transition-gate-settle-failure-blocks-and-restores",
+    ) &&
+    alpha6Stage1Tests.includes("surface-transition-gate-cleanup-evidence") &&
+    alpha6Stage1Tests.includes("renderOpenAttemptCleanupPassCount") &&
+    alpha6Stage1Tests.includes(
+      "cleanup-verification-allows-auto-brightness-recalculation",
+    ) &&
+    alpha6Stage1Tests.includes(
+      "cleanup-verification-requires-manual-brightness-exact",
+    ),
+  "Alpha 6 transition-only ten-run device gate is incomplete",
+);
+requireContract(
+  alpha6Stage1Runner.includes("$pidResult = Invoke-CcrPinnedAdb") &&
+    !alpha6Stage1Runner.includes("$pid = Invoke-CcrPinnedAdb") &&
+    alpha6Stage1Tests.includes("actual-settings-settle-positive") &&
+    alpha6Stage1Tests.includes(
+      "actual-settings-settle-resets-on-config-and-process-drift",
+    ) &&
+    alpha6Stage1Tests.includes("actual-settings-settle-timeout-bounded") &&
+    alpha6Stage1Tests.includes(
+      "installed-sha-drift-correctness-instrumentation-count-zero",
+    ),
+  "Alpha 6 actual settings-settle/installed-SHA fail-closed regression is incomplete",
 );
 for (const marker of [
   "measuredWindowBuildAssociatedLongGapCount",

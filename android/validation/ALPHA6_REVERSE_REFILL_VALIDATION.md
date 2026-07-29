@@ -59,12 +59,55 @@ closure에서 변경하지 않는다.
   복구나 덮어쓰기 없이 fail-closed한다.
 - 각 단계의 원시 report를 immutable evidence로 먼저 보존하고, report parsing이나
   contract 검사가 실패해도 원시 파일을 잃지 않는다.
-- Stage 1 순서는 identity → fixture-open smoke → settings → correctness →
-  performance다. 선행 Gate 실패 시 settings write, correctness와 performance는 0이다.
+- Stage 1 순서는 identity → fixture-open smoke → settings → settings settle →
+  render-open smoke → correctness → performance다. 선행 Gate 실패 시 아직 시작하지
+  않은 correctness와 performance는 0이다.
 
 허용된 실기기 closure 순서는 Stage 1 `-PreflightOnly` → Random
-`-PreflightOnly` → identity smoke → 필요 시 단일 diagnostic → 17-fixture smoke다.
+`-PreflightOnly` → identity smoke → 필요 시 단일 diagnostic → 17-fixture smoke →
+settings settle → 서로 다른 runId의 render-open smoke `10/10`이다.
 이 결과가 나오기 전에는 S24 PASS로 기록하지 않는다.
+이 제한 검증은 Stage 1 runner의 `-SurfaceTransitionGateOnly`로 같은 settle 구현을
+재사용하며, Debug 설치는 1세트이고 correctness/performance 실행 수는 0으로
+고정한다. `-Resume`·`-PreflightOnly`와의 조합은 시작 전에 거부한다.
+
+## Stage 1 Surface 전환 Gate
+
+run `a6s1-362001a-104314`에서는 fixture-open smoke `17/17` 뒤 correctness process가
+기기의 `DOZE_SUSPEND` 전환과 겹쳤다. 같은 Activity의 Surface가 create 후 약 20ms
+만에 destroy됐지만 기존 `GateActivity.awaitSurface()`는 과거 create에서 열린 one-shot
+latch 때문에 현재 Surface 소실을 감지하지 못했다. EGL release 뒤 `beginFile()`은
+provider/extractor 진입 전에 실패할 수 있고 상위 status는 `VIDEO_OPEN_FAILED`로
+축약된다. 최종 분류는
+`STAGE1_SURFACE_LIFECYCLE_AND_TRANSITION_RACE` /
+`DISPLAY_DOZE_INDUCED_ACTIVITY_STOP + STALE_ONE_SHOT_SURFACE_READINESS`다.
+
+Surface 전환 계약은 다음과 같다.
+
+- debug `GateActivity`는 frozen runtime 입력이므로 수정하지 않는다.
+- AndroidTest 공통 helper가 open 직전에 `ActivityScenario`의 현재 RESUMED Activity를
+  다시 취득한다.
+- holder Surface validity, decoder Surface availability, finishing/destroyed와 Surface
+  generation을 함께 확인하고 동일 generation의 300ms 안정 구간을 요구한다.
+- open 전 generation 또는 Activity drift는 안정화부터 다시 시작하고, open 전달 뒤
+  drift는 재시도로 숨기지 않고 구체적인 failure evidence로 종료한다.
+- identity 전 Debug app/test를 한 세트만 설치한다. fixture/render/correctness는 설치된
+  APK SHA, package, signer와 runner/target identity를 재검증하고 `install -r` 없이
+  진행한다.
+- settings 적용 후 250ms 간격 3개 연속 sample에서 6개 target 값, awake/display ON,
+  configuration/rotation 안정과 app/debugTest/macrobenchmarkTest process 0을 확인한다.
+- render-open smoke는 `h264-ip` 하나에서 index, metadata, hardware decoder와 정확한
+  frame 0 FrameKey/texture timestamp/image probe를 확인한다. full 17 fixture,
+  236-frame correctness와 performance는 실행하지 않는다.
+- 제한 10회 검증은 각 회차 뒤 세 validation 패키지를 force-stop하고 process 0인
+  immutable attempt cleanup evidence를 남긴다.
+- 이 closure에서는 Full Stage 1, Resume와 Random 250을 실행하지 않는다.
+
+local host 기준으로 candidate bridge `54`, render-open runner `15`, 실제 Surface 상태 머신
+`19`, Stage 1 `178`,
+전체 기존 host regression, PowerShell parser 47개, source contract, frozen runtime
+`40/40`과 CI 동일 Android lint/unit/assemble가 통과했다. CI와 새 signed artifact 및
+S24 제한 검증은 아직 Pending이다.
 
 이 문서는 Alpha 5에서 확인된 역방향 주기적 끊김과 random seek tail을 줄이기 위한 Alpha 6 구조, 고정 source 경계, 아직 실행하지 않은 S24 Gate를 기록한다. 실제 사용자 영상, 파일명, URI, 경로 또는 source hash는 기록하지 않는다.
 

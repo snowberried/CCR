@@ -19,9 +19,18 @@ smoke는 full-frame decode와 performance를 실행하지 않는다.
 단일 `h264-ip`의 pipeline 단계를 더 분리해야 할 때만
 `run-s24-alpha6-fixture-open-diagnostic.ps1`을 사용한다. diagnostic은 explicit
 offset/range extractor와 codec configure/start까지 확인하지만 input/output buffer를
-queue하지 않는다. Stage 1 순서는 identity → fixture-open smoke → device settings →
-correctness → performance이며, 앞 Gate 실패 시 settings와 뒤 단계는 fail-closed로
-건너뛴다.
+queue하지 않는다. settings 적용 뒤에는 target readback, wake/display,
+configuration/rotation과 잔존 process 0이 500ms 동안 안정된 것을 확인한다. 이어
+`run-s24-alpha6-render-open-smoke.ps1`이 current RESUMED Activity의 동일 Surface
+generation이 300ms 동안 유지된 상태에서 `h264-ip`의 index, metadata와 정확한 frame
+0 publication을 검증한다. Stage 1 순서는 identity → fixture-open smoke → device
+settings → settings settle → render-open smoke → correctness → performance이며, 앞
+Gate 실패 시 뒤 단계는 fail-closed로 건너뛴다. Debug app/test는 identity 전에 한
+세트만 설치하고 이후 단계에서는 설치된 identity를 재검증해 재사용한다.
+Full Stage 1 전 Surface 전환만 검증할 때는 `run-s24-alpha6-stage1.ps1`의
+`-SurfaceTransitionGateOnly`를 사용한다. 이 모드는 동일 settle 경로와 Debug 설치
+1세트를 재사용해 고유 runId render-open smoke 10회만 수행하고
+correctness/performance는 실행하지 않는다.
 
 데스크톱과 독립된 Android 내부 파일럿 앱이다. 의료기기나 공식 진단 프로그램이 아니며, 원본 MP4를 SAF 읽기 전용으로 연다. Gate 3 정확 프레임 기준선은 `android-v0.1.0-gate3-pass`로 동결되어 있다.
 

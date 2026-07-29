@@ -101,6 +101,11 @@ class S24FrameAccuracyTest {
         val frames: List<GoldenFrame>,
     )
 
+    private data class OpenedFixture(
+        val activity: GateActivity,
+        val metadata: ContainerMetadata,
+    )
+
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val targetContext = instrumentation.targetContext
     private val report = Report(targetContext)
@@ -114,23 +119,19 @@ class S24FrameAccuracyTest {
         report.bind(ValidationHarnessV2.requireIdentity(targetContext, instrumentation.context))
         ReadOnlyFixtureProvider.writeOpenCount.set(0)
         val scenario = ActivityScenario.launch(GateActivity::class.java)
-        val activity = AtomicReference<GateActivity>()
-        val ready = CountDownLatch(1)
-        scenario.onActivity {
-            activity.set(it)
-            ready.countDown()
-        }
-        assertTrue(ready.await(5, TimeUnit.SECONDS))
-        val gate = activity.get()
-        assertTrue("EGL Surface was not created", gate.awaitSurface())
-        gate.display.mode.let { report.captureDisplay(it.physicalWidth, it.physicalHeight, it.refreshRate) }
+        val stableGate = Alpha6StableGateActivity(scenario)
+        report.bindSurfaceGate(stableGate)
 
         val outcome = runCatching {
+            val gate = stableGate.awaitStableCurrent().activity
+            gate.display.mode.let {
+                report.captureDisplay(it.physicalWidth, it.physicalHeight, it.refreshRate)
+            }
             val names = REQUIRED_FIXTURES
             for (name in names) {
                 val golden = loadGolden(name)
                 assertEquals(golden.sourceSha256, assetSha256(golden.fixture))
-                val metadata = exerciseEveryFrame(gate, golden)
+                val metadata = exerciseEveryFrame(stableGate, golden)
                 report.fixtures += JSONObject()
                     .put("fixture", golden.fixture)
                     .put("sourceSha256", golden.sourceSha256)
@@ -148,10 +149,15 @@ class S24FrameAccuracyTest {
                         JSONArray(lastDiagnostics.decodedOutputFormatHistory.map(::decodedOutputJson)),
                     )
             }
-            exerciseNavigation(gate, loadGolden("burst"))
-            exercisePrefetchContract(gate, loadGolden("burst"), loadGolden("switch-a"), loadGolden("switch-b"))
-            exerciseBurst(gate, loadGolden("burst"))
-            exerciseFileSwitch(gate, loadGolden("switch-a"), loadGolden("switch-b"))
+            exerciseNavigation(stableGate, loadGolden("burst"))
+            exercisePrefetchContract(
+                stableGate,
+                loadGolden("burst"),
+                loadGolden("switch-a"),
+                loadGolden("switch-b"),
+            )
+            exerciseBurst(stableGate, loadGolden("burst"))
+            exerciseFileSwitch(stableGate, loadGolden("switch-a"), loadGolden("switch-b"))
             assertEquals("unexpected stale discard", 0L, report.unexpectedStaleViolationCount())
             assertEquals("source was opened for write", 0, ReadOnlyFixtureProvider.writeOpenCount.get())
             assertEquals("exactness mismatch", 0, mismatchCount)
@@ -184,23 +190,19 @@ class S24FrameAccuracyTest {
         report.bind(ValidationHarnessV2.requireIdentity(targetContext, instrumentation.context))
         ReadOnlyFixtureProvider.writeOpenCount.set(0)
         val scenario = ActivityScenario.launch(GateActivity::class.java)
-        val activity = AtomicReference<GateActivity>()
-        val ready = CountDownLatch(1)
-        scenario.onActivity {
-            activity.set(it)
-            ready.countDown()
-        }
-        assertTrue("GateActivity unavailable", ready.await(5, TimeUnit.SECONDS))
-        val gate = activity.get()
-        assertTrue("EGL Surface was not created", gate.awaitSurface())
-        gate.display.mode.let { report.captureDisplay(it.physicalWidth, it.physicalHeight, it.refreshRate) }
+        val stableGate = Alpha6StableGateActivity(scenario)
+        report.bindSurfaceGate(stableGate)
 
         val outcome = runCatching {
+            val gate = stableGate.awaitStableCurrent().activity
+            gate.display.mode.let {
+                report.captureDisplay(it.physicalWidth, it.physicalHeight, it.refreshRate)
+            }
             SEQUENTIAL_FIXTURES.forEach { name ->
                 val golden = loadGolden(name)
                 assertEquals(golden.sourceSha256, assetSha256(golden.fixture))
-                exerciseForwardSequential(gate, golden, stride = 1)
-                exerciseForwardSequential(gate, golden, stride = 5)
+                exerciseForwardSequential(stableGate, golden, stride = 1)
+                exerciseForwardSequential(stableGate, golden, stride = 5)
             }
             assertEquals("source was opened for write", 0, ReadOnlyFixtureProvider.writeOpenCount.get())
             assertEquals("exactness mismatch", 0, mismatchCount)
@@ -233,22 +235,16 @@ class S24FrameAccuracyTest {
         report.bind(ValidationHarnessV2.requireIdentity(targetContext, instrumentation.context))
         ReadOnlyFixtureProvider.writeOpenCount.set(0)
         val scenario = ActivityScenario.launch(GateActivity::class.java)
-        val activity = AtomicReference<GateActivity>()
-        val ready = CountDownLatch(1)
-        scenario.onActivity {
-            activity.set(it)
-            ready.countDown()
-        }
-        assertTrue("GateActivity unavailable", ready.await(5, TimeUnit.SECONDS))
-        val gate = activity.get()
-        assertTrue("EGL Surface was not created", gate.awaitSurface())
+        val stableGate = Alpha6StableGateActivity(scenario)
+        report.bindSurfaceGate(stableGate)
 
         val outcome = runCatching {
+            stableGate.awaitStableCurrent()
             SEQUENTIAL_FIXTURES.forEach { name ->
                 val golden = loadGolden(name)
                 assertEquals(golden.sourceSha256, assetSha256(golden.fixture))
-                exerciseReverseSequential(gate, golden, stride = -1)
-                exerciseReverseSequential(gate, golden, stride = -5)
+                exerciseReverseSequential(stableGate, golden, stride = -1)
+                exerciseReverseSequential(stableGate, golden, stride = -5)
             }
             assertEquals("source was opened for write", 0, ReadOnlyFixtureProvider.writeOpenCount.get())
             assertEquals("exactness mismatch", 0, mismatchCount)
@@ -281,20 +277,14 @@ class S24FrameAccuracyTest {
         report.bind(ValidationHarnessV2.requireIdentity(targetContext, instrumentation.context))
         ReadOnlyFixtureProvider.writeOpenCount.set(0)
         val scenario = ActivityScenario.launch(GateActivity::class.java)
-        val activity = AtomicReference<GateActivity>()
-        val ready = CountDownLatch(1)
-        scenario.onActivity {
-            activity.set(it)
-            ready.countDown()
-        }
-        assertTrue("GateActivity unavailable", ready.await(5, TimeUnit.SECONDS))
-        val gate = activity.get()
-        assertTrue("EGL Surface was not created", gate.awaitSurface())
+        val stableGate = Alpha6StableGateActivity(scenario)
+        report.bindSurfaceGate(stableGate)
 
         val outcome = runCatching {
+            var gate = stableGate.awaitStableCurrent().activity
             val h264 = loadGolden("h264-bframes")
             val hevc = loadGolden("hevc-main8")
-            openAndAwait(gate, h264)
+            gate = openAndAwait(stableGate, h264).activity
             val anchor = minOf(20, h264.frames.lastIndex)
             requestAndValidate(gate, h264, anchor)
 
@@ -320,7 +310,7 @@ class S24FrameAccuracyTest {
             // Reopen to clear generic/reverse textures, then stop the actor at the first
             // cache-only reverse-window output. This makes the Surface-generation race
             // deterministic instead of merely replacing the Surface near a build.
-            openAndAwait(gate, h264)
+            gate = openAndAwait(stableGate, h264).activity
             requestAndValidate(gate, h264, anchor)
             val replacementReady = AtomicReference<CountDownLatch>()
             val surfaceInvalidationAcceptance = AtomicReference<RequestAcceptance>()
@@ -363,7 +353,7 @@ class S24FrameAccuracyTest {
             // lifecycle test verifies requested/displayed state restoration; this
             // companion also verifies the restored texture timestamp, embedded ID,
             // and canonical signature against the frozen golden vector.
-            openAndAwait(gate, h264)
+            gate = openAndAwait(stableGate, h264).activity
             requestAndValidate(gate, h264, anchor)
             gate.clearResults()
             val surfaceGenerationBeforeStop = gate.surfaceAvailabilityGeneration()
@@ -403,18 +393,14 @@ class S24FrameAccuracyTest {
                 lifecycleInvalidationResults.count { it.result is FrameResult.Published },
             )
             report.endSupersedePhase("lifecycle-stop-supersede")
-            val surfaceGenerationBeforeResume = gate.surfaceAvailabilityGeneration()
             scenario.moveToState(Lifecycle.State.RESUMED)
-            assertTrue(
-                "resumed exactness Surface was not ready",
-                gate.awaitSurfaceAvailabilityAfter(surfaceGenerationBeforeResume, true, 10_000),
-            )
+            gate = stableGate.awaitStableCurrent().activity
             gate.clearResults()
             requestAndValidate(gate, h264, anchor - 1)
 
-            openAndAwait(gate, hevc)
+            gate = openAndAwait(stableGate, hevc).activity
             requestAndValidate(gate, hevc, minOf(hevc.frames.lastIndex, 8))
-            openAndAwait(gate, h264)
+            gate = openAndAwait(stableGate, h264).activity
             requestAndValidate(gate, h264, minOf(h264.frames.lastIndex, 8))
 
             assertEquals("source was opened for write", 0, ReadOnlyFixtureProvider.writeOpenCount.get())
@@ -447,12 +433,15 @@ class S24FrameAccuracyTest {
         reportOutcome.getOrThrow()
     }
 
-    private fun exerciseEveryFrame(activity: GateActivity, golden: Golden): ContainerMetadata {
+    private fun exerciseEveryFrame(
+        stableGate: Alpha6StableGateActivity,
+        golden: Golden,
+    ): ContainerMetadata {
         report.currentPhase = "every-frame"
         report.currentFixture = golden.fixture
         report.currentFrameIndex = 0
         val openedAt = SystemClock.elapsedRealtimeNanos()
-        open(activity, golden.fixture)
+        val activity = stableGate.openFixture(uri(golden.fixture)).activity
         val indexed = requireNotNull(activity.awaitIndex()) {
             "${golden.fixture}: index timeout ${activity.drainStatuses()}"
         }
@@ -467,20 +456,26 @@ class S24FrameAccuracyTest {
         return metadata
     }
 
-    private fun exerciseNavigation(activity: GateActivity, golden: Golden) {
+    private fun exerciseNavigation(stableGate: Alpha6StableGateActivity, golden: Golden) {
         report.currentPhase = "navigation"
         report.currentFixture = golden.fixture
-        openAndAwait(activity, golden)
+        val activity = openAndAwait(stableGate, golden).activity
         val middle = golden.frames.size / 2
         val sequence = listOf(golden.frames.lastIndex, 0, middle, middle - 1, middle + 4, 1, golden.frames.lastIndex - 1)
         sequence.forEach { requestAndValidate(activity, golden, it) }
     }
 
-    private fun exerciseForwardSequential(activity: GateActivity, golden: Golden, stride: Int) {
+    private fun exerciseForwardSequential(
+        stableGate: Alpha6StableGateActivity,
+        golden: Golden,
+        stride: Int,
+    ) {
         report.currentPhase = "forward-sequential"
         report.currentFixture = golden.fixture
         val mismatchBefore = mismatchCount
-        val metadata = openAndAwait(activity, golden)
+        val opened = openAndAwait(stableGate, golden)
+        val activity = opened.activity
+        val metadata = opened.metadata
         var diagnostics = lastDiagnostics
         var requestCount = 0
         for (index in stride..golden.frames.lastIndex step stride) {
@@ -542,11 +537,15 @@ class S24FrameAccuracyTest {
             .put("sequentialOutputCount", diagnostics.sequentialOutputCount)
     }
 
-    private fun exerciseReverseSequential(activity: GateActivity, golden: Golden, stride: Int) {
+    private fun exerciseReverseSequential(
+        stableGate: Alpha6StableGateActivity,
+        golden: Golden,
+        stride: Int,
+    ) {
         report.currentPhase = "reverse-sequential"
         report.currentFixture = golden.fixture
         val mismatchBefore = mismatchCount
-        openAndAwait(activity, golden)
+        val activity = openAndAwait(stableGate, golden).activity
         requestAndValidate(activity, golden, golden.frames.lastIndex)
         val gesture = activity.beginHoldGesture()
         var diagnostics = lastDiagnostics
@@ -634,10 +633,10 @@ class S24FrameAccuracyTest {
             .put("reverseRefillAssociatedGapCount", diagnostics.reverseRefillAssociatedGapCount)
     }
 
-    private fun exerciseBurst(activity: GateActivity, golden: Golden) {
+    private fun exerciseBurst(stableGate: Alpha6StableGateActivity, golden: Golden) {
         report.currentPhase = "burst-supersede"
         report.currentFixture = golden.fixture
-        openAndAwait(activity, golden)
+        val activity = openAndAwait(stableGate, golden).activity
         activity.clearResults()
         val sequence = listOf(1, 6, 12, 24, golden.frames.lastIndex)
         val acceptances = mutableListOf<RequestAcceptance>()
@@ -705,14 +704,14 @@ class S24FrameAccuracyTest {
     }
 
     private fun exercisePrefetchContract(
-        activity: GateActivity,
+        stableGate: Alpha6StableGateActivity,
         golden: Golden,
         first: Golden,
         second: Golden,
     ) {
         report.currentPhase = "prefetch-contract"
         report.currentFixture = golden.fixture
-        openAndAwait(activity, golden)
+        var activity = openAndAwait(stableGate, golden).activity
         assertTrue("initial frame actor did not become idle", activity.awaitActorIdle())
         assertEquals("initial open started speculative prefetch", 0L, lastDiagnostics.prefetchStarted)
         assertEquals("initial open completed speculative prefetch", 0L, lastDiagnostics.prefetchCompleted)
@@ -733,7 +732,7 @@ class S24FrameAccuracyTest {
         assertTrue("prefetch diagnostics did not advance", prefetched.diagnostics.prefetchedFrameCount > 0)
 
         report.currentFixture = first.fixture
-        openAndAwait(activity, first)
+        activity = openAndAwait(stableGate, first).activity
         activity.clearResults()
         val firstActivationIndex = minOf(1, first.frames.lastIndex)
         onMain(activity) { activity.requestDirectionalFrame(firstActivationIndex) }
@@ -743,7 +742,7 @@ class S24FrameAccuracyTest {
         assertTrue("file A prefetch emitted a publication event", activity.drainPublicationEvents().isEmpty())
 
         report.currentFixture = second.fixture
-        open(activity, second.fixture)
+        activity = stableGate.openFixture(uri(second.fixture)).activity
         requireNotNull(activity.awaitIndex()) { "${second.fixture}: index timeout" }
         val secondMetadata = requireNotNull(activity.awaitMetadata()) { "${second.fixture}: metadata timeout" }
         val secondFirst = awaitPublished(activity, second, 0)
@@ -751,18 +750,21 @@ class S24FrameAccuracyTest {
         assertEquals("file A texture survived file B generation", false, (secondFirst.result as FrameResult.Published).cacheHit)
     }
 
-    private fun exerciseFileSwitch(activity: GateActivity, first: Golden, second: Golden) {
+    private fun exerciseFileSwitch(
+        stableGate: Alpha6StableGateActivity,
+        first: Golden,
+        second: Golden,
+    ) {
         report.currentPhase = "file-switch-supersede"
         report.currentFixture = first.fixture
-        openAndAwait(activity, first)
+        var activity = openAndAwait(stableGate, first).activity
         activity.clearResults()
         val superseded = AtomicReference<RequestAcceptance>()
-        onMain(activity) {
-            activity.requestFrame(first.frames.lastIndex)?.let(superseded::set)
+        activity = stableGate.openFixtureAfterStableAction(uri(second.fixture)) { current ->
+            current.requestFrame(first.frames.lastIndex)?.let(superseded::set)
             report.currentFixture = second.fixture
             report.currentFrameIndex = 0
-            activity.openFixture(uri(second.fixture))
-        }
+        }.activity
         val secondIndex = requireNotNull(activity.awaitIndex()) { "switch B index timeout" }
         val secondMetadata = requireNotNull(activity.awaitMetadata()) { "switch B metadata timeout" }
         report.expectSupersededDiscard(
@@ -794,16 +796,17 @@ class S24FrameAccuracyTest {
         assertEquals("A frame published after B file generation", 0, lateA)
     }
 
-    private fun openAndAwait(activity: GateActivity, golden: Golden): ContainerMetadata {
-        open(activity, golden.fixture)
+    private fun openAndAwait(
+        stableGate: Alpha6StableGateActivity,
+        golden: Golden,
+    ): OpenedFixture {
+        val activity = stableGate.openFixture(uri(golden.fixture)).activity
         validateIndex(golden, requireNotNull(activity.awaitIndex()) { "${golden.fixture}: index timeout" })
         val metadata = requireNotNull(activity.awaitMetadata()) { "${golden.fixture}: metadata timeout" }
         validateMetadata(golden, metadata)
         awaitPublished(activity, golden, 0)
-        return metadata
+        return OpenedFixture(activity, metadata)
     }
-
-    private fun open(activity: GateActivity, fixture: String) = onMain(activity) { activity.openFixture(uri(fixture)) }
 
     private fun requestAndValidate(activity: GateActivity, golden: Golden, index: Int) {
         report.currentFixture = golden.fixture
@@ -1002,10 +1005,15 @@ class S24FrameAccuracyTest {
         private var observedUnexpectedStaleCount = 0L
         private lateinit var identity: ValidationHarnessIdentity
         private var startedAtElapsedRealtimeNs = 0L
+        private var surfaceGate: Alpha6StableGateActivity? = null
 
         fun bind(identity: ValidationHarnessIdentity) {
             this.identity = identity
             startedAtElapsedRealtimeNs = SystemClock.elapsedRealtimeNanos()
+        }
+
+        fun bindSurfaceGate(surfaceGate: Alpha6StableGateActivity) {
+            this.surfaceGate = surfaceGate
         }
 
         fun captureDisplay(width: Int, height: Int, refreshRate: Float) {
@@ -1286,9 +1294,26 @@ class S24FrameAccuracyTest {
                 instrumentationExpectedTestCount = 1,
             )
             if (failure != null) {
+                val surfaceFailure = requireNotNull(surfaceGate) {
+                    "SURFACE_FAILURE_EVIDENCE_GATE_MISSING"
+                }.failureEvidenceJson(
+                    failure = failure,
+                )
                 json.put("failure", JSONObject()
                     .put("type", failure.javaClass.simpleName)
                     .put("message", failure.message ?: "unknown")
+                    .put("classification", surfaceFailure.getString("classification"))
+                    .put("stageCode", surfaceFailure.getString("stageCode"))
+                    .put("exceptionClass", surfaceFailure.getString("exceptionClass"))
+                    .put("sanitizedDetail", surfaceFailure.getString("sanitizedDetail"))
+                    .put(
+                        "providerOrExtractorEntered",
+                        surfaceFailure.getBoolean("providerOrExtractorEntered"),
+                    )
+                    .put(
+                        "activitySurfaceEvidence",
+                        surfaceFailure.getJSONObject("activitySurfaceEvidence"),
+                    )
                     .put("fixture", currentFixture)
                     .put("frameIndex", currentFrameIndex)
                     .put("expectedFrameKey", expectedFrameKey?.let(::frameKeyJson) ?: JSONObject.NULL)

@@ -1,5 +1,89 @@
 # Project Troubleshooting
 
+## 2026-07-29 Alpha 6 fixture smoke 직후 첫 render open이 간헐적으로 실패하는 문제
+
+상태: 원인 검증·host 수정 완료 / CI·새 artifact·S24 제한 검증 Pending
+
+### 증상
+
+Full Stage 1 run `a6s1-362001a-104314`에서 identity smoke와 fixture-open smoke
+`17/17`은 통과했지만 correctness의 첫 `h264-ip` open이
+`indexing → VIDEO_OPEN_FAILED`로 끝났다. fixture, frame과 extractor 진입 수는
+각각 `0/17`, `0/236`, `0`이었고 같은 APK 안의 fixture SHA-256은 smoke 전후
+동일했다.
+
+### 확인된 시간 순서
+
+- correctness process 시작 뒤 기기가 `DOZE_SUSPEND` 상태에서 Activity를
+  create/resume했다가 즉시 pause/stop했다.
+- `GateActivity`의 Surface는 create 후 약 20ms 만에 destroy됐다.
+- 기존 `awaitSurface()`는 이전 create에서 이미 열린 one-shot latch만 확인하므로,
+  현재 Surface가 사라진 뒤에도 성공으로 돌아갈 수 있었다.
+- `EglFrameRenderer.releaseGl()`은 Surface destroy에서 EGL display와 decoder
+  Surface를 해제한다. 이 상태의 `beginFile()`은 provider/extractor보다 먼저
+  실패하며 상위 sanitizer에서 `VIDEO_OPEN_FAILED`로 축약될 수 있다.
+
+최종 원인 분류는
+`STAGE1_SURFACE_LIFECYCLE_AND_TRANSITION_RACE`이며, 세부 원인은
+`DISPLAY_DOZE_INDUCED_ACTIVITY_STOP + STALE_ONE_SHOT_SURFACE_READINESS`다.
+제품 decoder, cache, reverse refill 또는 fixture 손상의 증거는 없다.
+
+### 해결 절차
+
+- frozen runtime 입력에 포함된 debug `GateActivity`는 변경하지 않는다.
+- AndroidTest 공통 게이트가 open 직전에 `ActivityScenario`의 현재 RESUMED
+  Activity를 다시 취득한다.
+- 현재 holder Surface validity, decoder Surface availability, Activity
+  finishing/destroyed 상태와 Surface generation을 함께 확인하고, 동일 generation이
+  300ms 동안 유지된 경우에만 같은 Activity에 open을 전달한다.
+- open 전 generation/Activity가 바뀌면 현재 인스턴스를 다시 취득해 안정화 구간을
+  처음부터 시작한다. open 전달 후 drift는 재시도로 숨기지 않고 구체적인 Surface
+  failure로 종료한다.
+- Stage 1은 Debug APK 한 세트를 identity 전에 한 번만 설치한다. fixture와 새
+  render-open smoke는 설치된 app/test SHA·package·signer를 재검증해 재사용하고,
+  correctness 직전 `install -r`은 수행하지 않는다.
+- settings 적용 뒤 250ms 간격 3개 연속 sample(500ms 안정 구간)에서 target
+  readback, wake/display, configuration/rotation과 잔존 process 0을 확인한다.
+- 새 `h264-ip` render-open smoke가 current Surface에서 index, metadata와 정확한
+  frame 0 publication을 확인한 뒤에만 correctness와 performance로 진행한다.
+
+새 Stage 1 순서는 다음과 같다.
+
+`IdentitySmoke → FixtureOpenSmoke → DeviceSettings → SettingsSettle → RenderOpenSmoke → Correctness → Performance`
+
+Windows PowerShell에서는 변수명이 대소문자를 구분하지 않으므로 settle sampler의
+`$pid`는 읽기 전용 자동 변수 `$PID`와 충돌해 sample 0개 상태로 timeout을 만들었다.
+프로세스 조회 결과 변수는 `$pidResult`처럼 자동 변수와 겹치지 않게 이름을 정하고,
+host test가 실제 settle 함수를 호출해 configuration 변화와 잔존 process가 연속
+sample을 초기화하는지 검증한다. Full Stage 1 없이 같은 경로를 확인할 때는
+`-SurfaceTransitionGateOnly`를 사용하며 render smoke 10회 뒤 반드시 cleanup한다.
+
+### 검증 방법
+
+- host tests에서 Debug install 한 세트, settings settle/render smoke의 fail-closed,
+  Resume checkpoint 무결성, report failure 분류와 immutable evidence를 확인한다.
+- AndroidTest Kotlin compile과 source contract에서 모든 correctness open 경로가
+  공통 current-Activity/stable-Surface 게이트를 사용하는지 확인한다.
+- Alpha 6 frozen runtime `40/40`과 제품 runtime diff `0`을 함께 확인한다.
+- 새 signed revision 5 artifact로 Stage 1/Random preflight, identity, fixture
+  `17/17`, settings settle와 서로 다른 runId의 render-open smoke `10/10`만 먼저
+  실행한다. 이 closure에서는 Full Stage 1, Resume와 Random 250을 실행하지 않는다.
+- settle과 각 smoke 회차 cleanup은 app, debugTest, macrobenchmarkTest 세 패키지의
+  process 0을 확인하고 회차별 immutable checkpoint에 기록한다.
+
+현재 local 검증은 candidate bridge `54`, render-open runner `15`, 실제 Surface 상태 머신
+`19`, Stage 1 `178`를
+포함한 전체 PowerShell host test, 47개 script parser, source contract, frozen runtime
+`40/40`과 CI 동일 Android lint/unit/assemble를 통과했다. 새 signed artifact와 S24
+제한 검증 결과는 이 상태와 구분해 후속 evidence에 기록한다.
+
+관련 파일:
+
+- `android/app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/Alpha6StableGateActivity.kt`
+- `android/app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/Alpha6RenderOpenSmokeTest.kt`
+- `android/scripts/run-s24-alpha6-render-open-smoke.ps1`
+- `android/scripts/run-s24-alpha6-stage1.ps1`
+
 ## 2026-07-28 Alpha 6 candidate APK compiled runtime identity 불일치
 
 상태: 원인 검증 완료 / candidate build와 S24 선행 Gate 수정

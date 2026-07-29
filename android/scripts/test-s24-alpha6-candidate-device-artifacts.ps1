@@ -284,6 +284,155 @@ try {
     -Mode "Smoke" -ExpectedStatus "PASS" | Out-Null
   Assert-CcrAlpha6CandidateBridgeTest $true "fixture-open-smoke-report-17-positive"
 
+  $renderOpenFrameKey = [PSCustomObject][ordered]@{
+    displayFrameIndex = 0L
+    ptsUs = 0L
+    duplicateOrdinal = 0L
+  }
+  $renderOpenSurfaceBefore = [PSCustomObject][ordered]@{
+    capturedAtElapsedRealtimeNs = 120L
+    scenarioState = "RESUMED"
+    activityInstanceId = "1234"
+    activityFinishing = $false
+    activityDestroyed = $false
+    decorAttached = $true
+    surfaceViewPresent = $true
+    surfaceValid = $true
+    surfaceGeneration = 3L
+    decoderSurfaceAvailable = $true
+  }
+  $renderOpenReport = [PSCustomObject][ordered]@{
+    schemaVersion = 1
+    kind = "alpha6-render-open-smoke"
+    status = "PASS"
+    applicationId = $script:CcrPinnedAppPackage
+    appVersionName = "0.2.0-alpha.6"
+    appVersionCode = 7L
+    device = [PSCustomObject]@{
+      manufacturer = "samsung"
+      model = $context.Model
+      fingerprint = $context.Fingerprint
+      securityPatch = $context.SecurityPatch
+      sdk = $context.Sdk
+    }
+    syntheticOnly = $true
+    containsRealMediaMetadata = $false
+    runId = "bridge-render-open"
+    startedAtElapsedRealtimeNs = 100L
+    finishedAtElapsedRealtimeNs = 200L
+    runtimeSourceSha = $context.ArtifactSet.RuntimeSourceSha
+    harnessSourceSha = $context.ArtifactSet.HarnessSourceSha
+    runtimeInputsTreeSha256 = $context.ArtifactSet.RuntimeInputsTreeSha256
+    artifactSetRevision = 5
+    testCount = 1L
+    instrumentationExpectedTestCount = 1L
+    appSha256 = $context.ArtifactSet.Artifacts.debugApp.sha256
+    testApkSha256 = $context.ArtifactSet.Artifacts.debugTest.sha256
+    fixture = "h264-ip.mp4"
+    stableIntervalMs = 300L
+    activityInstanceDriftCount = 0L
+    surfaceGenerationDriftCount = 0L
+    surfaceLossCount = 0L
+    videoOpenFailedCount = 0L
+    providerOrExtractorEntered = $true
+    providerReadOpenCount = 1L
+    indexReceived = $true
+    metadataReceived = $true
+    firstFramePublished = $true
+    expectedFrameKey = $renderOpenFrameKey
+    actualFrameKey = Copy-CcrAlpha6CandidateBridgeValue $renderOpenFrameKey
+    expectedTextureTimestampNs = 0L
+    actualTextureTimestampNs = 0L
+    hardwareAccelerated = $true
+    codecComponent = "c2.vendor.decoder"
+    writeOpenCount = 0L
+    fullFrameDecodeCount = 1L
+    performanceScenarioCount = 0L
+    activitySurfaceEvidence = [PSCustomObject][ordered]@{
+      beforeOpen = $renderOpenSurfaceBefore
+      afterOpen = Copy-CcrAlpha6CandidateBridgeValue $renderOpenSurfaceBefore
+      statusSequence = @(
+        [PSCustomObject]@{
+          ordinal = 0L
+          sequence = 0L
+          capturedAtElapsedRealtimeNs = 130L
+          status = "indexing"
+          detail = $null
+        },
+        [PSCustomObject]@{
+          ordinal = 1L
+          sequence = 1L
+          capturedAtElapsedRealtimeNs = 160L
+          status = "frame 1/12"
+          detail = $null
+        }
+      )
+    }
+    failure = $null
+  }
+  Assert-CcrAlpha6RenderOpenReport `
+    -Report $renderOpenReport -Context $context -RunId "bridge-render-open" `
+    -ExpectedStatus "PASS" | Out-Null
+  Assert-CcrAlpha6CandidateBridgeTest $true "render-open-stable-current-surface-positive"
+
+  $renderReceiveContext = $context | Select-Object *
+  $renderReceiveContext | Add-Member -NotePropertyName Serial -NotePropertyValue "FAKE-S24"
+  $renderReceiveContext | Add-Member -NotePropertyName Adb -NotePropertyValue "fake-adb"
+  $renderOpenRaw = $renderOpenReport | ConvertTo-Json -Depth 30
+  $renderReceiveContext | Add-Member -NotePropertyName AdbInvoker -NotePropertyValue {
+    param($Arguments)
+    return [PSCustomObject]@{ exitCode = 0; output = $renderOpenRaw }
+  }.GetNewClosure()
+  $renderReceiveDirectory = Join-Path $root "render-open-report-positive"
+  [System.IO.Directory]::CreateDirectory($renderReceiveDirectory) | Out-Null
+  $renderReceived = Receive-CcrAlpha6RenderOpenReport `
+    -Context $renderReceiveContext -RunId "bridge-render-open" `
+    -EvidenceDirectory $renderReceiveDirectory
+  Assert-CcrAlpha6CandidateBridgeTest (
+    (Get-Item -LiteralPath $renderReceived.Path).IsReadOnly -and
+      [string]$renderReceived.Report.activitySurfaceEvidence.beforeOpen.activityInstanceId -ceq
+        "1234" -and
+      [long]$renderReceived.Report.activitySurfaceEvidence.beforeOpen.surfaceGeneration -eq 3L
+  ) "render-open-actual-report-shape-received"
+
+  $badStatusSequence = Copy-CcrAlpha6CandidateBridgeValue $renderOpenReport
+  $badStatusSequence.activitySurfaceEvidence.statusSequence[1].capturedAtElapsedRealtimeNs = 120L
+  Assert-CcrAlpha6CandidateBridgeThrows {
+    Assert-CcrAlpha6RenderOpenReport `
+      -Report $badStatusSequence -Context $context -RunId "bridge-render-open" `
+      -ExpectedStatus "PASS" | Out-Null
+  } "ALPHA6_RENDER_OPEN_STATUS_SEQUENCE_INVALID:1" `
+    "render-open-status-timestamp-regression-rejected"
+
+  foreach ($case in @(
+    @("surface-loss", "SURFACE_LOST_DURING_OPEN", "GATE_SURFACE_NOT_CURRENT"),
+    @("generation-drift", "SURFACE_LOST_DURING_OPEN", "GATE_SURFACE_GENERATION_CHANGED"),
+    @("stale-activity", "STALE_ACTIVITY_INSTANCE", "GATE_ACTIVITY_INSTANCE_STALE")
+  )) {
+    $failureReport = Copy-CcrAlpha6CandidateBridgeValue $renderOpenReport
+    $failureReport.status = "FAIL"
+    $failureReport.runId = "bridge-render-$([string]$case[0])"
+    $failureReport.failure = [PSCustomObject]@{
+      classification = [string]$case[1]
+      stageCode = [string]$case[2]
+      exceptionClass = "Alpha6StableGateException"
+      sanitizedDetail = "state=RESUMED,surface=false,generation=4"
+    }
+    Assert-CcrAlpha6RenderOpenReport `
+      -Report $failureReport -Context $context -RunId $failureReport.runId `
+      -ExpectedStatus "FAIL" | Out-Null
+    Assert-CcrAlpha6CandidateBridgeTest $true "render-open-$([string]$case[0])-classified"
+  }
+
+  $badRenderOpen = Copy-CcrAlpha6CandidateBridgeValue $renderOpenReport
+  $badRenderOpen.surfaceGenerationDriftCount = 1L
+  Assert-CcrAlpha6CandidateBridgeThrows {
+    Assert-CcrAlpha6RenderOpenReport `
+      -Report $badRenderOpen -Context $context -RunId "bridge-render-open" `
+      -ExpectedStatus "PASS" | Out-Null
+  } "ALPHA6_RENDER_OPEN_REPORT_COUNTER_MISMATCH:surfaceGenerationDriftCount" `
+    "render-open-generation-drift-pass-rejected"
+
   $badFixtureIdentity = Copy-CcrAlpha6CandidateBridgeValue $fixtureReport
   $badFixtureIdentity.fixtures[0].fixture = "unexpected.mp4"
   Assert-CcrAlpha6CandidateBridgeThrows {
