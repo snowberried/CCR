@@ -44,6 +44,21 @@ try {
   foreach ($directory in @($backup1, $backup2)) {
     [System.IO.File]::Copy($primary, (Join-Path $directory "ccr-internal-pilot-v1.jks"), $false)
   }
+  $buildPath = Join-Path $PSScriptRoot "build-s24-alpha6-candidate.ps1"
+  $boundBackups = & {
+    param([string]$ScriptPath, [string]$ExpectedBackup1, [string]$ExpectedBackup2)
+    . $ScriptPath `
+      -BackupDirectory1 $ExpectedBackup1 `
+      -BackupDirectory2 $ExpectedBackup2
+    return [PSCustomObject]@{
+      backup1 = $BackupDirectory1
+      backup2 = $BackupDirectory2
+    }
+  } $buildPath $backup1 $backup2
+  Assert-CcrCandidateTest (
+    [string]$boundBackups.backup1 -ceq $backup1 -and
+    [string]$boundBackups.backup2 -ceq $backup2
+  ) "candidate-build-preserves-explicit-backup-parameters"
   $fingerprintPath = Join-Path $root "ccr-internal-pilot-v1-cert.sha256"
   $certificatePath = Join-Path $root "ccr-internal-pilot-v1-cert.pem"
   $policyPath = Join-Path $root "ccr-internal-pilot-v1-policy.json"

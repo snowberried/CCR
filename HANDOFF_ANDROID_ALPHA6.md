@@ -154,7 +154,7 @@ revision 5 device bridge closure에서는 다음 host 계약을 확인했다.
 - Android JVM: 162/162, failure/error/skip 0
 - Android lint와 app/test APK 4종 assemble: PASS
 - historical pinned host tests: 124 + 98 + 39 PASS
-- candidate bridge/signing/tail: 47 + 28 + 56 PASS
+- candidate bridge/signing/tail: 47 + 29 + 56 PASS
 - identity/fixture-open/Stage 1/Random runner: 19 + 20 + 127 + 24 PASS
 - PowerShell parser: 44 scripts PASS
 - fixed fixture 17개, source/privacy/CI contract와 APK privacy: PASS

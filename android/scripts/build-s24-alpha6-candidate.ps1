@@ -7,7 +7,9 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "ccr-android-pilot-signing-common.ps1")
-. (Join-Path $PSScriptRoot "verify-ccr-android-pilot-signing.ps1")
+. (Join-Path $PSScriptRoot "verify-ccr-android-pilot-signing.ps1") `
+  -BackupDirectory1 $BackupDirectory1 `
+  -BackupDirectory2 $BackupDirectory2
 . (Join-Path $PSScriptRoot "s24-alpha6-candidate-artifacts.ps1")
 
 $script:CcrAlpha6RuntimeSourceSha = "c98264f2a10026a908e94c961bb13e4af2d59e60"

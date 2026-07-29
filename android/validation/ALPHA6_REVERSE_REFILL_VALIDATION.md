@@ -150,7 +150,7 @@ Stage 1 재실행은 Pending이다. 첫 candidate APK·manifest·실패 보고�
 - Alpha 5 pinned artifact host tests: 98 PASS
 - Alpha 6 revision 4 host tests: 39 PASS
 - Alpha 6 tail contract host tests: 56 PASS
-- pilot signing host tests: 28 PASS
+- pilot signing host tests: 29 PASS
 - revision 5 candidate device bridge host tests: 47 PASS
 - identity smoke runner host tests: 19 PASS
 - fixture-open smoke runner host tests: 20 PASS

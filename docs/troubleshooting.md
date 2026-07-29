@@ -100,6 +100,39 @@ exported=false 권한 경계의 정상 결과이므로 provider 실패 증거로
 - `android/scripts/run-s24-alpha6-fixture-open-smoke.ps1`
 - `android/scripts/run-s24-alpha6-stage1.ps1`
 
+## 2026-07-29 candidate builder가 명시한 backup 경로를 잃는 문제
+
+상태: 원인·수정 검증 완료
+
+### 증상
+
+두 backup 디렉터리에 primary와 byte-for-byte 같은 JKS가 있어도
+`build-s24-alpha6-candidate.ps1 -BackupDirectory1 ... -BackupDirectory2 ...`가
+preflight에서 `CANDIDATE_BACKUP_MISSING`으로 중단됐다.
+
+### 원인
+
+builder가 `verify-ccr-android-pilot-signing.ps1`을 인자 없이 dot-source했다. verifier의
+같은 이름 `param()`이 builder에 이미 bind된 두 backup 변수를 빈 환경 기본값으로
+덮어썼다. 파일 부재, 비밀번호 또는 keystore identity 문제가 아니었다.
+
+### 해결 절차
+
+builder가 verifier를 dot-source할 때 이미 bind된 `BackupDirectory1/2`를 명시적으로
+전달한다. 환경변수 우회, backup 복사 또는 keystore 변경은 필요하지 않다.
+
+### 검증 방법
+
+- 별도 PowerShell scope에서 builder를 명시 backup 인자로 dot-source한 뒤 두 값이
+  그대로 보존되는지 검사한다.
+- pilot signing host tests 29 PASS와 source contract를 통과시킨다.
+- primary와 두 backup은 수정하지 않고 존재·크기·SHA 동일성만 읽기 전용으로 확인한다.
+
+### 관련 변경
+
+- `android/scripts/build-s24-alpha6-candidate.ps1`
+- `android/scripts/test-ccr-android-pilot-signing.ps1`
+
 이 문서는 **CT Cine Reviewer 프로젝트에서만 발생하는 문제와 검증된 해결 방법**을 기록한다.
 
 ## 기록 범위
