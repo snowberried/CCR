@@ -668,14 +668,83 @@ function Get-CcrAlpha6Stage1DeviceSettleSample {
     $processCounts[$packageName] = $packageProcessCount
     $processCount += $packageProcessCount
   }
-  $orientationMatch = [regex]::Match(
+  $legacyOrientationFieldMatches = [regex]::Matches(
     [string]$inputState.output,
-    "(?m)^\s*SurfaceOrientation:\s*(?<value>[0-3])\s*$"
+    "(?m)^[ \t]*SurfaceOrientation:[^\r\n]*\r?$"
   )
-  $surfaceOrientation = if ($orientationMatch.Success) {
-    [long]$orientationMatch.Groups["value"].Value
-  } else {
-    -1L
+  $legacyOrientationMatches = [regex]::Matches(
+    [string]$inputState.output,
+    "(?m)^[ \t]*SurfaceOrientation:[ \t]*(?<value>[0-3])[ \t]*\r?$"
+  )
+  $legacyOrientationValues = @(
+    $legacyOrientationMatches |
+      ForEach-Object { [long]$_.Groups["value"].Value } |
+      Select-Object -Unique
+  )
+  $legacyOrientation = $null
+  if ($legacyOrientationFieldMatches.Count -gt 0) {
+    if (
+      $legacyOrientationMatches.Count -eq $legacyOrientationFieldMatches.Count -and
+      $legacyOrientationValues.Count -eq 1
+    ) {
+      $legacyOrientation = [long]$legacyOrientationValues[0]
+    }
+  }
+  $activeInternalViewportLines = @(
+    [regex]::Matches(
+      [string]$inputState.output,
+      "(?m)^[ \t]*Viewport\s+INTERNAL:[ \t]*(?<details>[^\r\n]*)\r?$"
+    ) |
+      ForEach-Object { [string]$_.Groups["details"].Value } |
+      Where-Object {
+        [regex]::IsMatch(
+          [string]$_,
+          "(?:^|,\s*)displayId=0(?=\s*(?:,|$))"
+        ) -and
+        [regex]::IsMatch(
+          [string]$_,
+          "(?:^|,\s*)isActive=\[1\](?=\s*(?:,|$))"
+        )
+      }
+  )
+  $viewportOrientationValues = [System.Collections.Generic.List[long]]::new()
+  $viewportRecordsValid = $activeInternalViewportLines.Count -gt 0
+  foreach ($viewportLine in $activeInternalViewportLines) {
+    $viewportOrientationMatches = [regex]::Matches(
+      [string]$viewportLine,
+      "(?:^|,\s*)orientation=(?<value>[0-3])(?=\s*(?:,|$))"
+    )
+    if ($viewportOrientationMatches.Count -ne 1) {
+      $viewportRecordsValid = $false
+      break
+    }
+    $viewportOrientationValues.Add(
+      [long]$viewportOrientationMatches[0].Groups["value"].Value
+    )
+  }
+  $uniqueViewportOrientationValues = @(
+    $viewportOrientationValues | Select-Object -Unique
+  )
+  $viewportOrientation = $null
+  if ($viewportRecordsValid -and $uniqueViewportOrientationValues.Count -eq 1) {
+    $viewportOrientation = [long]$uniqueViewportOrientationValues[0]
+  }
+  $surfaceOrientation = -1L
+  if ($legacyOrientationFieldMatches.Count -gt 0) {
+    if (
+      $null -ne $legacyOrientation -and
+      (
+        $activeInternalViewportLines.Count -eq 0 -or
+        (
+          $null -ne $viewportOrientation -and
+          [long]$viewportOrientation -eq [long]$legacyOrientation
+        )
+      )
+    ) {
+      $surfaceOrientation = [long]$legacyOrientation
+    }
+  } elseif ($null -ne $viewportOrientation) {
+    $surfaceOrientation = [long]$viewportOrientation
   }
   $settingsMatch =
     [string]$settings.stayAwake -ceq [string]$TargetSettings.stayAwake -and

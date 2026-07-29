@@ -44,6 +44,7 @@ function New-Alpha6FakeAdbState {
     Wakefulness = "Awake"
     DisplayState = "ON"
     SurfaceOrientation = 0L
+    InputStateOutput = $null
     Configuration = "mcc310-mnc260-en-rUS-sw411dp-w891dp-h411dp-normal-long-port"
     ProcessIds = @{}
     SettleSampleReadCount = 0L
@@ -91,9 +92,14 @@ function New-Alpha6FakeAdbInvoker {
     }
     if ($Arguments.Count -ge 5 -and $Arguments[2] -ceq "shell" -and
         $Arguments[3] -ceq "dumpsys" -and $Arguments[4] -ceq "input") {
+      $inputStateOutput = if ($null -eq $State.InputStateOutput) {
+        "SurfaceOrientation: $([long]$State.SurfaceOrientation)"
+      } else {
+        [string]$State.InputStateOutput
+      }
       return [PSCustomObject]@{
         exitCode = 0
-        output = "SurfaceOrientation: $([long]$State.SurfaceOrientation)"
+        output = $inputStateOutput
       }
     }
     if ($Arguments.Count -ge 6 -and $Arguments[2] -ceq "shell" -and
@@ -368,6 +374,10 @@ try {
   }.GetEnumerator()) {
     $actualSettleState.Settings[$entry.Key] = [string]$entry.Value
   }
+  $actualSettleState.InputStateOutput =
+    "Viewport INTERNAL: displayId=0, uniqueId=local:primary, orientation=0, densityDpi=600, isActive=[1]`r`n" +
+    "Viewport INTERNAL: displayId=0, uniqueId=local:primary, orientation=0, densityDpi=600, isActive=[1]`r`n" +
+    "Viewport INTERNAL: displayId=0, uniqueId=local:inactive, orientation=2, densityDpi=600, isActive=[0]`r`n"
   $actualSettleState.SettleSampleMutator = {
     param($State, $SampleIndex)
     if ($SampleIndex -eq 1L) {
@@ -435,6 +445,90 @@ try {
       @($actualSettleState.Commands | Where-Object { $_ -match 'shell pidof ' }).Count -eq 18 -and
       @($actualSettleState.Commands | Where-Object { $_ -match 'am force-stop' }).Count -eq 3
   ) "actual-settings-settle-reads-device-config-and-processes"
+  $targetSettings = Get-CcrAlpha6Stage1TargetSettings
+  $actualSettleState.InputStateOutput = "SurfaceOrientation: 0`r`n"
+  $legacyOrientationSample = Get-CcrAlpha6Stage1DeviceSettleSample `
+    $actualSettleContext $targetSettings
+  Assert-Alpha6Stage1Test (
+    [long]$legacyOrientationSample.surfaceOrientation -eq 0L -and
+      $legacyOrientationSample.ready -eq $true
+  ) "settings-settle-keeps-legacy-surface-orientation"
+  $actualSettleState.InputStateOutput =
+    "Viewport INTERNAL: isActive=[1], orientation=0, uniqueId=local:primary, displayId=0"
+  $reorderedViewportSample = Get-CcrAlpha6Stage1DeviceSettleSample `
+    $actualSettleContext $targetSettings
+  Assert-Alpha6Stage1Test (
+    [long]$reorderedViewportSample.surfaceOrientation -eq 0L -and
+      $reorderedViewportSample.ready -eq $true
+  ) "settings-settle-accepts-reordered-active-primary-viewport"
+  $actualSettleState.InputStateOutput =
+    "Viewport INTERNAL: displayId=0, orientation=1, isActive=[1]"
+  $landscapeViewportSample = Get-CcrAlpha6Stage1DeviceSettleSample `
+    $actualSettleContext $targetSettings
+  Assert-Alpha6Stage1Test (
+    [long]$landscapeViewportSample.surfaceOrientation -eq 1L -and
+      $landscapeViewportSample.ready -eq $false
+  ) "settings-settle-rejects-active-landscape-viewport"
+  $actualSettleState.InputStateOutput = @"
+      Viewport INTERNAL: displayId=0, orientation=0, isActive=[0]
+      Viewport EXTERNAL: displayId=0, orientation=0, isActive=[1]
+      Viewport INTERNAL: displayId=1, orientation=0, isActive=[1]
+"@
+  $nonPrimaryViewportSample = Get-CcrAlpha6Stage1DeviceSettleSample `
+    $actualSettleContext $targetSettings
+  Assert-Alpha6Stage1Test (
+    [long]$nonPrimaryViewportSample.surfaceOrientation -eq -1L -and
+      $nonPrimaryViewportSample.ready -eq $false
+  ) "settings-settle-ignores-inactive-external-and-secondary-viewports"
+  $actualSettleState.InputStateOutput = @"
+      Viewport INTERNAL: displayId=0, orientation=0, isActive=[1]
+      Viewport INTERNAL: displayId=0, orientation=1, isActive=[1]
+"@
+  $conflictingViewportSample = Get-CcrAlpha6Stage1DeviceSettleSample `
+    $actualSettleContext $targetSettings
+  Assert-Alpha6Stage1Test (
+    [long]$conflictingViewportSample.surfaceOrientation -eq -1L -and
+      $conflictingViewportSample.ready -eq $false
+  ) "settings-settle-rejects-conflicting-active-primary-viewports"
+  $actualSettleState.InputStateOutput = @"
+      Viewport INTERNAL: displayId=0, orientation=0, isActive=[1]
+      Viewport INTERNAL: displayId=0, isActive=[1]
+"@
+  $malformedViewportSample = Get-CcrAlpha6Stage1DeviceSettleSample `
+    $actualSettleContext $targetSettings
+  Assert-Alpha6Stage1Test (
+    [long]$malformedViewportSample.surfaceOrientation -eq -1L -and
+      $malformedViewportSample.ready -eq $false
+  ) "settings-settle-rejects-partially-malformed-active-primary-viewports"
+  $actualSettleState.InputStateOutput =
+    "SurfaceOrientation: 9`r`n" +
+    "Viewport INTERNAL: displayId=0, orientation=0, isActive=[1]`r`n"
+  $malformedLegacySample = Get-CcrAlpha6Stage1DeviceSettleSample `
+    $actualSettleContext $targetSettings
+  Assert-Alpha6Stage1Test (
+    [long]$malformedLegacySample.surfaceOrientation -eq -1L -and
+      $malformedLegacySample.ready -eq $false
+  ) "settings-settle-rejects-malformed-legacy-before-viewport-fallback"
+  $actualSettleState.InputStateOutput = @"
+      SurfaceOrientation: 0
+      Viewport INTERNAL: displayId=0, orientation=0, isActive=[1]
+"@
+  $matchingHybridSample = Get-CcrAlpha6Stage1DeviceSettleSample `
+    $actualSettleContext $targetSettings
+  Assert-Alpha6Stage1Test (
+    [long]$matchingHybridSample.surfaceOrientation -eq 0L -and
+      $matchingHybridSample.ready -eq $true
+  ) "settings-settle-accepts-matching-legacy-and-viewport"
+  $actualSettleState.InputStateOutput = @"
+      SurfaceOrientation: 0
+      Viewport INTERNAL: displayId=0, orientation=1, isActive=[1]
+"@
+  $conflictingHybridSample = Get-CcrAlpha6Stage1DeviceSettleSample `
+    $actualSettleContext $targetSettings
+  Assert-Alpha6Stage1Test (
+    [long]$conflictingHybridSample.surfaceOrientation -eq -1L -and
+      $conflictingHybridSample.ready -eq $false
+  ) "settings-settle-rejects-conflicting-legacy-and-viewport"
 
   $boundedSettleState = New-Alpha6FakeAdbState
   foreach ($entry in @{
@@ -533,6 +627,11 @@ try {
       $source.Contains("Invoke-CcrAlpha6CandidateRenderOpenInstrumentation") -and
       $source.Contains("-SkipInstall")
   ) "settings-settle-render-open-smoke-wired"
+  Assert-Alpha6Stage1Test (
+    $source.Contains("Viewport\s+INTERNAL") -and
+      $source.Contains("displayId=0") -and
+      $source.Contains("isActive=\[1\]")
+  ) "settings-settle-android16-active-primary-viewport-fallback-wired"
   $correctnessAst = @($runnerAst.FindAll({
     param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and

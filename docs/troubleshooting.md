@@ -58,6 +58,18 @@ host test가 실제 settle 함수를 호출해 configuration 변화와 잔존 pr
 sample을 초기화하는지 검증한다. Full Stage 1 없이 같은 경로를 확인할 때는
 `-SurfaceTransitionGateOnly`를 사용하며 render smoke 10회 뒤 반드시 cleanup한다.
 
+Android 16의 `dumpsys input`은 구형 `SurfaceOrientation: 0` 필드 대신
+`Viewport INTERNAL: ... displayId=0, ... orientation=0, ... isActive=[1]` 형식만
+제공할 수 있다. 구형 필드만 파싱하면 실제 portrait 상태도 `-1`로 오판해
+`ALPHA6_STAGE1_DEVICE_SETTINGS_NOT_SETTLED`로 종료된다. settle parser는 구형 필드를
+유지하고, 해당 필드가 없을 때 활성 내부 display 0 viewport를 fallback으로 사용한다.
+두 형식이 함께 있으면 값이 일치할 때만 인정한다. 같은 활성 viewport 레코드가
+반복돼도 orientation이 모두 같아야 하며, 값 충돌·누락·inactive·external·다른
+display는 `-1`로 fail-closed한다.
+전체 출력에서 제한 없이 `orientation=0`을 검색하면 다른 viewport를 오인할 수
+있으므로 사용하지 않는다. host test는 Android 16 실제 형식의 3연속 안정 sample과
+필드 순서 변경, landscape, inactive/external/secondary, 충돌 및 누락을 검증한다.
+
 ### 검증 방법
 
 - host tests에서 Debug install 한 세트, settings settle/render smoke의 fail-closed,
