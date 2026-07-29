@@ -43,6 +43,63 @@ Stage 1 run `a6s1-274e5f6-200204`가 correctness 시작 즉시
 `REJECTED_FOR_DEVICE_GATE_DUE_TO_EMBEDDED_RUNTIME_IDENTITY_MISMATCH`로 분류하고 수정,
 Resume, Random 또는 새 artifact와의 혼합을 금지한다.
 
+## 2026-07-29 Alpha 6 첫 fixture open 실패가 단일 오류로 합쳐진 문제
+
+상태: 과거 원인 미분류 / 재발 방지 Gate host 검증 완료 / S24 검증 Pending
+
+### 증상
+
+Full Stage 1 run `a6s1-7482800-234808`이 첫 `h264-ip` fixture를 여는 동안
+indexing error와 `VIDEO_OPEN_FAILED`로 중단됐다. verified frame은 `0/236`,
+mismatch는 0이며 performance는 시작하지 않았다.
+
+### 재현 조건
+
+보존된 signed revision 5 APK의 고정 fixture를 S24의 debug fixture provider를 통해
+처음 열던 시점에 발생했다. 같은 실패를 제품 decode로 다시 실행해 증거를 만드는 것은
+이 조사 범위에서 금지했다.
+
+### 원인
+
+당시 `ExactFrameSession`은 provider/PFD, cache materialization, extractor와 codec의
+하위 예외를 `VIDEO_OPEN_FAILED` 하나로 합쳤다. 실패 구간 logcat은 rollover되어
+`LOGCAT_NOT_AVAILABLE`이고 조사 시점 cache 파일도 이미 없어서, 역사적 근본 원인은
+`UNCLASSIFIED_OPEN_PIPELINE_FAILURE`다.
+
+APK asset은 `26,160 bytes`이며 고정 SHA-256과 일치했다. provider의 existence-only
+reuse는 `CACHE_FILE_UNVERIFIED_REUSE` 위험이지만 당시 cache corruption의 증거는
+아니다. 외부 shell에서 provider URI를 직접 연 결과의 `SecurityException`도
+exported=false 권한 경계의 정상 결과이므로 provider 실패 증거로 사용하지 않는다.
+
+### 해결 절차
+
+- 제품 runtime과 frozen provider를 변경하지 않는다.
+- AndroidTest direct probe가 asset → provider/PFD → fd-only extractor →
+  video track/sample → hardware decoder candidate를 단계별로 기록한다.
+- 단일 diagnostic만 explicit offset/range extractor와 codec configure/start까지
+  확인하며 buffer queue와 full-frame decode는 하지 않는다.
+- 17-fixture smoke는 각 단계의 고정 identity와 SHA를 검사하고 내용 불일치 시 자동
+  수정 없이 fail-closed한다.
+- Stage 1은 identity → fixture-open smoke → settings → correctness →
+  performance 순서로 실행하며 앞 Gate 실패 시 settings와 뒤 단계를 건너뛴다.
+- raw instrumentation report는 parsing·contract 실패보다 먼저 immutable evidence로
+  보존한다.
+
+### 검증 방법
+
+- host tests가 17개 fixture identity, 성공/실패 report, timeout, settings 불변,
+  후속 단계 차단과 Resume evidence 재해시를 검증한다.
+- source contract가 `ExactFrameSession` 비사용, full-frame decode/performance 0,
+  selector와 Kotlin method 일치, frozen provider SHA와 Stage 1 순서를 검증한다.
+- S24에서는 새 signed revision 5 artifact로 identity smoke와 17-fixture smoke를
+  별도로 통과하기 전까지 `S24 검증 Pending`을 유지한다.
+
+### 관련 변경
+
+- `android/app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/Alpha6FixtureOpenProbe.kt`
+- `android/scripts/run-s24-alpha6-fixture-open-smoke.ps1`
+- `android/scripts/run-s24-alpha6-stage1.ps1`
+
 이 문서는 **CT Cine Reviewer 프로젝트에서만 발생하는 문제와 검증된 해결 방법**을 기록한다.
 
 ## 기록 범위

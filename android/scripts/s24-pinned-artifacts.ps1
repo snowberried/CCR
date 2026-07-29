@@ -575,7 +575,8 @@ function Assert-CcrPinnedReport {
     [long]$MinimumStartedAtElapsedRealtimeNs = 0,
     [string]$ExpectedKind = "",
     [int]$ExpectedTestCount = 1,
-    [int]$ExpectedInstrumentationTestCount = 1
+    [int]$ExpectedInstrumentationTestCount = 1,
+    [ValidateSet("PASS", "FAIL")][string]$ExpectedStatus = "PASS"
   )
   Assert-CcrPinnedRunId $RunId | Out-Null
   if ([string](Get-CcrPinnedRequiredProperty $Report "runId") -cne $RunId) { throw "PINNED_REPORT_RUN_ID_MISMATCH" }
@@ -590,7 +591,9 @@ function Assert-CcrPinnedReport {
   if ($started -le 0 -or $finished -lt $started -or ($MinimumStartedAtElapsedRealtimeNs -gt 0 -and $started -lt $MinimumStartedAtElapsedRealtimeNs)) {
     throw "PINNED_REPORT_STALE_OR_TIME_INVALID"
   }
-  if ([string](Get-CcrPinnedRequiredProperty $Report "status") -cne "PASS") { throw "PINNED_REPORT_STATUS_MISMATCH" }
+  if ([string](Get-CcrPinnedRequiredProperty $Report "status") -cne $ExpectedStatus) {
+    throw "PINNED_REPORT_STATUS_MISMATCH"
+  }
   if ((Get-CcrPinnedRequiredProperty $Report "syntheticOnly") -ne $true -or
       (Get-CcrPinnedRequiredProperty $Report "containsRealMediaMetadata") -ne $false) {
     throw "PINNED_REPORT_PRIVACY_MISMATCH"
@@ -627,14 +630,21 @@ function Receive-CcrPinnedReport {
     [string]$ExpectedKind = "",
     [string]$PackageName = "",
     [int]$ExpectedTestCount = 1,
-    [int]$ExpectedInstrumentationTestCount = 1
+    [int]$ExpectedInstrumentationTestCount = 1,
+    [ValidateSet("PASS", "FAIL")][string]$ExpectedStatus = "PASS"
   )
   if (-not $PackageName) { $PackageName = [string](Get-CcrPinnedArtifact $Context $AppRole).packageName }
   if ($ReportName -notmatch "^[A-Za-z0-9._-]+\.json$") { throw "PINNED_REPORT_NAME_INVALID" }
   $result = Invoke-CcrPinnedAdb $Context @("-s", $Context.Serial, "exec-out", "run-as", $PackageName, "cat", "files/$ReportName")
   if ($result.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.output)) { throw "PINNED_REPORT_PULL_FAILED:$ReportName" }
   try { $report = $result.output | ConvertFrom-Json } catch { throw "PINNED_REPORT_JSON_INVALID:$ReportName" }
-  Assert-CcrPinnedReport $report $Context.ArtifactSet $RunId $AppRole $TestRole $MinimumStartedAtElapsedRealtimeNs $ExpectedKind $ExpectedTestCount $ExpectedInstrumentationTestCount | Out-Null
+  Assert-CcrPinnedReport `
+    -Report $report -ArtifactSet $Context.ArtifactSet -RunId $RunId `
+    -AppRole $AppRole -TestRole $TestRole `
+    -MinimumStartedAtElapsedRealtimeNs $MinimumStartedAtElapsedRealtimeNs `
+    -ExpectedKind $ExpectedKind -ExpectedTestCount $ExpectedTestCount `
+    -ExpectedInstrumentationTestCount $ExpectedInstrumentationTestCount `
+    -ExpectedStatus $ExpectedStatus | Out-Null
   $target = Join-Path $Context.OutputDirectory "$RunId-$ReportName"
   [System.IO.File]::WriteAllText($target, $result.output, [System.Text.UTF8Encoding]::new($false))
   return [PSCustomObject]@{ Path = $target; Report = $report }

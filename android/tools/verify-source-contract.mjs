@@ -213,6 +213,39 @@ const alpha6IdentitySmokeInstrumentation = readFileSync(
   ),
   "utf8",
 );
+const alpha6FixtureOpenProbe = readFileSync(
+  resolve(
+    androidRoot,
+    "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/Alpha6FixtureOpenProbe.kt",
+  ),
+  "utf8",
+);
+const alpha6FixtureOpenDiagnosticInstrumentation = readFileSync(
+  resolve(
+    androidRoot,
+    "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/Alpha6FixtureOpenDiagnosticTest.kt",
+  ),
+  "utf8",
+);
+const alpha6FixtureOpenSmokeInstrumentation = readFileSync(
+  resolve(
+    androidRoot,
+    "app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/Alpha6FixtureOpenSmokeTest.kt",
+  ),
+  "utf8",
+);
+const alpha6FixtureOpenSmokeRunner = readFileSync(
+  resolve(androidRoot, "scripts/run-s24-alpha6-fixture-open-smoke.ps1"),
+  "utf8",
+);
+const alpha6FixtureOpenDiagnosticRunner = readFileSync(
+  resolve(androidRoot, "scripts/run-s24-alpha6-fixture-open-diagnostic.ps1"),
+  "utf8",
+);
+const alpha6FixtureOpenSmokeTests = readFileSync(
+  resolve(androidRoot, "scripts/test-run-s24-alpha6-fixture-open-smoke.ps1"),
+  "utf8",
+);
 const alpha6RandomEvidence = [
   "Alpha5RandomSeekExactnessTest.kt",
   "Alpha5RandomSeekPerformanceTest.kt",
@@ -445,6 +478,7 @@ for (const scriptName of [
   "test-s24-alpha6-candidate-device-artifacts.ps1",
   "test-alpha6-tail-contract.ps1",
   "test-run-s24-alpha6-identity-smoke.ps1",
+  "test-run-s24-alpha6-fixture-open-smoke.ps1",
   "test-run-s24-alpha6-stage1.ps1",
   "test-run-s24-alpha6-random.ps1",
 ]) {
@@ -492,6 +526,15 @@ requireContract(
   "Alpha 6 runtime-input manifest tree SHA",
 );
 requireContract(runtimeInputsAlpha6.files?.length === 40, "Alpha 6 runtime-input manifest file count");
+requireContract(
+  runtimeInputsAlpha6.files?.some(
+    (file) =>
+      file.path ===
+        "android/app/src/debug/java/com/snowberried/ctcinereviewer/gate/ReadOnlyFixtureProvider.kt" &&
+      file.sha256 === "7ea39d458ae0d8f38c71971cdc26a896732167192057dd262373116127229325",
+  ),
+  "Alpha 6 debug fixture provider is no longer frozen with the runtime inputs",
+);
 requireContract(
   verifyRuntimeInputsAlpha5.includes('snapshot(runtimeSourceSha)') &&
     !verifyRuntimeInputsAlpha5.includes('snapshot("HEAD")'),
@@ -733,6 +776,118 @@ requireContract(
     !/fixture|decode|performance/i.test(alpha6IdentitySmokeInstrumentation),
   "Alpha 6 identity smoke instrumentation is not identity-only",
 );
+const alpha6RequiredFixtureList = s24FrameAccuracyTest.match(
+  /val REQUIRED_FIXTURES = listOf\(([\s\S]*?)\n\s*\)/,
+);
+requireContract(alpha6RequiredFixtureList !== null, "Alpha 6 required fixture list is missing");
+const alpha6RequiredFixtures = [
+  ...alpha6RequiredFixtureList[1].matchAll(/"([^"]+)"/g),
+].map((match) => match[1]);
+requireContract(
+  alpha6RequiredFixtures.length === 17 && new Set(alpha6RequiredFixtures).size === 17,
+  "Alpha 6 required fixture list is not exactly 17 unique fixtures",
+);
+const alpha6BridgeFixtureList = alpha6CandidateDeviceBridge.match(
+  /CcrAlpha6FixtureOpenRequiredFixtures\s*=\s*@\(([\s\S]*?)\n\)/,
+);
+requireContract(
+  alpha6BridgeFixtureList !== null &&
+    JSON.stringify([
+      ...alpha6BridgeFixtureList[1].matchAll(/"([^"]+\.mp4)"/g),
+    ].map((match) => match[1])) ===
+      JSON.stringify(alpha6RequiredFixtures.map((fixture) => `${fixture}.mp4`)),
+  "Alpha 6 fixture-open bridge list does not exactly match REQUIRED_FIXTURES",
+);
+for (const marker of [
+  "S24FrameAccuracyTest.REQUIRED_FIXTURES",
+  "openFileDescriptor",
+  "MediaExtractor",
+  "MediaCodecList",
+]) {
+  requireContract(
+    alpha6FixtureOpenProbe.includes(marker),
+    `Alpha 6 fixture-open probe missing direct pipeline marker ${marker}`,
+  );
+}
+requireContract(
+  !alpha6FixtureOpenProbe.includes("ExactFrameSession") &&
+    !alpha6FixtureOpenDiagnosticInstrumentation.includes("ExactFrameSession") &&
+    !alpha6FixtureOpenSmokeInstrumentation.includes("ExactFrameSession"),
+  "Alpha 6 fixture-open probe must remain independent of the product decode runtime",
+);
+requireContract(
+  alpha6FixtureOpenDiagnosticInstrumentation.includes("ValidationHarnessV2.requireIdentity") &&
+    alpha6FixtureOpenSmokeInstrumentation.includes("ValidationHarnessV2.requireIdentity"),
+  "Alpha 6 fixture-open instrumentation is not pinned to the validation identity",
+);
+const alpha6FixtureOpenSmokeSelector = alpha6CandidateDeviceBridge.match(
+  /Alpha6FixtureOpenSmokeTest"\s*\+\s*"#([^"]+)"/,
+);
+const alpha6FixtureOpenDiagnosticSelector = alpha6CandidateDeviceBridge.match(
+  /Alpha6FixtureOpenDiagnosticTest"\s*\+\s*"#([^"]+)"/,
+);
+requireContract(
+  alpha6FixtureOpenSmokeSelector !== null &&
+    alpha6FixtureOpenSmokeInstrumentation.includes(
+      `fun ${alpha6FixtureOpenSmokeSelector[1]}(`,
+    ) &&
+    alpha6FixtureOpenDiagnosticSelector !== null &&
+    alpha6FixtureOpenDiagnosticInstrumentation.includes(
+      `fun ${alpha6FixtureOpenDiagnosticSelector[1]}(`,
+    ),
+  "Alpha 6 fixture-open instrumentation selector does not match its Kotlin test method",
+);
+for (const marker of [
+  "ALPHA6_FIXTURE_OPEN_REPORT_FIXTURE_IDENTITY_MISMATCH",
+  "expectedSourceSha256",
+  "cachePfdSha256",
+  "extractorFdOnly",
+  "hardwareDecoderCandidate",
+  "android\\testdata\\frame-accuracy",
+]) {
+  requireContract(
+    alpha6CandidateDeviceBridge.includes(marker),
+    `Alpha 6 fixture-open bridge is missing report identity marker ${marker}`,
+  );
+}
+const alpha6FixtureOpenInstrumentation =
+  `${alpha6FixtureOpenProbe}\n${alpha6FixtureOpenSmokeInstrumentation}`;
+requireContract(
+  alpha6FixtureOpenInstrumentation.includes('put("fixtureCount"') &&
+    /put\("fullFrameDecodeCount",\s*0L?\)/.test(alpha6FixtureOpenInstrumentation) &&
+    /put\("performanceScenarioCount",\s*0L?\)/.test(alpha6FixtureOpenInstrumentation),
+  "Alpha 6 fixture-open smoke does not declare 17 fixtures with zero decode/performance work",
+);
+for (const marker of [
+  "Invoke-CcrAlpha6CandidateDeviceHostPreflight",
+  "Get-CcrAlpha6CandidateDeviceSettingsSnapshot",
+  "Assert-CcrAlpha6CandidateDeviceIdentityUnchanged",
+  "New-CcrAlpha6TimedAdbInvoker",
+  "$adbDeadlineState.CleanupMode = $true",
+  "deviceSettingsMutationCount = 0L",
+  "buildCommandCount = 0L",
+]) {
+  requireContract(
+    alpha6FixtureOpenSmokeRunner.includes(marker),
+    `Alpha 6 fixture-open runner missing ${marker}`,
+  );
+}
+requireContract(
+  alpha6FixtureOpenSmokeRunner.includes("Invoke-CcrAlpha6CandidateFixtureOpenInstrumentation") &&
+    alpha6FixtureOpenSmokeRunner.includes('[string]$Mode = "Smoke"') &&
+    alpha6FixtureOpenSmokeRunner.includes("-Mode $Mode") &&
+    alpha6FixtureOpenDiagnosticRunner.includes(
+      '$parameters["Mode"] = "Diagnostic"',
+    ),
+  "Alpha 6 fixture-open standalone runners are not bound to the intended probe mode",
+);
+requireContract(
+  alpha6FixtureOpenSmokeRunner.includes("DEVICE_SETTINGS_MUTATED_DURING_FIXTURE_OPEN_SMOKE") &&
+    alpha6FixtureOpenSmokeTests.includes("fixture-open-smoke-failure-before-settings-mutation") &&
+    alpha6Stage1Tests.includes("fixture-smoke-failure-before-settings-mutation") &&
+    alpha6Stage1Tests.includes("fixture-smoke-failure-skips-correctness-and-performance"),
+  "Alpha 6 fixture-open smoke fail-closed host coverage is incomplete",
+);
 for (const marker of [
   "measuredWindowBuildAssociatedLongGapCount",
   "ALPHA6_STAGE1_REVERSE_MECHANISM_NOT_EXERCISED",
@@ -746,16 +901,24 @@ for (const marker of [
   'checkpoint-alpha6-stage1-device-settings-$hostPreflightRunId.json',
   "Invoke-CcrAlpha6CandidateIdentitySmokeInstrumentation",
   "DEVICE_SETTINGS_MUTATED_DURING_IDENTITY_SMOKE",
+  "Invoke-CcrAlpha6CandidateFixtureOpenInstrumentation",
+  '-Mode "Smoke"',
+  "DEVICE_SETTINGS_MUTATED_DURING_FIXTURE_OPEN_SMOKE",
+  "$preSettingsGateBaseline",
+  "DEVICE_SETTINGS_MUTATED_BEFORE_STAGE1_SETTINGS",
+  "PRE_SETTINGS_GATE_READBACK",
   '"h264-bframes.mp4", "long-gop.mp4", "hevc-main8.mp4", "vfr.mp4"',
 ]) {
   requireContract(alpha6Stage1Runner.includes(marker), `Alpha 6 Stage 1 contract missing ${marker}`);
 }
 requireContract(
   alpha6Stage1Runner.indexOf("Invoke-CcrAlpha6CandidateIdentitySmokeInstrumentation") <
+    alpha6Stage1Runner.indexOf("Invoke-CcrAlpha6CandidateFixtureOpenInstrumentation") &&
+    alpha6Stage1Runner.indexOf("Invoke-CcrAlpha6CandidateFixtureOpenInstrumentation") <
     alpha6Stage1Runner.indexOf("Initialize-CcrAlpha6PinnedDeviceSettings") &&
-    alpha6Stage1Runner.indexOf("Invoke-CcrAlpha6CandidateIdentitySmokeInstrumentation") <
+    alpha6Stage1Runner.indexOf("Invoke-CcrAlpha6CandidateFixtureOpenInstrumentation") <
       alpha6Stage1Runner.indexOf('Set-CcrPinnedDeviceSetting $context "global"'),
-  "Alpha 6 Stage 1 identity smoke is not before device settings mutation",
+  "Alpha 6 Stage 1 identity/fixture smoke ordering is not before device settings mutation",
 );
 for (const marker of [
   "ALPHA6_RANDOM_STAGE2_NOT_IMPLEMENTED",

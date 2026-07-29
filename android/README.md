@@ -10,9 +10,18 @@ candidate를 생성하는 최종 clean Git HEAD이며 두 값은 서로 다른 �
 생성 전에는 SDK `apkanalyzer`로 debugApp과 benchmarkApp에 실제 포함된 값을 확인한다.
 
 full Stage 1 전에는 `run-s24-alpha6-identity-smoke.ps1`로 revision 5 debug app/test의
-source, APK SHA, package와 공개 signing identity를 검증한다. smoke는 fixture나 frame을
-열지 않고 device setting을 변경하지 않는다. Stage 1 runner는 이 smoke가 통과한 뒤에만
-device settings, correctness, performance 순으로 진행한다.
+source, APK SHA, package와 공개 signing identity를 검증한다. identity smoke는 fixture나
+frame을 열지 않고 device setting을 변경하지 않는다. 이어
+`run-s24-alpha6-fixture-open-smoke.ps1`이 고정 17개 fixture의 asset, provider/PFD,
+fd-only extractor, video track/sample과 hardware decoder candidate를 확인한다. 이
+smoke는 full-frame decode와 performance를 실행하지 않는다.
+
+단일 `h264-ip`의 pipeline 단계를 더 분리해야 할 때만
+`run-s24-alpha6-fixture-open-diagnostic.ps1`을 사용한다. diagnostic은 explicit
+offset/range extractor와 codec configure/start까지 확인하지만 input/output buffer를
+queue하지 않는다. Stage 1 순서는 identity → fixture-open smoke → device settings →
+correctness → performance이며, 앞 Gate 실패 시 settings와 뒤 단계는 fail-closed로
+건너뛴다.
 
 데스크톱과 독립된 Android 내부 파일럿 앱이다. 의료기기나 공식 진단 프로그램이 아니며, 원본 MP4를 SAF 읽기 전용으로 연다. Gate 3 정확 프레임 기준선은 `android-v0.1.0-gate3-pass`로 동결되어 있다.
 

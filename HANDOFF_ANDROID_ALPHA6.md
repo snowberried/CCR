@@ -30,6 +30,40 @@ device setting 변경 없이 설치 APK/test SHA와 source identity를 확인한
 같은 smoke PASS를 settings 초기화보다 먼저 요구한다. 제품 runtime Kotlin, frozen 40개
 입력과 performance threshold 변경은 0이다.
 
+## 2026-07-29 첫 fixture open 실패 조사와 재개 조건
+
+run `a6s1-7482800-234808`은 첫 fixture `h264-ip`를 여는 동안
+`VIDEO_OPEN_FAILED`로 중단됐다. indexing error 뒤 verified frame은 `0/236`,
+frame mismatch는 0이었고 performance는 시작하지 않았다.
+
+보존된 실패 evidence와 artifact를 다시 해시하고 APK 안의 `h264-ip.mp4`를 직접
+검사했다. APK asset은 `26,160 bytes`, SHA-256
+`e84c39f433dbed61bfa3e5c96eff5eb74ffe86c53edc2d055166ce3884c44532`로
+고정 fixture와 일치했다. 조사 시점에는 기기 cache 파일이 이미 없었고, 실패 시각
+logcat 구간도 rollover되어 `LOGCAT_NOT_AVAILABLE`이었다. 기존
+`ExactFrameSession`이 하위 예외를 `VIDEO_OPEN_FAILED`로 합쳤으므로 당시 실패가
+provider, cache materialization, fd-only extractor, explicit range extractor 또는
+codec 중 어느 단계였는지는 소급 판정할 수 없다.
+
+따라서 역사적 근본 원인은 `UNCLASSIFIED_OPEN_PIPELINE_FAILURE`로 고정한다.
+`CACHE_FILE_UNVERIFIED_REUSE`는 provider 구조에서 확인된 재발 위험일 뿐 당시 cache
+손상 증거가 아니다. frozen runtime 입력에 포함된 provider와 제품 runtime Kotlin은
+변경하지 않았다.
+
+재발 시 단계를 잃지 않도록 AndroidTest에 단일 `h264-ip` 진단 probe와 17-fixture
+open smoke를 추가했다. smoke는 asset → provider/PFD → fd-only extractor →
+video track/sample → hardware decoder candidate까지만 확인하며 full-frame decode와
+performance는 0이다. 진단 probe만 explicit offset/range extractor와 codec
+configure/start를 추가로 확인하되 input/output buffer를 queue하지 않는다.
+Stage 1 순서는 identity → fixture-open smoke → settings → correctness → performance로
+고정했으며 앞 Gate가 실패하면 settings와 뒤 단계는 실행하지 않는다.
+
+현재 판정은
+`FIXTURE_OPEN_DIAGNOSTIC_AND_SMOKE_HOST_READY; S24 DIAGNOSTIC/SMOKE PENDING`이다.
+이번 closure에서는 Stage 1/Random `-PreflightOnly`, identity smoke, 필요 시 단일
+diagnostic, 17-fixture smoke까지만 새 signed revision 5 artifact로 실행한다. Full
+Stage 1과 Random 250은 그 다음 작업으로 남긴다.
+
 ## 결론
 
 Android `0.2.0-alpha.6` 제품 runtime의 exactness 수정과 역방향 cache-only 게시·rolling refill 구현은 소스와 원격 Draft PR에 보존됐다. S24 Stage 1 correctness는 최종 후보에서 7/7 통과했지만, 첫 reverse performance 시나리오는 정상적인 `cached probe miss → 동일 요청 actor fallback → 단일 publish`를 macrobenchmark가 금지해 fail-closed했다.
@@ -113,6 +147,21 @@ revision 5 device bridge closure에서는 다음 host 계약을 확인했다.
 - Alpha 4/5와 Alpha 6 revision 4 historical verifier: 보존
 - Alpha 6 runtime freeze: 40/40 PASS
 - 제품 runtime Kotlin과 40개 frozen input: 변경 없음
+
+2026-07-29 fixture-open closure의 최종 local 검증 결과:
+
+- desktop test: 106/106, production build PASS
+- Android JVM: 162/162, failure/error/skip 0
+- Android lint와 app/test APK 4종 assemble: PASS
+- historical pinned host tests: 124 + 98 + 39 PASS
+- candidate bridge/signing/tail: 47 + 28 + 56 PASS
+- identity/fixture-open/Stage 1/Random runner: 19 + 20 + 127 + 24 PASS
+- PowerShell parser: 44 scripts PASS
+- fixed fixture 17개, source/privacy/CI contract와 APK privacy: PASS
+- Alpha 4/5/6 runtime freeze: 32/37/40 PASS
+- Alpha 6 runtime input tree:
+  `3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468`
+- 제품 runtime Kotlin, frozen provider와 40개 runtime input: 변경 없음
 
 ## revision 5 runner bridge와 pre-bridge artifact
 
@@ -268,12 +317,18 @@ git diff --check
 사용한다. private key가 없는 historical `49379c…` signer나 revision 4 manifest는 active
 runner가 거부한다.
 
+이번 fixture-open closure의 실행 순서는 다음과 같다.
+
 1. 새 artifact 세트로 Stage 1 `-PreflightOnly`
-2. 새 runId와 새 출력 디렉터리로 Stage 1 전체 실행
-3. correctness 7/7과 performance 10 scenario/30 trace, checkpoint, final summary를 모두 확인
-4. Stage 1 hard Gate가 통과한 경우에만 같은 manifest로 Random 250 실행
-5. test/benchmark package 제거, 기기 설정 원복과 artifact 사후 hash 확인
-6. 사용자 역방향 smoothness 판정
+2. 같은 artifact 세트로 Random `-PreflightOnly`
+3. identity smoke
+4. 필요할 때만 단일 `h264-ip` fixture-open diagnostic
+5. 17-fixture open smoke
+6. test/benchmark package 제거, 기기 설정 불변과 artifact 사후 hash 확인
+
+Full Stage 1은 위 smoke가 통과한 뒤의 다음 필수 작업이다. Stage 1 correctness와
+performance가 모두 통과하기 전에는 Random 250과 사용자 smoothness 판정을 실행하지
+않는다.
 
 Stage 1 기본 명령:
 

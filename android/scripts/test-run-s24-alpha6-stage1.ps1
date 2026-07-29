@@ -168,6 +168,29 @@ try {
       buildCommandCount = 0L
     }
   }
+  $fixtureOpenSmokeExecutor = {
+    param($Context, $FixtureRunId, $EvidenceDirectory)
+    [System.IO.Directory]::CreateDirectory($EvidenceDirectory) | Out-Null
+    $reportPath = Join-Path $EvidenceDirectory "fixture.json"
+    [System.IO.File]::WriteAllText(
+      $reportPath,
+      '{"kind":"host-only-fixture-open-smoke","status":"PASS"}',
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    $reportItem = Get-Item -LiteralPath $reportPath
+    return [PSCustomObject]@{
+      status = "PASS"
+      runId = $FixtureRunId
+      fixtureCount = 17L
+      reportPath = $reportItem.FullName
+      reportBytes = [long]$reportItem.Length
+      reportSha256 =
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $reportItem.FullName).Hash.ToLowerInvariant()
+      fullFrameDecodeCount = 0L
+      performanceScenarioCount = 0L
+      buildCommandCount = 0L
+    }
+  }
 
   $parseErrors = $null
   [System.Management.Automation.Language.Parser]::ParseFile($runner, [ref]$null, [ref]$parseErrors) | Out-Null
@@ -207,6 +230,12 @@ try {
   Assert-Alpha6Stage1Test ($source -notmatch '(?m)^\s*\$\w*(?:Sha|Sha256)\w*\s*=\s*"[0-9a-f]{40,64}"') "no-final-hash-placeholder"
   Assert-Alpha6Stage1Test ($source -match 'scenarioCount\s*=\s*10' -and $source -match 'independentTraceCount\s*=\s*30') "ten-scenarios-thirty-traces"
   Assert-Alpha6Stage1Test ($source.Contains("ALPHA6_STAGE1_BENCHMARK_FIXTURE_IDENTITY_MISMATCH")) "fixture-identity-fail-closed"
+  Assert-Alpha6Stage1Test (
+    $source.IndexOf("Invoke-CcrAlpha6CandidateIdentitySmokeInstrumentation") -lt
+      $source.IndexOf("Invoke-CcrAlpha6CandidateFixtureOpenInstrumentation") -and
+      $source.IndexOf("Invoke-CcrAlpha6CandidateFixtureOpenInstrumentation") -lt
+        $source.IndexOf("Initialize-CcrAlpha6PinnedDeviceSettings")
+  ) "identity-fixture-settings-order"
   $resolverContracts = @(
     [PSCustomObject]@{ stage = "Full"; reportName = "s24-frame-accuracy-report.json"; kind = "frame-accuracy-exact" },
     [PSCustomObject]@{ stage = "Representative"; reportName = "representative-resolution-exact-report.json"; kind = "representative-resolution-exact-subset" },
@@ -374,6 +403,10 @@ try {
   $preflightSummaryPath = Join-Path $preflightOutput "alpha6-stage1-summary-alpha6-stage1-preflight.json"
   $preflight = [System.IO.File]::ReadAllText($preflightSummaryPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
   Assert-Alpha6Stage1Test ([string]$preflight.status -ceq "PREFLIGHT_PASS") "preflight-status"
+  Assert-Alpha6Stage1Test (
+    (@($preflight.stageOrder) -join "|") -ceq
+      "IdentitySmoke|FixtureOpenSmoke|Correctness|Performance"
+  ) "preflight-stage-order"
   Assert-Alpha6Stage1Test ([long]$preflight.buildCommandCount -eq 0L -and [long]$preflight.deviceMutationCount -eq 0L) "preflight-no-build-no-mutation"
   $plannedPerformance = @($preflight.plannedPerformanceScenarios)
   Assert-Alpha6Stage1Test ($plannedPerformance.Count -eq 10 -and [long]$preflight.plannedIndependentTraceCount -eq 30L) "preflight-ten-scenarios-thirty-traces"
@@ -542,6 +575,146 @@ try {
     [string]$identityFailureReport.phase -ceq "identity-smoke"
   ) "identity-smoke-failure-phase-recorded"
 
+  $fixtureFailureOutput = Join-Path $root "fixture-open-smoke-failure-output"
+  $fixtureFailureState = New-Alpha6FakeAdbState
+  $fixtureFailureAdb = New-Alpha6FakeAdbInvoker $fixtureFailureState
+  $fixtureFailureStageCallCount = 0
+  $fixtureFailureArgs = @{} + $preflightArgs
+  $fixtureFailureArgs.Remove("PreflightOnly")
+  $fixtureFailureArgs.OutputDirectory = $fixtureFailureOutput
+  $fixtureFailureArgs.RunId = "alpha6-stage1-fixture-fail"
+  $fixtureFailureArgs.OriginalScreenTimeoutSetting = "120000"
+  $fixtureFailureArgs.TestOnlyAdbInvoker = $fixtureFailureAdb
+  $fixtureFailureArgs.TestOnlyIdentitySmokeExecutor = $identitySmokeExecutor
+  $fixtureFailureArgs.TestOnlyFixtureOpenSmokeExecutor = {
+    param($Context, $FixtureRunId, $EvidenceDirectory)
+    [System.IO.Directory]::CreateDirectory($EvidenceDirectory) | Out-Null
+    $reportPath = Join-Path $EvidenceDirectory "fixture-failure.json"
+    [System.IO.File]::WriteAllText(
+      $reportPath,
+      '{"kind":"host-only-fixture-open-smoke","status":"FAIL"}',
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    $item = Get-Item -LiteralPath $reportPath
+    return [PSCustomObject]@{
+      status = "FAIL"
+      runId = $FixtureRunId
+      fixtureCount = 1L
+      reportPath = $item.FullName
+      reportBytes = [long]$item.Length
+      reportSha256 =
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $item.FullName).Hash.ToLowerInvariant()
+      failure = [PSCustomObject]@{
+        stageCode = "PROVIDER_OPEN_FILE_DESCRIPTOR"
+        classification = "PROVIDER_DESCRIPTOR_FAILURE"
+        exceptionClass = "FileNotFoundException"
+        sanitizedDetail = "SYNTHETIC_PROVIDER_OPEN_FAILURE"
+      }
+      buildCommandCount = 0L
+      fullFrameDecodeCount = 0L
+      performanceScenarioCount = 0L
+    }
+  }
+  $fixtureFailureArgs.TestOnlyStageExecutor = {
+    param($Stage, $Context, $StageDirectory)
+    $fixtureFailureStageCallCount += 1
+    throw "STAGE_MUST_NOT_RUN_AFTER_FIXTURE_OPEN_SMOKE_FAILURE"
+  }.GetNewClosure()
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @fixtureFailureArgs | Out-Null
+  } "ALPHA6_STAGE1_FIXTURE_OPEN_SMOKE_FAILED" "fixture-open-smoke-failure-propagates"
+  Assert-Alpha6Stage1Test (
+    @($fixtureFailureState.Commands | Where-Object { $_ -match ' shell settings (put|delete) ' }).Count -eq 0
+  ) "fixture-smoke-failure-before-settings-mutation"
+  Assert-Alpha6Stage1Test ($fixtureFailureStageCallCount -eq 0) `
+    "fixture-smoke-failure-skips-correctness-and-performance"
+  Assert-Alpha6Stage1Test (
+    @(Get-ChildItem -LiteralPath $fixtureFailureOutput `
+      -Filter "checkpoint-alpha6-stage1-device-settings-*.json" -File).Count -eq 0
+  ) "fixture-smoke-failure-has-no-device-settings-checkpoint"
+  $fixtureFailureReports = @(
+    Get-ChildItem -LiteralPath $fixtureFailureOutput -Filter "failure-alpha6-stage1-*.json" -File
+  )
+  $fixtureFailureReport = [System.IO.File]::ReadAllText(
+    $fixtureFailureReports[0].FullName,
+    [System.Text.Encoding]::UTF8
+  ) | ConvertFrom-Json
+  Assert-Alpha6Stage1Test (
+    [string]$fixtureFailureReport.phase -ceq "fixture-open-smoke" -and
+      [string]$fixtureFailureReport.identity.runtimeSourceSha -ceq $runtimeSource -and
+      [string]$fixtureFailureReport.identity.harnessSourceSha -ceq $harnessSource -and
+      [long]$fixtureFailureReport.buildCommandCount -eq 0L -and
+      [string]$fixtureFailureReport.fixtureOpenSmokeResult.failure.classification -ceq
+        "PROVIDER_DESCRIPTOR_FAILURE" -and
+      [string]$fixtureFailureReport.fixtureOpenSmokeResult.reportPath -cmatch
+        "fixture-failure\.json$"
+  ) "fixture-smoke-failure-evidence-identity"
+
+  $firstResumeAfterFixtureFailure = @{} + $fixtureFailureArgs
+  $firstResumeAfterFixtureFailure.Resume = $true
+  $firstResumeAfterFixtureFailure.TestOnlyFixtureOpenSmokeExecutor = $fixtureOpenSmokeExecutor
+  $firstResumeAfterFixtureFailure.TestOnlyStageExecutor = {
+    param($Stage, $Context, $StageDirectory)
+    return [PSCustomObject]@{
+      status = $(if ($Stage -ceq "Correctness") { "FAIL" } else { "PASS" })
+      buildCommandCount = 0L
+    }
+  }
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @firstResumeAfterFixtureFailure | Out-Null
+  } "ALPHA6_STAGE1_CORRECTNESS_FAILED" `
+    "first-resume-after-pre-settings-failure-reaches-correctness"
+  $preSettingsResumeRecords = @(
+    Get-ChildItem -LiteralPath $fixtureFailureOutput `
+      -Filter "checkpoint-alpha6-stage1-device-settings-*.json" -File
+  )
+  $preSettingsResumeRecord = [System.IO.File]::ReadAllText(
+    $preSettingsResumeRecords[0].FullName,
+    [System.Text.Encoding]::UTF8
+  ) | ConvertFrom-Json
+  Assert-Alpha6Stage1Test (
+    $preSettingsResumeRecords.Count -eq 1 -and
+      $preSettingsResumeRecords[0].Name -cmatch "-resume-[a-f0-9]{32}\.json$" -and
+      [string]$preSettingsResumeRecord.effectiveRestoreBaseline.screenTimeout -ceq "120000"
+  ) "first-resume-persists-unique-original-settings-baseline"
+
+  foreach ($entry in @{
+    "global/stay_on_while_plugged_in" = "7"
+    "system/screen_brightness_mode" = "0"
+    "system/screen_brightness" = "128"
+    "system/screen_off_timeout" = "1800000"
+    "system/accelerometer_rotation" = "0"
+    "system/user_rotation" = "0"
+  }.GetEnumerator()) {
+    $fixtureFailureState.Settings[$entry.Key] = [string]$entry.Value
+  }
+  $secondResumeAfterFixtureFailure = @{} + $firstResumeAfterFixtureFailure
+  $secondResumeAfterFixtureFailure.TestOnlyStageExecutor = {
+    param($Stage, $Context, $StageDirectory)
+    [System.IO.Directory]::CreateDirectory($StageDirectory) | Out-Null
+    [System.IO.File]::WriteAllText(
+      (Join-Path $StageDirectory "host-only-$Stage.txt"),
+      "second-resume-$Stage",
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    return [PSCustomObject]@{ status = "PASS"; buildCommandCount = 0L }
+  }
+  & $runner @secondResumeAfterFixtureFailure | Out-Null
+  Assert-Alpha6Stage1Test (
+    [string]$fixtureFailureState.Settings["global/stay_on_while_plugged_in"] -ceq "0" -and
+      [string]$fixtureFailureState.Settings["system/screen_brightness_mode"] -ceq "1" -and
+      [string]$fixtureFailureState.Settings["system/screen_brightness"] -ceq "77" -and
+      [string]$fixtureFailureState.Settings["system/screen_off_timeout"] -ceq "120000" -and
+      [string]$fixtureFailureState.Settings["system/accelerometer_rotation"] -ceq "1" -and
+      [string]$fixtureFailureState.Settings["system/user_rotation"] -ceq "2"
+  ) "second-resume-restores-baseline-from-prior-unique-checkpoint"
+  Assert-Alpha6Stage1Test (
+    @(
+      Get-ChildItem -LiteralPath $fixtureFailureOutput `
+        -Filter "checkpoint-alpha6-stage1-device-settings-*.json" -File
+    ).Count -eq 2
+  ) "multi-resume-keeps-settings-baseline-chain"
+
   $failureOutput = Join-Path $root "correctness-failure-output"
   $failureLog = Join-Path $root "correctness-failure-stage-log.txt"
   $failureState = New-Alpha6FakeAdbState
@@ -560,6 +733,7 @@ try {
   $failureArgs.OriginalScreenTimeoutSetting = "120000"
   $failureArgs.TestOnlyAdbInvoker = $failureAdb
   $failureArgs.TestOnlyIdentitySmokeExecutor = $identitySmokeExecutor
+  $failureArgs.TestOnlyFixtureOpenSmokeExecutor = $fixtureOpenSmokeExecutor
   $failureArgs.TestOnlyStageExecutor = $failureExecutor
   Assert-Alpha6Stage1ThrowsLike {
     & $runner @failureArgs | Out-Null
@@ -614,6 +788,18 @@ try {
   ) "partial-resume-retries-unfinished-stages"
   $settingsAttempts = @(Get-ChildItem -LiteralPath $failureOutput -Filter "checkpoint-alpha6-stage1-device-settings-*.json" -File)
   Assert-Alpha6Stage1Test ($settingsAttempts.Count -eq 2) "partial-resume-keeps-unique-settings-evidence"
+  $fixtureSmokeAttempts = @(
+    Get-ChildItem -LiteralPath $failureOutput `
+      -Filter "checkpoint-alpha6-stage1-fixture-open-smoke-*.json" -File
+  )
+  $fixtureSmokeChildRunIds = @($fixtureSmokeAttempts | ForEach-Object {
+    $checkpoint = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8) |
+      ConvertFrom-Json
+    [string]$checkpoint.result.runId
+  } | Select-Object -Unique)
+  Assert-Alpha6Stage1Test (
+    $fixtureSmokeAttempts.Count -eq 2 -and $fixtureSmokeChildRunIds.Count -eq 2
+  ) "partial-resume-reruns-fixture-smoke-with-unique-child-run-id"
   $resumeSettingsRecord = @($settingsAttempts | Where-Object { $_.Name -cne "checkpoint-alpha6-stage1-device-settings-alpha6-stage1-correctness-fail.json" })[0]
   $resumeSettings = [System.IO.File]::ReadAllText($resumeSettingsRecord.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
   Assert-Alpha6Stage1Test ($resumeSettings.interruptedAttemptStateDetected -eq $true -and
@@ -663,6 +849,11 @@ try {
     [string]$successSummary.identitySmoke.status -ceq "PASS" -and
       [long]$successSummary.identitySmoke.deviceSettingsMutationCount -eq 0L
   ) "identity-smoke-pass-recorded-before-stages"
+  Assert-Alpha6Stage1Test (
+    [string]$successSummary.fixtureOpenSmoke.status -ceq "PASS" -and
+      [long]$successSummary.fixtureOpenSmoke.result.fixtureCount -eq 17L -and
+      [long]$successSummary.fixtureOpenSmoke.deviceSettingsMutationCount -eq 0L
+  ) "fixture-open-smoke-17-pass-recorded-before-stages"
   $successCorrectnessCheckpoint = [System.IO.File]::ReadAllText(
     (Join-Path $successOutput "checkpoint-alpha6-stage1-correctness-alpha6-stage1-success.json"),
     [System.Text.Encoding]::UTF8
@@ -685,6 +876,22 @@ try {
     & $runner @successResume | Out-Null
   } "ALPHA6_STAGE1_RESUME_SUMMARY_CONTRACT_MISMATCH" "resume-rejects-summary-fixed-field-drift"
   [System.IO.File]::WriteAllText($successSummaryPath, $successSummaryRaw, [System.Text.UTF8Encoding]::new($false))
+  $missingFixtureSummary = $successSummaryRaw | ConvertFrom-Json
+  $missingFixtureSummary.PSObject.Properties.Remove("fixtureOpenSmoke")
+  [System.IO.File]::WriteAllText(
+    $successSummaryPath,
+    ($missingFixtureSummary | ConvertTo-Json -Depth 50),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @successResume | Out-Null
+  } "PINNED_MANIFEST_PROPERTY_MISSING:fixtureOpenSmoke" `
+    "resume-rejects-completed-summary-without-fixture-smoke"
+  [System.IO.File]::WriteAllText(
+    $successSummaryPath,
+    $successSummaryRaw,
+    [System.Text.UTF8Encoding]::new($false)
+  )
   (Get-Item -LiteralPath $successSummaryPath).IsReadOnly = $true
 
   $differentDeviceState = New-Alpha6FakeAdbState "samsung/test/device:37/DIFFERENT/1:user/release-keys"
@@ -693,6 +900,28 @@ try {
   Assert-Alpha6Stage1ThrowsLike {
     & $runner @differentDeviceResume | Out-Null
   } "ALPHA6_STAGE1_RESUME_IDENTITY_MISMATCH" "resume-device-identity-preserved"
+
+  $fixtureEvidencePath = [string]$successSummary.fixtureOpenSmoke.result.reportPath
+  $fixtureEvidenceRaw = [System.IO.File]::ReadAllText(
+    $fixtureEvidencePath,
+    [System.Text.Encoding]::UTF8
+  )
+  (Get-Item -LiteralPath $fixtureEvidencePath).IsReadOnly = $false
+  [System.IO.File]::AppendAllText(
+    $fixtureEvidencePath,
+    "-tampered",
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  Assert-Alpha6Stage1ThrowsLike {
+    & $runner @successResume | Out-Null
+  } "ALPHA6_STAGE1_RESUME_EVIDENCE_HASH_MISMATCH" `
+    "resume-rehashes-completed-fixture-open-report"
+  [System.IO.File]::WriteAllText(
+    $fixtureEvidencePath,
+    $fixtureEvidenceRaw,
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  (Get-Item -LiteralPath $fixtureEvidencePath).IsReadOnly = $true
 
   $performanceEvidencePath = Join-Path $successOutput "attempt-alpha6-stage1-success-stage-performance\host-only-Performance.txt"
   (Get-Item -LiteralPath $performanceEvidencePath).IsReadOnly = $false

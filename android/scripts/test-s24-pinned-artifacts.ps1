@@ -1147,6 +1147,52 @@ try {
     testApkSha256 = $artifactSet.Artifacts.debugTest.sha256
   }
 
+  Invoke-HostTest "fail-report-requires-explicit-status" {
+    $report = Copy-TestValue $baseReport
+    $report.status = "FAIL"
+    $caught = $null
+    try {
+      Assert-CcrPinnedReport `
+        -Report $report -ArtifactSet $artifactSet -RunId $runId `
+        -AppRole "debugApp" -TestRole "debugTest" `
+        -MinimumStartedAtElapsedRealtimeNs 100 `
+        -ExpectedKind "frame-accuracy-exact" `
+        -ExpectedInstrumentationTestCount 2 | Out-Null
+    } catch { $caught = $_.Exception.Message }
+    if ($caught -notmatch "PINNED_REPORT_STATUS_MISMATCH") {
+      throw "unexpected rejection: $caught"
+    }
+  }
+
+  Invoke-HostTest "fail-report-exact-identity-accepted" {
+    $report = Copy-TestValue $baseReport
+    $report.status = "FAIL"
+    Assert-CcrPinnedReport `
+      -Report $report -ArtifactSet $artifactSet -RunId $runId `
+      -AppRole "debugApp" -TestRole "debugTest" `
+      -MinimumStartedAtElapsedRealtimeNs 100 `
+      -ExpectedKind "frame-accuracy-exact" `
+      -ExpectedInstrumentationTestCount 2 -ExpectedStatus "FAIL" | Out-Null
+  }
+
+  Invoke-HostTest "fail-report-still-enforces-source-identity" {
+    $report = Copy-TestValue $baseReport
+    $report.status = "FAIL"
+    $report.runtimeSourceSha = "0" * 40
+    $caught = $null
+    try {
+      Assert-CcrPinnedReport `
+        -Report $report -ArtifactSet $artifactSet -RunId $runId `
+        -AppRole "debugApp" -TestRole "debugTest" `
+        -MinimumStartedAtElapsedRealtimeNs 100 `
+        -ExpectedKind "frame-accuracy-exact" `
+        -ExpectedInstrumentationTestCount 2 -ExpectedStatus "FAIL" | Out-Null
+    } catch { $caught = $_.Exception.Message }
+    if ($caught -notmatch "PINNED_REPORT_SOURCE_IDENTITY_MISMATCH") {
+      throw "unexpected rejection: $caught"
+    }
+  }
+
   Invoke-HostTest "report-run-id-mismatch" {
     $report = Copy-TestValue $baseReport
     $report.runId = "different-12345678"

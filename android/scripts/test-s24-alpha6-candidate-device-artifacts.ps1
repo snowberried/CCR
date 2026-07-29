@@ -155,6 +155,14 @@ try {
   }
 
   $context = Invoke-CcrAlpha6CandidateBridgeTestPreflight -RunId "bridge-positive"
+  foreach ($entry in @(
+    @("Model", "SM-S928N"),
+    @("Fingerprint", "samsung/test/device:37/TEST/1:user/release-keys"),
+    @("SecurityPatch", "2026-06-01"),
+    @("Sdk", 37)
+  )) {
+    $context | Add-Member -NotePropertyName ([string]$entry[0]) -NotePropertyValue $entry[1]
+  }
   Assert-CcrAlpha6CandidateBridgeTest (
     [int]$context.ArtifactSet.Manifest.artifactSetRevision -eq 5 -and
       [string]$context.PublicSigningIdentity.signingMode -ceq "SIGNED_CANDIDATE" -and
@@ -172,6 +180,321 @@ try {
   Assert-CcrAlpha6CandidateBridgeTest (
     $context.BuildCommandCount -eq 0L -and (Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $context)
   ) "zero-build-and-post-import-rehash"
+
+  $fixtureRecords = @($script:CcrAlpha6FixtureOpenRequiredFixtures | ForEach-Object {
+    $fixtureName = [string]$_
+    $fixtureId = [System.IO.Path]::GetFileNameWithoutExtension($fixtureName)
+    $golden = [System.IO.File]::ReadAllText(
+      (Join-Path $repo "android\testdata\frame-accuracy\$fixtureId.json"),
+      [System.Text.Encoding]::UTF8
+    ) | ConvertFrom-Json
+    $frames = @($golden.frames | Sort-Object { [int]$_.sampleOrdinal })
+    [PSCustomObject][ordered]@{
+      fixture = $fixtureName
+      expectedSourceSha256 = [string]$golden.sourceSha256
+      expectedSampleCount = [long]$golden.frameCount
+      status = "PASS"
+      asset = [PSCustomObject]@{
+        byteCount = 100L
+        sha256 = [string]$golden.sourceSha256
+      }
+      providerDescriptor = [PSCustomObject]@{
+        authority = "$($script:CcrPinnedAppPackage).fixture"
+        resolved = $true
+        exported = $false
+        statSize = 100L
+        regularFile = $true
+        seekable = $true
+        initialOffset = 0L
+        byteCount = 100L
+        sha256 = [string]$golden.sourceSha256
+      }
+      cachePfdSha256 = [string]$golden.sourceSha256
+      extractorFdOnly = [PSCustomObject]@{
+        status = "PASS"
+        result = [PSCustomObject]@{
+          trackCount = 1L
+          videoTrackIndex = 0L
+          mime = "video/avc"
+          sampleCount = [long]$golden.frameCount
+          firstPtsUs = [long]$frames[0].ptsUs
+          lastPtsUs = [long]$frames[-1].ptsUs
+        }
+        failure = $null
+      }
+      extractorExplicitRange = $null
+      hardwareDecoderCandidate = [PSCustomObject]@{
+        status = "PASS"
+        result = [PSCustomObject]@{
+          componentName = "c2.vendor.decoder"
+          hardwareAccelerated = $true
+          softwareOnly = $false
+        }
+        failure = $null
+      }
+      codecConfigureStart = $null
+      fullFrameDecodeCount = 0L
+      performanceScenarioCount = 0L
+    }
+  })
+  $fixtureReport = [PSCustomObject][ordered]@{
+    schemaVersion = 1
+    kind = "alpha6-fixture-open-smoke"
+    status = "PASS"
+    applicationId = $script:CcrPinnedAppPackage
+    appVersionName = "0.2.0-alpha.6"
+    appVersionCode = 7L
+    device = [PSCustomObject]@{
+      manufacturer = "samsung"
+      model = $context.Model
+      fingerprint = $context.Fingerprint
+      securityPatch = $context.SecurityPatch
+      sdk = $context.Sdk
+    }
+    syntheticOnly = $true
+    containsRealMediaMetadata = $false
+    runId = "bridge-fixture-report"
+    startedAtElapsedRealtimeNs = 100L
+    finishedAtElapsedRealtimeNs = 200L
+    runtimeSourceSha = $context.ArtifactSet.RuntimeSourceSha
+    harnessSourceSha = $context.ArtifactSet.HarnessSourceSha
+    runtimeInputsTreeSha256 = $context.ArtifactSet.RuntimeInputsTreeSha256
+    artifactSetRevision = 5
+    testCount = 1
+    instrumentationExpectedTestCount = 1
+    appSha256 = $context.ArtifactSet.Artifacts.debugApp.sha256
+    testApkSha256 = $context.ArtifactSet.Artifacts.debugTest.sha256
+    fixtureCount = 17L
+    assetHashPassCount = 17L
+    providerOpenPassCount = 17L
+    cacheVerificationPassCount = 17L
+    extractorFdOnlyPassCount = 17L
+    extractorExplicitRangePassCount = 0L
+    videoTrackPassCount = 17L
+    sampleEnumerationPassCount = 17L
+    hardwareDecoderCandidatePassCount = 17L
+    codecConfigureStartPassCount = 0L
+    writeOpenCount = 0L
+    fullFrameDecodeCount = 0L
+    performanceScenarioCount = 0L
+    fixtures = $fixtureRecords
+  }
+  Assert-CcrAlpha6FixtureOpenReport `
+    -Report $fixtureReport -Context $context -RunId "bridge-fixture-report" `
+    -Mode "Smoke" -ExpectedStatus "PASS" | Out-Null
+  Assert-CcrAlpha6CandidateBridgeTest $true "fixture-open-smoke-report-17-positive"
+
+  $badFixtureIdentity = Copy-CcrAlpha6CandidateBridgeValue $fixtureReport
+  $badFixtureIdentity.fixtures[0].fixture = "unexpected.mp4"
+  Assert-CcrAlpha6CandidateBridgeThrows {
+    Assert-CcrAlpha6FixtureOpenReport `
+      -Report $badFixtureIdentity -Context $context -RunId "bridge-fixture-report" `
+      -Mode "Smoke" -ExpectedStatus "PASS" | Out-Null
+  } "ALPHA6_FIXTURE_OPEN_REPORT_FIXTURE_IDENTITY_MISMATCH:*" `
+    "fixture-open-smoke-fixture-identity-rejected"
+
+  $badFixtureSha = Copy-CcrAlpha6CandidateBridgeValue $fixtureReport
+  $badFixtureSha.fixtures[0].expectedSourceSha256 = "0" * 64
+  Assert-CcrAlpha6CandidateBridgeThrows {
+    Assert-CcrAlpha6FixtureOpenReport `
+      -Report $badFixtureSha -Context $context -RunId "bridge-fixture-report" `
+      -Mode "Smoke" -ExpectedStatus "PASS" | Out-Null
+  } "ALPHA6_FIXTURE_OPEN_REPORT_FIXTURE_CONTRACT_MISMATCH:*" `
+    "fixture-open-smoke-golden-sha-rejected"
+
+  $badFixtureApp = Copy-CcrAlpha6CandidateBridgeValue $fixtureReport
+  $badFixtureApp.applicationId = "com.example.wrong"
+  Assert-CcrAlpha6CandidateBridgeThrows {
+    Assert-CcrAlpha6FixtureOpenReport `
+      -Report $badFixtureApp -Context $context -RunId "bridge-fixture-report" `
+      -Mode "Smoke" -ExpectedStatus "PASS" | Out-Null
+  } "ALPHA6_FIXTURE_OPEN_REPORT_DEVICE_OR_APP_IDENTITY_MISMATCH" `
+    "fixture-open-smoke-app-identity-rejected"
+
+  $diagnosticReport = Copy-CcrAlpha6CandidateBridgeValue $fixtureReport
+  $diagnosticReport.kind = "alpha6-fixture-open-diagnostic"
+  foreach ($name in @(
+    "fixtureCount",
+    "assetHashPassCount",
+    "providerOpenPassCount",
+    "cacheVerificationPassCount",
+    "extractorFdOnlyPassCount",
+    "extractorExplicitRangePassCount",
+    "videoTrackPassCount",
+    "sampleEnumerationPassCount",
+    "hardwareDecoderCandidatePassCount",
+    "codecConfigureStartPassCount"
+  )) {
+    $diagnosticReport.$name = 1L
+  }
+  $diagnosticFixture = $diagnosticReport.fixtures[0]
+  $diagnosticFixture.extractorExplicitRange =
+    Copy-CcrAlpha6CandidateBridgeValue $diagnosticFixture.extractorFdOnly
+  $diagnosticFixture.codecConfigureStart = [PSCustomObject]@{
+    status = "PASS"
+    result = [PSCustomObject]@{
+      componentName = "c2.vendor.decoder"
+      surfaceReady = $true
+      configured = $true
+      started = $true
+      queuedInputBufferCount = 0L
+      dequeuedOutputBufferCount = 0L
+    }
+    failure = $null
+  }
+  $diagnosticReport.fixtures = @($diagnosticFixture)
+  Assert-CcrAlpha6FixtureOpenReport `
+    -Report $diagnosticReport -Context $context -RunId "bridge-fixture-report" `
+    -Mode "Diagnostic" -ExpectedStatus "PASS" | Out-Null
+  Assert-CcrAlpha6CandidateBridgeTest $true "fixture-open-diagnostic-report-positive"
+
+  foreach ($case in @(
+    @("provider-count", "providerOpenPassCount", 16L, "ALPHA6_FIXTURE_OPEN_REPORT_COUNT_MISMATCH:*"),
+    @("extractor-count", "extractorFdOnlyPassCount", 16L, "ALPHA6_FIXTURE_OPEN_REPORT_COUNT_MISMATCH:*"),
+    @("write-open", "writeOpenCount", 1L, "ALPHA6_FIXTURE_OPEN_REPORT_ZERO_CONTRACT_MISMATCH:*"),
+    @("full-decode", "fullFrameDecodeCount", 1L, "ALPHA6_FIXTURE_OPEN_REPORT_ZERO_CONTRACT_MISMATCH:*")
+  )) {
+    $badFixtureReport = Copy-CcrAlpha6CandidateBridgeValue $fixtureReport
+    $badFixtureReport.([string]$case[1]) = [long]$case[2]
+    Assert-CcrAlpha6CandidateBridgeThrows {
+      Assert-CcrAlpha6FixtureOpenReport `
+        -Report $badFixtureReport -Context $context -RunId "bridge-fixture-report" `
+        -Mode "Smoke" -ExpectedStatus "PASS" | Out-Null
+    } ([string]$case[3]) "fixture-open-smoke-$([string]$case[0])-rejected"
+  }
+
+  $fixtureFailureReport = Copy-CcrAlpha6CandidateBridgeValue $fixtureReport
+  $fixtureFailureReport.status = "FAIL"
+  $fixtureFailureReport.providerOpenPassCount = 0L
+  $fixtureFailureReport.fixtures = @()
+  $fixtureFailureReport | Add-Member -NotePropertyName failure -NotePropertyValue ([PSCustomObject]@{
+    stageCode = "PROVIDER_OPEN_FILE_DESCRIPTOR"
+    classification = "PROVIDER_DESCRIPTOR_FAILURE"
+    exceptionClass = "FileNotFoundException"
+    sanitizedDetail = "synthetic fixture provider open failed"
+  })
+  Assert-CcrAlpha6FixtureOpenReport `
+    -Report $fixtureFailureReport -Context $context -RunId "bridge-fixture-report" `
+    -Mode "Smoke" -ExpectedStatus "FAIL" | Out-Null
+  Assert-CcrAlpha6CandidateBridgeTest $true "fixture-open-failure-report-identity-preserved"
+
+  $receiveContext = $context | Select-Object *
+  $receiveContext | Add-Member -NotePropertyName Serial -NotePropertyValue "FAKE-S24"
+  $receiveContext | Add-Member -NotePropertyName Adb -NotePropertyValue "fake-adb"
+  $malformedRaw = "{not-json"
+  $receiveContext | Add-Member -NotePropertyName AdbInvoker -NotePropertyValue {
+    param($Arguments)
+    return [PSCustomObject]@{ exitCode = 0; output = $malformedRaw }
+  }.GetNewClosure()
+  $malformedDirectory = Join-Path $root "fixture-report-malformed"
+  [System.IO.Directory]::CreateDirectory($malformedDirectory) | Out-Null
+  Assert-CcrAlpha6CandidateBridgeThrows {
+    Receive-CcrAlpha6FixtureOpenReport `
+      -Context $receiveContext -ReportName "s24-alpha6-fixture-open-smoke-v1.json" `
+      -RunId "bridge-fixture-malformed" -Mode "Smoke" `
+      -EvidenceDirectory $malformedDirectory | Out-Null
+  } "ALPHA6_FIXTURE_OPEN_REPORT_JSON_INVALID:*" "fixture-open-malformed-report-rejected"
+  $malformedEvidence = Join-Path $malformedDirectory "s24-alpha6-fixture-open-smoke-v1.json"
+  Assert-CcrAlpha6CandidateBridgeTest (
+    (Get-Item -LiteralPath $malformedEvidence).IsReadOnly -and
+      [System.IO.File]::ReadAllText($malformedEvidence, [System.Text.Encoding]::UTF8) -ceq
+        $malformedRaw
+  ) "fixture-open-malformed-report-preserved"
+
+  $driftReport = Copy-CcrAlpha6CandidateBridgeValue $fixtureReport
+  $driftReport.runId = "bridge-fixture-drift"
+  $driftReport.providerOpenPassCount = 16L
+  $driftRaw = $driftReport | ConvertTo-Json -Depth 30
+  $receiveContext.AdbInvoker = {
+    param($Arguments)
+    return [PSCustomObject]@{ exitCode = 0; output = $driftRaw }
+  }.GetNewClosure()
+  $driftDirectory = Join-Path $root "fixture-report-drift"
+  [System.IO.Directory]::CreateDirectory($driftDirectory) | Out-Null
+  Assert-CcrAlpha6CandidateBridgeThrows {
+    Receive-CcrAlpha6FixtureOpenReport `
+      -Context $receiveContext -ReportName "s24-alpha6-fixture-open-smoke-v1.json" `
+      -RunId "bridge-fixture-drift" -Mode "Smoke" `
+      -EvidenceDirectory $driftDirectory | Out-Null
+  } "ALPHA6_FIXTURE_OPEN_REPORT_COUNT_MISMATCH:*" "fixture-open-drift-report-rejected"
+  $driftEvidence = Join-Path $driftDirectory "s24-alpha6-fixture-open-smoke-v1.json"
+  Assert-CcrAlpha6CandidateBridgeTest (
+    (Get-Item -LiteralPath $driftEvidence).IsReadOnly -and
+      [System.IO.File]::ReadAllText($driftEvidence, [System.Text.Encoding]::UTF8) -ceq $driftRaw
+  ) "fixture-open-drift-report-preserved"
+
+  $timeoutContext = $context | Select-Object *
+  $timeoutContext | Add-Member -NotePropertyName Serial -NotePropertyValue "FAKE-S24"
+  $timeoutContext | Add-Member -NotePropertyName Adb -NotePropertyValue "fake-adb"
+  $timeoutContext | Add-Member -NotePropertyName AdbInvoker -NotePropertyValue {
+    param($Arguments)
+    $line = $Arguments -join " "
+    if ($line -match " cat /proc/uptime$") {
+      return [PSCustomObject]@{ exitCode = 0; output = "100.0 0.0" }
+    }
+    if ($line -match " shell am instrument ") {
+      return [PSCustomObject]@{ exitCode = 124; output = "ALPHA6_ADB_PROCESS_TIMEOUT" }
+    }
+    if ($line -match " run-as .+ cat files/s24-alpha6-fixture-open-smoke-v1\.json$") {
+      return [PSCustomObject]@{ exitCode = 1; output = "No such file" }
+    }
+    return [PSCustomObject]@{ exitCode = 0; output = "" }
+  }
+  $timeoutDirectory = Join-Path $context.OutputDirectory "bridge-fixture-timeout-attempt"
+  Assert-CcrAlpha6CandidateBridgeThrows {
+    Invoke-CcrAlpha6CandidateFixtureOpenInstrumentation `
+      -Context $timeoutContext -RunId "bridge-fixture-timeout" `
+      -EvidenceDirectory $timeoutDirectory -Mode "Smoke" -SkipInstall | Out-Null
+  } "PRIMARY=PINNED_INSTRUMENTATION_FAILED:debugTest; REPORT=ALPHA6_FIXTURE_OPEN_REPORT_PULL_FAILED:*" `
+    "fixture-open-timeout-primary-error-preserved"
+  $timeoutFailure = @(
+    Get-ChildItem -LiteralPath $timeoutDirectory `
+      -Filter "failure-alpha6-fixture-open-smoke-v1.json" -File
+  )
+  $timeoutFailureReport = [System.IO.File]::ReadAllText(
+    $timeoutFailure[0].FullName,
+    [System.Text.Encoding]::UTF8
+  ) | ConvertFrom-Json
+  Assert-CcrAlpha6CandidateBridgeTest (
+    $timeoutFailure.Count -eq 1 -and
+      $timeoutFailure[0].IsReadOnly -and
+      [long]$timeoutFailureReport.exitCode -eq 124L -and
+      [string]$timeoutFailureReport.output -ceq "ALPHA6_ADB_PROCESS_TIMEOUT"
+  ) "fixture-open-timeout-instrumentation-evidence-preserved"
+
+  $validFailureReport = Copy-CcrAlpha6CandidateBridgeValue $fixtureFailureReport
+  $validFailureReport.runId = "bridge-fixture-valid-failure"
+  $validFailureReport.startedAtElapsedRealtimeNs = 100L
+  $validFailureReport.finishedAtElapsedRealtimeNs = 200L
+  $validFailureRaw = $validFailureReport | ConvertTo-Json -Depth 30
+  $validFailureContext = $context | Select-Object *
+  $validFailureContext | Add-Member -NotePropertyName Serial -NotePropertyValue "FAKE-S24"
+  $validFailureContext | Add-Member -NotePropertyName Adb -NotePropertyValue "fake-adb"
+  $validFailureContext | Add-Member -NotePropertyName AdbInvoker -NotePropertyValue {
+    param($Arguments)
+    $line = $Arguments -join " "
+    if ($line -match " cat /proc/uptime$") {
+      return [PSCustomObject]@{ exitCode = 0; output = "0.000000001 0.0" }
+    }
+    if ($line -match " shell am instrument ") {
+      return [PSCustomObject]@{ exitCode = 1; output = "FAILURES!!!" }
+    }
+    if ($line -match " run-as .+ cat files/s24-alpha6-fixture-open-smoke-v1\.json$") {
+      return [PSCustomObject]@{ exitCode = 0; output = $validFailureRaw }
+    }
+    return [PSCustomObject]@{ exitCode = 0; output = "" }
+  }.GetNewClosure()
+  $validFailureDirectory = Join-Path $context.OutputDirectory "bridge-fixture-valid-failure-attempt"
+  $validFailureResult = Invoke-CcrAlpha6CandidateFixtureOpenInstrumentation `
+    -Context $validFailureContext -RunId "bridge-fixture-valid-failure" `
+    -EvidenceDirectory $validFailureDirectory -Mode "Smoke" -SkipInstall
+  Assert-CcrAlpha6CandidateBridgeTest (
+    [string]$validFailureResult.status -ceq "FAIL" -and
+      [string]$validFailureResult.failure.classification -ceq "PROVIDER_DESCRIPTOR_FAILURE" -and
+      [string]$validFailureResult.instrumentationFailure -ceq
+        "PINNED_INSTRUMENTATION_FAILED:debugTest" -and
+      (Get-Item -LiteralPath $validFailureResult.reportPath).IsReadOnly
+  ) "fixture-open-valid-failure-result-links-report"
 
   Assert-CcrAlpha6CandidateBridgeThrows {
     Invoke-CcrAlpha6CandidateDeviceHostPreflight `

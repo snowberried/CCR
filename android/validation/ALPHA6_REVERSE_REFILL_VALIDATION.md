@@ -21,12 +21,50 @@ APK identity로 들어간 것이 원인이다.
 - revision 5 importer는 embedded identity가 없거나 다르면 거부한다.
 - S24 identity smoke는 `ValidationHarnessV2.requireIdentity`만 실행하고 fixture, decode,
   performance와 settings write를 수행하지 않는다.
-- Stage 1은 identity smoke PASS 증거 뒤에만 settings를 변경한다.
+- Stage 1은 identity smoke와 17-fixture open smoke PASS 증거 뒤에만 settings를
+  변경한다.
 
 실패 artifact
 `CCR-Android-0.2.0-alpha.6-274e5f6-20260728-150221`은 signer가 유효한 보존
 evidence지만 embedded runtime identity 불일치로 device Gate, Resume와 Random에 사용할
 수 없다. 이 closure에서 제품 runtime Kotlin, frozen input 40개와 threshold 변경은 0이다.
+
+## 첫 fixture open 실패의 증거 경계와 선행 Gate
+
+run `a6s1-7482800-234808`은 첫 `h264-ip` fixture에서 indexing error와
+`VIDEO_OPEN_FAILED`를 남기고 종료됐다. verified frame은 `0/236`, mismatch는 0이며
+performance는 실행하지 않았다. 보존 artifact의 `h264-ip.mp4`는 `26,160 bytes`,
+SHA-256
+`e84c39f433dbed61bfa3e5c96eff5eb74ffe86c53edc2d055166ce3884c44532`로
+golden 입력과 일치한다.
+
+실패 구간 logcat은 보존되지 않아 `LOGCAT_NOT_AVAILABLE`이고, 조사 시점의 기기
+cache 파일도 없었다. 기존 open 경로가 하위 예외를 `VIDEO_OPEN_FAILED`로 합쳤으므로
+provider/cache/extractor/codec 중 당시 실패 단계를 증명할 수 없다. 역사적 분류는
+`UNCLASSIFIED_OPEN_PIPELINE_FAILURE`이며 cache corruption으로 단정하지 않는다.
+provider의 existence-only reuse는 `CACHE_FILE_UNVERIFIED_REUSE`라는 구조적 위험이지만
+당시 원인의 증거는 아니다. provider는 frozen 40 runtime 입력 중 하나이므로 이번
+closure에서 변경하지 않는다.
+
+재발 방지 계약은 다음과 같다.
+
+- 17-fixture smoke PASS는 fixture/asset/provider-cache-PFD/fd-only extractor/video
+  track/sample/hardware decoder candidate가 각각 `17/17`이어야 한다.
+- smoke의 write-capable provider open, explicit-range extractor, codec
+  configure/start, full-frame decode, performance count는 모두 0이어야 한다.
+- 단일 `h264-ip` diagnostic은 위 기본 단계가 `1/1`이고 explicit-range extractor와
+  codec configure/start도 `1/1`이어야 한다. queued input/output buffer,
+  full-frame decode와 performance count는 모두 0이어야 한다.
+- provider가 반환한 내용이 고정 asset의 byte 수와 SHA-256에 일치하지 않으면 자동
+  복구나 덮어쓰기 없이 fail-closed한다.
+- 각 단계의 원시 report를 immutable evidence로 먼저 보존하고, report parsing이나
+  contract 검사가 실패해도 원시 파일을 잃지 않는다.
+- Stage 1 순서는 identity → fixture-open smoke → settings → correctness →
+  performance다. 선행 Gate 실패 시 settings write, correctness와 performance는 0이다.
+
+허용된 실기기 closure 순서는 Stage 1 `-PreflightOnly` → Random
+`-PreflightOnly` → identity smoke → 필요 시 단일 diagnostic → 17-fixture smoke다.
+이 결과가 나오기 전에는 S24 PASS로 기록하지 않는다.
 
 이 문서는 Alpha 5에서 확인된 역방향 주기적 끊김과 random seek tail을 줄이기 위한 Alpha 6 구조, 고정 source 경계, 아직 실행하지 않은 S24 Gate를 기록한다. 실제 사용자 영상, 파일명, URI, 경로 또는 source hash는 기록하지 않는다.
 
@@ -106,18 +144,26 @@ Stage 1 재실행은 Pending이다. 첫 candidate APK·manifest·실패 보고�
 
 - Android JVM: 162/162, failure/error/skip 0
 - Android instrumentation Kotlin compile: PASS
-- Alpha 6 tail contract host test: 36 PASS
-- pinned artifact v4 host-negative test: 38 PASS
-- Stage 1 runner host-negative test: 72 PASS
-- random runner host-negative test: 17 PASS
-- Alpha 4·5·6 runtime freeze verifier: PASS
-- source/privacy/CI contract: PASS
-- revision 5 candidate device bridge host test: 28 PASS
-- revision 5 Stage 1 runner host test: 107 PASS
+- Android lint와 app/test APK 4종 assemble: PASS
+- desktop test 106/106와 production build: PASS
+- pinned artifact host tests: 124 PASS
+- Alpha 5 pinned artifact host tests: 98 PASS
+- Alpha 6 revision 4 host tests: 39 PASS
+- Alpha 6 tail contract host tests: 56 PASS
+- pilot signing host tests: 28 PASS
+- revision 5 candidate device bridge host tests: 47 PASS
+- identity smoke runner host tests: 19 PASS
+- fixture-open smoke runner host tests: 20 PASS
+- revision 5 Stage 1 runner host tests: 127 PASS
 - revision 5 Random runner host test: 24 PASS
-- PowerShell parser: 39 scripts PASS
+- PowerShell parser: 44 scripts PASS
+- Alpha 4·5·6 runtime freeze verifier: 32/37/40 PASS
+- Alpha 6 runtime input tree:
+  `3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468`
+- source/privacy/CI contract와 debug/benchmark APK privacy: PASS
+- 제품 runtime Kotlin, frozen provider와 40개 runtime input 변경: 0
 
-최종 clean build, desktop 회귀, Android lint·APK 4종 build·privacy 검사는 최종 harness commit에서 다시 실행한다.
+커밋 뒤 같은 검증을 CI에서 다시 확인한다.
 
 ## S24 hard Gate — Pending
 
