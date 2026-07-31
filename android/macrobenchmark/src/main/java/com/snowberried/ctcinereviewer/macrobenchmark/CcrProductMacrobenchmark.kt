@@ -1,0 +1,1361 @@
+package com.snowberried.ctcinereviewer.macrobenchmark
+
+import android.content.ComponentName
+import android.content.Intent
+import android.os.Bundle
+import androidx.benchmark.macro.CompilationMode
+import androidx.benchmark.macro.ExperimentalMetricApi
+import androidx.benchmark.macro.ExperimentalMacrobenchmarkApi
+import androidx.benchmark.macro.FrameTimingMetric
+import androidx.benchmark.macro.MemoryUsageMetric
+import androidx.benchmark.macro.Metric
+import androidx.benchmark.macro.StartupMode
+import androidx.benchmark.macro.StartupTimingMetric
+import androidx.benchmark.macro.TraceSectionMetric
+import androidx.benchmark.macro.TraceMetric
+import androidx.benchmark.macro.junit4.MacrobenchmarkRule
+import androidx.benchmark.traceprocessor.ExperimentalTraceProcessorApi
+import androidx.benchmark.traceprocessor.TraceProcessor
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.filters.LargeTest
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.Until
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import java.io.File
+import java.security.MessageDigest
+import kotlin.math.ceil
+
+@LargeTest
+@RunWith(AndroidJUnit4::class)
+@OptIn(
+    ExperimentalMetricApi::class,
+    ExperimentalMacrobenchmarkApi::class,
+    ExperimentalTraceProcessorApi::class,
+)
+class CcrProductMacrobenchmark {
+    private data class RequestStageTimestamps(
+        val acceptedNs: Long,
+        val actorStartedNs: Long?,
+        val cachedNavigationStartedNs: Long?,
+        val firstOutputNs: Long?,
+        val targetOutputNs: Long?,
+        val publishedNs: Long,
+    )
+
+    private class CcrRequestStageMetric : TraceMetric() {
+        override fun getMeasurements(
+            captureInfo: Metric.CaptureInfo,
+            traceSession: TraceProcessor.Session,
+        ): List<Metric.Measurement> {
+            val rows = traceSession.query(
+                """
+                WITH measurement_window AS (
+                    SELECT ts AS start_ns, ts + dur AS end_ns
+                    FROM slice
+                    WHERE name = '$TRACE_REPRESENTATIVE_SMOOTHNESS' AND dur >= 0
+                ),
+                accepted AS (
+                    SELECT substr(name, length('$REQUEST_ACCEPT_STAGE') + 2) AS request_key,
+                           MIN(ts) AS accepted_ns
+                    FROM slice
+                    WHERE name GLOB '$REQUEST_ACCEPT_STAGE f=* r=* i=* p=*'
+                    GROUP BY request_key
+                ),
+                actor_started AS (
+                    SELECT substr(name, length('$ACTOR_START_STAGE') + 2) AS request_key,
+                           MIN(ts) AS actor_started_ns
+                    FROM slice
+                    WHERE name GLOB '$ACTOR_START_STAGE f=* r=* i=* p=*'
+                    GROUP BY request_key
+                ),
+                cached_navigation_started AS (
+                    SELECT substr(name, length('$CACHED_NAVIGATION_START_STAGE') + 2) AS request_key,
+                           MIN(ts) AS cached_navigation_started_ns
+                    FROM slice
+                    WHERE name GLOB '$CACHED_NAVIGATION_START_STAGE f=* r=* i=* p=*'
+                    GROUP BY request_key
+                ),
+                first_output AS (
+                    SELECT substr(name, length('$OUTPUT_FIRST_STAGE') + 2) AS request_key,
+                           MIN(ts) AS first_output_ns
+                    FROM slice
+                    WHERE name GLOB '$OUTPUT_FIRST_STAGE f=* r=* i=* p=*'
+                    GROUP BY request_key
+                ),
+                target_output AS (
+                    SELECT substr(name, length('$OUTPUT_TARGET_STAGE') + 2) AS request_key,
+                           MIN(ts) AS target_output_ns
+                    FROM slice
+                    WHERE name GLOB '$OUTPUT_TARGET_STAGE f=* r=* i=* p=*'
+                    GROUP BY request_key
+                ),
+                successful_publication AS (
+                    SELECT DISTINCT substr(success.name, length('$SUCCESSFUL_PUBLICATION_STAGE') + 2)
+                        AS request_key
+                    FROM slice AS success
+                    WHERE success.name GLOB '$SUCCESSFUL_PUBLICATION_STAGE f=* r=* i=* p=*'
+                      AND success.dur >= 0
+                      AND EXISTS (
+                          SELECT 1
+                          FROM measurement_window
+                          WHERE success.ts + success.dur
+                              BETWEEN measurement_window.start_ns AND measurement_window.end_ns
+                      )
+                ),
+                published AS (
+                    SELECT substr(publication.name, length('$PUBLISH_STAGE') + 2) AS request_key,
+                           MIN(publication.ts + publication.dur) AS published_ns
+                    FROM slice AS publication
+                    WHERE publication.name GLOB '$PUBLISH_STAGE f=* r=* i=* p=*'
+                      AND publication.dur >= 0
+                      AND EXISTS (
+                          SELECT 1
+                          FROM successful_publication AS success
+                          WHERE success.request_key =
+                              substr(publication.name, length('$PUBLISH_STAGE') + 2)
+                      )
+                    GROUP BY request_key
+                )
+                SELECT accepted.accepted_ns AS accepted_ns,
+                       actor_started.actor_started_ns AS actor_started_ns,
+                       cached_navigation_started.cached_navigation_started_ns
+                            AS cached_navigation_started_ns,
+                       first_output.first_output_ns AS first_output_ns,
+                       target_output.target_output_ns AS target_output_ns,
+                       published.published_ns AS published_ns
+                FROM published
+                JOIN accepted USING (request_key)
+                LEFT JOIN actor_started USING (request_key)
+                LEFT JOIN cached_navigation_started USING (request_key)
+                LEFT JOIN first_output USING (request_key)
+                LEFT JOIN target_output USING (request_key)
+                ORDER BY published.published_ns
+                """.trimIndent(),
+            ).map { row ->
+                RequestStageTimestamps(
+                    acceptedNs = row.long("accepted_ns"),
+                    actorStartedNs = row.nullableLong("actor_started_ns"),
+                    cachedNavigationStartedNs = row.nullableLong("cached_navigation_started_ns"),
+                    firstOutputNs = row.nullableLong("first_output_ns"),
+                    targetOutputNs = row.nullableLong("target_output_ns"),
+                    publishedNs = row.long("published_ns"),
+                )
+            }.toList()
+
+            val counters = traceSession.query(
+                """
+                WITH ranked AS (
+                    SELECT counter_track.name AS name,
+                           CAST(counter.value AS INT) AS value,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY counter_track.name ORDER BY counter.ts DESC
+                           ) AS rank
+                    FROM counter
+                    JOIN counter_track ON counter.track_id = counter_track.id
+                    WHERE counter_track.name IN (
+                        'ccr.publication_count',
+                        'ccr.measurement_swap_failure'
+                    )
+                )
+                SELECT name, value FROM ranked WHERE rank = 1
+                """.trimIndent(),
+            ).associate { row -> row.string("name") to row.long("value") }
+            check(counters.keys == EXPECTED_COUNTERS) {
+                "Missing CCR request-stage counters: ${(EXPECTED_COUNTERS - counters.keys).sorted()}"
+            }
+            val publishedCount = counters.getValue("ccr.publication_count")
+            check(publishedCount > 0L) { "CCR request-stage trace has no successful publications" }
+            check(counters.getValue("ccr.measurement_swap_failure") == 0L) {
+                "CCR request-stage trace includes a swap failure"
+            }
+            check(rows.size.toLong() == publishedCount) {
+                "CCR publication trace/count mismatch: trace=${rows.size}, counter=$publishedCount"
+            }
+
+            rows.forEach { row ->
+                check(row.acceptedNs <= row.publishedNs) { "CCR publication precedes request acceptance" }
+                check(row.actorStartedNs != null || row.cachedNavigationStartedNs != null) {
+                    "CCR publication has no actor or cached-navigation start"
+                }
+                check((row.firstOutputNs == null) == (row.targetOutputNs == null)) {
+                    "CCR request has only one decoder-output stage"
+                }
+                row.actorStartedNs?.let { actorStarted ->
+                    check(actorStarted in row.acceptedNs..row.publishedNs) {
+                        "CCR actor start is outside the request/publication interval"
+                    }
+                }
+                row.cachedNavigationStartedNs?.let { cachedStarted ->
+                    check(cachedStarted in row.acceptedNs..row.publishedNs) {
+                        "CCR cached-navigation start is outside the request/publication interval"
+                    }
+                    row.actorStartedNs?.let { actorStarted ->
+                        check(cachedStarted <= actorStarted) {
+                            "CCR media actor started before cached-navigation fallback"
+                        }
+                    } ?: check(row.firstOutputNs == null && row.targetOutputNs == null) {
+                        "CCR cache-only publication touched decoder output"
+                    }
+                }
+                row.firstOutputNs?.let { first ->
+                    check(row.actorStartedNs != null) {
+                        "CCR decoded request has no media-actor start"
+                    }
+                    check(first in row.acceptedNs..row.publishedNs) {
+                        "CCR first decoder output is outside the request/publication interval"
+                    }
+                }
+                row.targetOutputNs?.let { target ->
+                    check(target in row.acceptedNs..row.publishedNs) {
+                        "CCR target decoder output is outside the request/publication interval"
+                    }
+                    check(target >= requireNotNull(row.firstOutputNs)) {
+                        "CCR target decoder output precedes first decoder output"
+                    }
+                }
+            }
+
+            val decodedRows = rows.filter { it.firstOutputNs != null }
+            val actorRows = rows.filter { it.actorStartedNs != null }
+            val cachedOnlyRows = rows.filter {
+                it.cachedNavigationStartedNs != null && it.actorStartedNs == null
+            }
+            val acceptedToActorStartUs = actorRows.map {
+                (requireNotNull(it.actorStartedNs) - it.acceptedNs) / 1_000L
+            }.sorted()
+            val acceptedToExecutionStartUs = rows.map {
+                val startedNs = it.cachedNavigationStartedNs ?: requireNotNull(it.actorStartedNs)
+                (startedNs - it.acceptedNs) / 1_000L
+            }.sorted()
+            val acceptedToFirstOutputUs = decodedRows.map {
+                (requireNotNull(it.firstOutputNs) - it.acceptedNs) / 1_000L
+            }.sorted()
+            val acceptedToTargetOutputUs = decodedRows.map {
+                (requireNotNull(it.targetOutputNs) - it.acceptedNs) / 1_000L
+            }.sorted()
+            val acceptedToPublicationUs = rows.map {
+                (it.publishedNs - it.acceptedNs) / 1_000L
+            }.sorted()
+
+            return buildList {
+                addOptionalSeries("ccrAcceptedToActorStart", acceptedToActorStartUs)
+                addSeries("ccrAcceptedToExecutionStart", acceptedToExecutionStartUs)
+                addOptionalSeries("ccrAcceptedToFirstOutput", acceptedToFirstOutputUs)
+                addOptionalSeries("ccrAcceptedToTargetOutput", acceptedToTargetOutputUs)
+                addSeries("ccrAcceptedToSuccessfulPublication", acceptedToPublicationUs)
+                add(Metric.Measurement("ccrSuccessfulPublicationTraceCount", rows.size.toDouble()))
+                add(Metric.Measurement("ccrActorStartedPublicationTraceCount", actorRows.size.toDouble()))
+                add(
+                    Metric.Measurement(
+                        "ccrCacheOnlyActorBypassTraceCount",
+                        cachedOnlyRows.size.toDouble(),
+                    ),
+                )
+                add(Metric.Measurement("ccrCacheOnlyActorStartUs", 0.0))
+                add(Metric.Measurement("ccrDecoderOutputTraceCount", decodedRows.size.toDouble()))
+                add(
+                    Metric.Measurement(
+                        "ccrMissingDecoderOutputTraceCount",
+                        (rows.size - decodedRows.size).toDouble(),
+                    ),
+                )
+            }
+        }
+
+        private fun MutableList<Metric.Measurement>.addSeries(
+            name: String,
+            sortedValuesUs: List<Long>,
+        ) {
+            check(sortedValuesUs.isNotEmpty()) { "CCR request-stage latency series is empty: $name" }
+            add(Metric.Measurement("${name}P50Us", sortedValuesUs.percentile(0.50).toDouble()))
+            add(Metric.Measurement("${name}P95Us", sortedValuesUs.percentile(0.95).toDouble()))
+            add(Metric.Measurement("${name}P99Us", sortedValuesUs.percentile(0.99).toDouble()))
+            add(Metric.Measurement("${name}MaxUs", sortedValuesUs.last().toDouble()))
+        }
+
+        private fun MutableList<Metric.Measurement>.addOptionalSeries(
+            name: String,
+            sortedValuesUs: List<Long>,
+        ) {
+            add(Metric.Measurement("${name}Available", if (sortedValuesUs.isEmpty()) 0.0 else 1.0))
+            if (sortedValuesUs.isEmpty()) {
+                listOf("P50Us", "P95Us", "P99Us", "MaxUs").forEach { suffix ->
+                    add(Metric.Measurement("$name$suffix", 0.0))
+                }
+            } else {
+                addSeries(name, sortedValuesUs)
+            }
+        }
+
+        private fun List<Long>.percentile(fraction: Double): Long =
+            this[(ceil(size * fraction).toInt() - 1).coerceIn(0, lastIndex)]
+
+        private companion object {
+            const val REQUEST_ACCEPT_STAGE = "CCR.request.accept"
+            const val ACTOR_START_STAGE = "CCR.actor.start"
+            const val CACHED_NAVIGATION_START_STAGE = "CCR.cached-navigation.start"
+            const val OUTPUT_FIRST_STAGE = "CCR.output.first"
+            const val OUTPUT_TARGET_STAGE = "CCR.output.target"
+            const val PUBLISH_STAGE = "CCR.publish"
+            const val SUCCESSFUL_PUBLICATION_STAGE = "CCR.publish.success"
+            val EXPECTED_COUNTERS = setOf(
+                "ccr.publication_count",
+                "ccr.measurement_swap_failure",
+            )
+        }
+    }
+
+    private class CcrCounterMetric : TraceMetric() {
+        override fun getMeasurements(
+            captureInfo: Metric.CaptureInfo,
+            traceSession: TraceProcessor.Session,
+        ): List<Metric.Measurement> {
+            val names = COUNTERS.joinToString(",") { "'$it'" }
+            val values = traceSession.query(
+                """
+                WITH ranked AS (
+                    SELECT counter_track.name AS name,
+                           counter.value AS value,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY counter_track.name ORDER BY counter.ts DESC
+                           ) AS rank
+                    FROM counter
+                    JOIN counter_track ON counter.track_id = counter_track.id
+                    WHERE counter_track.name IN ($names)
+                )
+                SELECT name, value FROM ranked WHERE rank = 1
+                """.trimIndent(),
+            ).associate { row -> row.string("name") to row.double("value") }
+            val missing = COUNTERS - values.keys
+            check(missing.isEmpty()) { "Missing CCR trace counters: ${missing.sorted()}" }
+            check(values.getValue("ccr.counter_complete") == 1.0) {
+                "CCR trace counters reported incomplete observation"
+            }
+            check(values.getValue("ccr.valid_trace_identity") == 1.0) {
+                "CCR trace identity marker is missing"
+            }
+            check(values.getValue("ccr.run_iteration") > 0.0) { "CCR run iteration is invalid" }
+            return COUNTERS.map { traceName ->
+                Metric.Measurement(
+                    METRIC_NAMES.getValue(traceName),
+                    values.getValue(traceName),
+                )
+            }
+        }
+
+        private companion object {
+            val METRIC_NAMES = linkedMapOf(
+                "ccr.publication_interval_p50_us" to "ccrPublicationIntervalP50Us",
+                "ccr.publication_interval_p95_us" to "ccrPublicationIntervalP95Us",
+                "ccr.publication_interval_p99_us" to "ccrPublicationIntervalP99Us",
+                "ccr.publication_interval_p995_us" to "ccrPublicationIntervalP995Us",
+                "ccr.publication_interval_max_us" to "ccrPublicationIntervalMaxUs",
+                "ccr.publication_gap_max_us" to "ccrPublicationGapMaxUs",
+                "ccr.publication_interval_cv_ppm" to "ccrPublicationIntervalCvPpm",
+                "ccr.publication_interval_over_1_5x_count" to
+                    "ccrPublicationIntervalOver1_5xCount",
+                "ccr.publication_interval_over_2x_count" to
+                    "ccrPublicationIntervalOver2xCount",
+                "ccr.publication_interval_longest_over_1_5x_run" to
+                    "ccrPublicationIntervalLongestOver1_5xRun",
+                "ccr.publication_interval_sample_count" to
+                    "ccrPublicationIntervalSampleCount",
+                "ccr.publication_interval_sequence_start_count" to
+                    "ccrPublicationIntervalSequenceStartCount",
+                "ccr.target_cadence_ns" to "ccrTargetCadenceNs",
+                "ccr.tail_metric_available" to "ccrTailMetricAvailable",
+                "ccr.measured_refill_associated_long_gap" to
+                    "ccrMeasuredRefillAssociatedLongGapCount",
+                "ccr.measured_window_build_associated_long_gap" to
+                    "ccrMeasuredWindowBuildAssociatedLongGapCount",
+                "ccr.published_fps_milli" to "ccrPublishedFpsMilli",
+                "ccr.publication_count" to "ccrPublicationCount",
+                "ccr.active_duration_ms" to "ccrActiveDurationMs",
+                "ccr.measurement_target_ms" to "ccrMeasurementTargetMs",
+                "ccr.requested_displayed_lag_p50" to "ccrRawLagP50",
+                "ccr.requested_displayed_lag_p95" to "ccrRawLagP95",
+                "ccr.raw_lag_max" to "ccrRawLagMax",
+                "ccr.outstanding_foreground_target_depth_max" to "ccrOutstandingForegroundTargetDepthMax",
+                "ccr.accepted_target_count" to "ccrAcceptedTargetCount",
+                "ccr.accepted_target_sequence_count" to "ccrAcceptedTargetSequenceCount",
+                "ccr.raw_lag_sample_count" to "ccrRawLagSampleCount",
+                "ccr.outstanding_foreground_target_sample_count" to
+                    "ccrOutstandingForegroundTargetSampleCount",
+                "ccr.release_after_accepted_target_count" to "ccrReleaseAfterAcceptedTargetCount",
+                "ccr.hold_prefetch_started" to "ccrHoldPrefetchStarted",
+                "ccr.hold_prefetch_completed" to "ccrHoldPrefetchCompleted",
+                "ccr.counter_complete" to "ccrCounterComplete",
+                "ccr.valid_trace_identity" to "ccrValidTraceIdentity",
+                "ccr.run_iteration" to "ccrRunIteration",
+                "ccr.run_id_hash53" to "ccrRunIdHash53",
+                "ccr.trace_identity_hash53" to "ccrTraceIdentityHash53",
+                "ccr.runtime_source_hash53" to "ccrRuntimeSourceHash53",
+                "ccr.harness_source_hash53" to "ccrHarnessSourceHash53",
+                "ccr.runtime_inputs_tree_hash53" to "ccrRuntimeInputsTreeHash53",
+                "ccr.app_apk_hash53" to "ccrAppApkHash53",
+                "ccr.test_apk_hash53" to "ccrTestApkHash53",
+            )
+            val COUNTERS = METRIC_NAMES.keys
+        }
+    }
+
+    private data class HarnessIdentity(
+        val runId: String,
+        val runtimeSourceSha: String,
+        val harnessSourceSha: String,
+        val runtimeInputsTreeSha256: String,
+        val appApkSha256: String,
+        val testApkSha256: String,
+        val artifactSetRevision: Int,
+    )
+
+    private data class IterationEvidence(
+        val runIteration: Int,
+        val traceIdentity: String,
+        val status: String,
+    )
+
+    @get:Rule
+    val benchmarkRule = MacrobenchmarkRule()
+
+    private val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+    private val harnessIdentity by lazy(::readHarnessIdentity)
+
+    @Test
+    fun coldStartup() = startup(StartupMode.COLD)
+
+    @Test
+    fun warmStartup() = startup(StartupMode.WARM)
+
+    @Test
+    fun fixtureEntry() = fixture(SCENARIO_ENTRY, TRACE_FIXTURE_ENTRY)
+
+    @Test
+    fun fileOpenToIndexComplete() = fixture(SCENARIO_OPEN_INDEX, TRACE_OPEN_TO_INDEX)
+
+    @Test
+    fun fileOpenToFirstPublishedFrame() = fixture(SCENARIO_OPEN_FIRST_FRAME, TRACE_OPEN_TO_FIRST_FRAME)
+
+    @Test
+    fun plusOneCacheHit() = fixture(SCENARIO_CACHE_HIT, TRACE_REQUEST_TO_PUBLISH)
+
+    @Test
+    fun plusOneCacheMiss() = fixture(SCENARIO_CACHE_MISS, TRACE_REQUEST_TO_PUBLISH)
+
+    @Test
+    fun plusFive() = fixture(SCENARIO_STEP_FIVE, TRACE_REQUEST_TO_PUBLISH)
+
+    @Test
+    fun longPressNavigation() = fixture(SCENARIO_LONG_PRESS, TRACE_REQUEST_TO_PUBLISH)
+
+    @Test
+    fun timelineDistantSeek() = fixture(SCENARIO_TIMELINE_SEEK, TRACE_REQUEST_TO_PUBLISH)
+
+    @Test
+    fun h264ToH264() = fixture(SCENARIO_SWITCH_H264_H264, TRACE_SWITCH_TO_FIRST_FRAME)
+
+    @Test
+    fun h264ToHevc() = fixture(SCENARIO_SWITCH_H264_HEVC, TRACE_SWITCH_TO_FIRST_FRAME)
+
+    @Test
+    fun hevcToH264() = fixture(SCENARIO_SWITCH_HEVC_H264, TRACE_SWITCH_TO_FIRST_FRAME)
+
+    @Test
+    fun hevcToHevc() = fixture(SCENARIO_SWITCH_HEVC_HEVC, TRACE_SWITCH_TO_FIRST_FRAME)
+
+    @Test
+    fun backgroundForegroundFirstFrame() {
+        var iteration = 0
+        lateinit var traceIdentity: String
+        benchmarkRule.measureRepeated(
+            packageName = TARGET_PACKAGE,
+            metrics = interactionMetrics(TRACE_BACKGROUND_TO_FIRST_FRAME),
+            iterations = ITERATIONS,
+            compilationMode = CompilationMode.Ignore(),
+            startupMode = null,
+            setupBlock = {
+                iteration += 1
+                traceIdentity = traceIdentity(SCENARIO_BACKGROUND_FOREGROUND, iteration)
+                val prepareIdentity = "$traceIdentity.prepare"
+                startActivityAndWait(benchmarkIntent(SCENARIO_PREPARE, prepareIdentity, iteration))
+                awaitComplete(SCENARIO_PREPARE, prepareIdentity, iteration)
+                killProcess()
+                startActivityAndWait(
+                    benchmarkIntent(SCENARIO_BACKGROUND_FOREGROUND, traceIdentity, iteration),
+                )
+                awaitComplete(SCENARIO_BACKGROUND_FOREGROUND, traceIdentity, iteration)
+                device.pressHome()
+            },
+        ) {
+            startActivityAndWait(
+                benchmarkIntent(
+                    SCENARIO_BACKGROUND_FOREGROUND,
+                    traceIdentity,
+                    iteration,
+                    clearTask = false,
+                ),
+            )
+            awaitComplete(SCENARIO_BACKGROUND_FOREGROUND, traceIdentity, iteration)
+        }
+    }
+
+    @Test
+    fun hold720PlusOne() = representativeFixture(SCENARIO_HOLD_720_PLUS_ONE)
+
+    @Test
+    fun hold720PlusFive() = representativeFixture(SCENARIO_HOLD_720_PLUS_FIVE)
+
+    @Test
+    fun hold1080PlusOne() = representativeFixture(SCENARIO_HOLD_1080_PLUS_ONE)
+
+    @Test
+    fun hold1080PlusFive() = representativeFixture(SCENARIO_HOLD_1080_PLUS_FIVE)
+
+    @Test
+    fun hold1080MinusOne() = representativeFixture(SCENARIO_HOLD_1080_MINUS_ONE)
+
+    @Test
+    fun hold1080MinusFive() = representativeFixture(SCENARIO_HOLD_1080_MINUS_FIVE)
+
+    @Test
+    fun hold1080H264LongGopMinusOne() = representativeFixture(SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE)
+
+    @Test
+    fun hold1080H264LongGopMinusFive() = representativeFixture(SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE)
+
+    @Test
+    fun hold1080HevcMain8MinusOne() = representativeFixture(SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE)
+
+    @Test
+    fun hold1080HevcMain8MinusFive() = representativeFixture(SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE)
+
+    @Test
+    fun hold1080VfrMinusOne() = representativeFixture(SCENARIO_HOLD_1080_VFR_MINUS_ONE)
+
+    @Test
+    fun hold1080VfrMinusFive() = representativeFixture(SCENARIO_HOLD_1080_VFR_MINUS_FIVE)
+
+    @Test
+    fun reverse1080() = representativeFixture(SCENARIO_REVERSE_1080)
+
+    @Test
+    fun distantSeek1080() = representativeFixture(SCENARIO_SEEK_1080)
+
+    @Test
+    fun switch1080H264ToHevc() = representativeFixture(SCENARIO_SWITCH_1080_H264_HEVC)
+
+    @Test
+    fun switch1080HevcToH264() = representativeFixture(SCENARIO_SWITCH_1080_HEVC_H264)
+
+    private fun startup(mode: StartupMode) = benchmarkRule.measureRepeated(
+        packageName = TARGET_PACKAGE,
+        metrics = listOf(StartupTimingMetric()),
+        iterations = ITERATIONS,
+        compilationMode = CompilationMode.Ignore(),
+        startupMode = mode,
+    ) {
+        startActivityAndWait()
+    }
+
+    private fun fixture(scenario: String, traceSection: String) {
+        var iteration = 0
+        lateinit var traceIdentity: String
+        benchmarkRule.measureRepeated(
+            packageName = TARGET_PACKAGE,
+            metrics = interactionMetrics(traceSection),
+            iterations = ITERATIONS,
+            compilationMode = CompilationMode.Ignore(),
+            startupMode = null,
+            setupBlock = {
+                iteration += 1
+                traceIdentity = traceIdentity(scenario, iteration)
+                val prepareIdentity = "$traceIdentity.prepare"
+                startActivityAndWait(benchmarkIntent(SCENARIO_PREPARE, prepareIdentity, iteration))
+                awaitComplete(SCENARIO_PREPARE, prepareIdentity, iteration)
+                killProcess()
+            },
+        ) {
+            startActivityAndWait(benchmarkIntent(scenario, traceIdentity, iteration))
+            awaitComplete(scenario, traceIdentity, iteration)
+        }
+    }
+
+    private fun representativeFixture(scenario: String) {
+        var iteration = 0
+        lateinit var traceIdentity: String
+        val traceIdentities = mutableSetOf<String>()
+        val iterationEvidence = mutableListOf<IterationEvidence>()
+        val requestStageMetrics = if (scenario in REVERSE_HOLD_SCENARIOS) {
+            listOf(CcrRequestStageMetric())
+        } else {
+            emptyList()
+        }
+        benchmarkRule.measureRepeated(
+            packageName = TARGET_PACKAGE,
+            metrics = interactionMetrics(TRACE_REPRESENTATIVE_SMOOTHNESS) +
+                CcrCounterMetric() + requestStageMetrics,
+            iterations = REPRESENTATIVE_ITERATIONS,
+            compilationMode = CompilationMode.Ignore(),
+            startupMode = null,
+            setupBlock = {
+                iteration += 1
+                traceIdentity = traceIdentity(scenario, iteration)
+                check(traceIdentities.add(traceIdentity)) { "Duplicate trace identity: $traceIdentity" }
+                val prepareIdentity = "$traceIdentity.prepare"
+                startActivityAndWait(benchmarkIntent(SCENARIO_PREPARE, prepareIdentity, iteration))
+                awaitComplete(SCENARIO_PREPARE, prepareIdentity, iteration)
+                killProcess()
+            },
+        ) {
+            startActivityAndWait(benchmarkIntent(scenario, traceIdentity, iteration))
+            val status = awaitComplete(
+                scenario = scenario,
+                expectedTraceIdentity = traceIdentity,
+                expectedIteration = iteration,
+                timeoutMs = REPRESENTATIVE_SCENARIO_TIMEOUT_MS,
+                requireCompleteCounters = true,
+            )
+            iterationEvidence += IterationEvidence(iteration, traceIdentity, status)
+        }
+        check(iteration == REPRESENTATIVE_ITERATIONS) {
+            "Expected $REPRESENTATIVE_ITERATIONS trace identities, observed $iteration for $scenario"
+        }
+        check(traceIdentities.size == REPRESENTATIVE_ITERATIONS) {
+            "Expected $REPRESENTATIVE_ITERATIONS unique trace identities for $scenario"
+        }
+        check(iterationEvidence.size == REPRESENTATIVE_ITERATIONS) {
+            "Expected $REPRESENTATIVE_ITERATIONS iteration reports for $scenario"
+        }
+        reportHarnessEvidence(scenario, iterationEvidence)
+        println(
+            "CCR_BENCHMARK_V2_SUMMARY|runId=${harnessIdentity.runId}|scenario=$scenario" +
+                "|expectedTraceCount=$REPRESENTATIVE_ITERATIONS" +
+                "|traceIdentityCount=${traceIdentities.size}" +
+                "|reportStatusKey=$HARNESS_REPORT_STATUS_KEY",
+        )
+    }
+
+    private fun interactionMetrics(traceSection: String): List<Metric> = listOf(
+        TraceSectionMetric(
+            sectionName = traceSection,
+            mode = TraceSectionMetric.Mode.Sum,
+        ),
+        FrameTimingMetric(),
+        MemoryUsageMetric(MemoryUsageMetric.Mode.Max),
+    )
+
+    private fun benchmarkIntent(
+        scenario: String,
+        traceIdentity: String,
+        runIteration: Int,
+        clearTask: Boolean = true,
+    ) = Intent(ACTION_BENCHMARK).apply {
+        component = ComponentName(TARGET_PACKAGE, BENCHMARK_ACTIVITY)
+        putExtra(EXTRA_SCENARIO, scenario)
+        putExtra(EXTRA_RUN_ID, harnessIdentity.runId)
+        putExtra(EXTRA_RUNTIME_SOURCE_SHA, harnessIdentity.runtimeSourceSha)
+        putExtra(EXTRA_HARNESS_SOURCE_SHA, harnessIdentity.harnessSourceSha)
+        putExtra(EXTRA_RUNTIME_INPUTS_TREE_SHA256, harnessIdentity.runtimeInputsTreeSha256)
+        putExtra(EXTRA_APP_APK_SHA256, harnessIdentity.appApkSha256)
+        putExtra(EXTRA_TEST_APK_SHA256, harnessIdentity.testApkSha256)
+        putExtra(EXTRA_TRACE_IDENTITY, traceIdentity)
+        putExtra(EXTRA_RUN_ITERATION, runIteration)
+        putExtra(EXTRA_ARTIFACT_SET_REVISION, harnessIdentity.artifactSetRevision)
+        val taskFlags = if (clearTask) {
+            Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        } else {
+            Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        addFlags(taskFlags)
+    }
+
+    private fun awaitComplete(
+        scenario: String,
+        expectedTraceIdentity: String,
+        expectedIteration: Int,
+        timeoutMs: Long = SCENARIO_TIMEOUT_MS,
+        requireCompleteCounters: Boolean = false,
+    ): String {
+        val status = device.wait(
+            Until.findObject(By.textStartsWith("$STATUS_PREFIX-$scenario-$SUFFIX_COMPLETE")),
+            timeoutMs,
+        )?.text ?: error("Benchmark scenario did not complete: $scenario")
+        val requiredIdentity = listOf(
+            "|artifactSetRevision=${harnessIdentity.artifactSetRevision}",
+            "|runtimeSourceSha=${harnessIdentity.runtimeSourceSha}",
+            "|harnessSourceSha=${harnessIdentity.harnessSourceSha}",
+            "|runtimeInputsTreeSha256=${harnessIdentity.runtimeInputsTreeSha256}",
+            "|appApkSha256=${harnessIdentity.appApkSha256}",
+            "|testApkSha256=${harnessIdentity.testApkSha256}",
+            "|status=PASS",
+            "|runId=${harnessIdentity.runId}",
+            "|traceIdentity=$expectedTraceIdentity",
+            "|runIteration=$expectedIteration",
+        )
+        check(requiredIdentity.all(status::contains)) {
+            "Benchmark identity mismatch: $scenario / $expectedTraceIdentity"
+        }
+        if (requireCompleteCounters) {
+            val requiredCounters = listOf(
+                "|fixture=",
+                "|published=",
+                "|fps=",
+                "|measurementTargetMs=",
+                "|intervalP50Us=",
+                "|intervalP95Us=",
+                "|intervalP99Us=",
+                "|intervalP995Us=",
+                "|intervalMaxUs=",
+                "|gapMaxUs=",
+                "|intervalCvPpm=",
+                "|intervalOver1_5xCount=",
+                "|intervalOver2xCount=",
+                "|intervalLongestOver1_5xRun=",
+                "|intervalSampleCount=",
+                "|intervalSequenceStartCount=",
+                "|targetCadenceNs=",
+                "|tailMetricAvailable=",
+                "|actorQueueDepth=",
+                "|cachedNavigationAttemptCount=",
+                "|cachedNavigationActorBypassCount=",
+                "|cachedNavigationMissFallbackCount=",
+                "|cachedNavigationStaleCount=",
+                "|cachedNavigationErrorCount=",
+                "|cachedNavigationQueueWaitMaxUs=",
+                "|lagMax=",
+                "|outstandingForegroundTargetDepthMax=",
+                "|acceptedTargetCount=",
+                "|acceptedTargetSequenceCount=",
+                "|acceptedTargetSequenceSha256=",
+                "|rawLagSampleCount=",
+                "|outstandingForegroundTargetSampleCount=",
+                "|releaseAfterAcceptedTargetCount=",
+                "|holdPrefetchStarted=",
+                "|holdPrefetchCompleted=",
+                "|codecComponent=",
+                "|cacheBudgetBytes=",
+                "|cacheBytes=",
+                "|peakCacheBytes=",
+                "|reverseWindowRefillStallCount=",
+                "|reverseWindowRefillStallMaxUs=",
+                "|reverseWindowRefillStallOver250MsCount=",
+                "|reverseWindowRemainingTargetCount=",
+                "|reverseWindowStagedTargetCount=",
+                "|reverseWindowStagedReadyCount=",
+                "|reverseRefillGenerationCount=",
+                "|reverseRefillInProgress=",
+                "|reverseRefillInitialSeekCount=",
+                "|reverseRefillInitialFlushCount=",
+                "|reverseRefillResumedSliceCount=",
+                "|reverseRefillRestartCount=",
+                "|reverseRefillMaxSeekPerGeneration=",
+                "|reverseRefillMaxFlushPerGeneration=",
+                "|reverseRefillCachedTargetCount=",
+                "|reverseRefillConsumedDuringBuildCount=",
+                "|reverseLowWaterTriggerCount=",
+                "|reverseRefillStartedRemainingTargets=",
+                "|reversePartialAppendCount=",
+                "|reverseRefillCompletedBeforeDepletionCount=",
+                "|reverseDepletionBeforeRefillCount=",
+                "|reverseRefillAssociatedGapCount=",
+                "|measuredRefillAssociatedLongGapCount=",
+                "|measuredWindowBuildAssociatedLongGapCount=",
+                "|reverseWindowBuildCount=",
+                "|reverseWindowHitCount=",
+                "|reverseWindowSeekCount=",
+                "|reverseWindowRefillCount=",
+                "|reverseWindowInitialReadyCount=",
+                "|reverseWindowRollingAppendRefillCount=",
+                "|reverseWindowRefillNeeded=",
+                "|textureDoubleReleaseCount=",
+                "|staleBeforeSwapCount=",
+                "|surfaceInvalidCount=",
+                "|publicationInvariantViolationCount=",
+                "|javaUsedBytes=",
+                "|nativeAllocatedBytes=",
+                "|totalPssBytes=",
+                "|counterComplete=true",
+            )
+            check(requiredCounters.all(status::contains)) {
+                "Benchmark counters incomplete: $scenario / $expectedTraceIdentity"
+            }
+        }
+        println(
+            "CCR_BENCHMARK_V2|runId=${harnessIdentity.runId}" +
+                "|traceIdentity=$expectedTraceIdentity|runIteration=$expectedIteration" +
+                "|scenario=$scenario|counterRequired=$requireCompleteCounters",
+        )
+        return status
+    }
+
+    private fun reportHarnessEvidence(
+        scenario: String,
+        evidence: List<IterationEvidence>,
+    ) {
+        val iterations = JSONArray()
+        evidence.forEach { item ->
+            val values = item.status.split('|').drop(1).associate { token ->
+                val separator = token.indexOf('=')
+                check(separator > 0) { "Malformed benchmark status token: $token" }
+                token.substring(0, separator) to token.substring(separator + 1)
+            }
+            fun required(name: String): String = values[name]
+                ?: error("Missing benchmark status field: $name")
+            check(required("runId") == harnessIdentity.runId) { "Report runId mismatch" }
+            check(required("runtimeSourceSha") == harnessIdentity.runtimeSourceSha) {
+                "Report runtime source mismatch"
+            }
+            check(required("harnessSourceSha") == harnessIdentity.harnessSourceSha) {
+                "Report harness source mismatch"
+            }
+            check(required("runtimeInputsTreeSha256") == harnessIdentity.runtimeInputsTreeSha256) {
+                "Report runtime inputs tree mismatch"
+            }
+            check(required("appApkSha256") == harnessIdentity.appApkSha256) {
+                "Report app APK mismatch"
+            }
+            check(required("testApkSha256") == harnessIdentity.testApkSha256) {
+                "Report test APK mismatch"
+            }
+            check(required("status") == "PASS") { "Report artifact identity did not pass" }
+            check(required("traceIdentity") == item.traceIdentity) { "Report trace identity mismatch" }
+            check(required("runIteration").toInt() == item.runIteration) { "Report iteration mismatch" }
+            check(required("counterComplete").toBooleanStrict()) { "Report counters incomplete" }
+            check(required("fixture") == expectedFixture(scenario)) { "Report fixture mismatch" }
+            check(required("codecComponent") != "UNKNOWN") { "Decoder component unavailable" }
+            check(required("hardwareAccelerated").toBooleanStrict()) { "Software decoder forbidden" }
+            val activeMs = required("activeMs").toLong()
+            val measurementTargetMs = required("measurementTargetMs").toLong()
+            if (scenario in FIXED_HORIZON_HOLD_SCENARIOS) {
+                check(measurementTargetMs == EXPECTED_HOLD_ACTIVE_MS) {
+                    "Hold measurement target is not the fixed 30-second horizon"
+                }
+                check(activeMs in measurementTargetMs..(measurementTargetMs + HOLD_HORIZON_TOLERANCE_MS)) {
+                    "Hold active duration is outside the fixed-horizon completion tolerance"
+                }
+                val acceptedTargetCount = required("acceptedTargetCount").toLong()
+                check(acceptedTargetCount > 0L) { "No accepted hold target was observed" }
+                check(required("acceptedTargetSequenceCount").toLong() == acceptedTargetCount) {
+                    "Accepted-target sequence coverage is incomplete"
+                }
+                check(required("rawLagSampleCount").toLong() == acceptedTargetCount) {
+                    "Raw lag coverage is incomplete"
+                }
+                check(required("outstandingForegroundTargetSampleCount").toLong() >= acceptedTargetCount) {
+                    "Outstanding-target sampling coverage is incomplete"
+                }
+                check(required("acceptedTargetSequenceSha256").matches(SHA256_PATTERN)) {
+                    "Accepted-target sequence digest is invalid"
+                }
+                check(required("tailMetricAvailable").toBooleanStrict()) {
+                    "Publication tail metrics are unavailable"
+                }
+                val targetCadenceNs = required("targetCadenceNs").toLong()
+                check(targetCadenceNs == expectedTargetCadenceNs(scenario)) {
+                    "Publication target cadence is invalid"
+                }
+                val intervalSampleCount = required("intervalSampleCount").toLong()
+                val intervalSequenceStartCount = required("intervalSequenceStartCount").toLong()
+                check(intervalSampleCount > 0L && intervalSequenceStartCount > 0L) {
+                    "Publication interval evidence is empty"
+                }
+                check(intervalSampleCount + intervalSequenceStartCount == required("published").toLong()) {
+                    "Publication interval coverage is incomplete"
+                }
+            }
+            val canonicalFrameBytes = required("canonicalFrameBytes").toLong()
+            val cacheBudgetBytes = required("cacheBudgetBytes").toLong()
+            val cacheBytes = required("cacheBytes").toLong()
+            val peakCacheBytes = required("peakCacheBytes").toLong()
+            check(canonicalFrameBytes > 0L && cacheBudgetBytes == EXPECTED_CACHE_BUDGET_BYTES) {
+                "Cache byte contract unavailable"
+            }
+            check(cacheBytes in 0L..cacheBudgetBytes) {
+                "Cache budget exceeded"
+            }
+            check(peakCacheBytes in cacheBytes..cacheBudgetBytes) {
+                "Peak cache budget exceeded"
+            }
+            check(required("staleDiscardCount").toLong() == 0L) { "Stale decode result observed" }
+            check(required("outstandingForegroundTargetDepthMax").toInt() <= 1) {
+                "More than one foreground target was outstanding"
+            }
+            check(required("releaseAfterAcceptedTargetCount").toLong() == 0L) {
+                "A target was accepted after hold release"
+            }
+            listOf(
+                "swapFailure" to "Swap failure",
+                "textureDoubleReleaseCount" to "Texture double release",
+                "staleBeforeSwapCount" to "Stale swap",
+                "surfaceInvalidCount" to "Invalid Surface publication",
+                "publicationInvariantViolationCount" to "Publication invariant violation",
+            ).forEach { (field, description) ->
+                check(required(field).toLong() == 0L) { "$description observed" }
+            }
+            check(required("gpuMetricAvailability") == "UNKNOWN") {
+                "Unexpected GPU metric availability value"
+            }
+            check(required("reverseRefillMaxSeekPerGeneration").toLong() <= 1L) {
+                "Reverse refill generation performed more than one seek"
+            }
+            check(required("reverseRefillMaxFlushPerGeneration").toLong() <= 1L) {
+                "Reverse refill generation performed more than one flush"
+            }
+            check(required("reverseRefillRestartCount").toLong() == 0L) {
+                "Reverse refill generation restarted"
+            }
+            if (scenario in REVERSE_HOLD_SCENARIOS) {
+                listOf(
+                    "cachedNavigationActorBypassCount" to "Cached navigation did not bypass the media actor",
+                    "reverseRefillGenerationCount" to "Reverse refill generation was not exercised",
+                    "reverseRefillCachedTargetCount" to "Reverse refill cached no targets",
+                    "reverseLowWaterTriggerCount" to "Reverse low-water trigger was not exercised",
+                    "reversePartialAppendCount" to "Reverse partial append was not exercised",
+                    "reverseRefillCompletedBeforeDepletionCount" to
+                        "Reverse refill never completed before depletion",
+                ).forEach { (field, description) ->
+                    check(required(field).toLong() > 0L) { description }
+                }
+            }
+            val reverseWindowRefillCount = required("reverseWindowRefillCount").toLong()
+            val reverseWindowInitialReadyCount = required("reverseWindowInitialReadyCount").toLong()
+            val reverseWindowRollingAppendRefillCount =
+                required("reverseWindowRollingAppendRefillCount").toLong()
+            check(reverseWindowRefillCount == reverseWindowInitialReadyCount + reverseWindowRollingAppendRefillCount) {
+                "Reverse refill accounting mismatch"
+            }
+            iterations.put(
+                JSONObject()
+                    .put("runIteration", item.runIteration)
+                    .put("traceIdentity", item.traceIdentity)
+                    .put("fixture", required("fixture"))
+                    .put("appApkSha256", harnessIdentity.appApkSha256)
+                    .put("testApkSha256", harnessIdentity.testApkSha256)
+                    .put("status", "PASS")
+                    .put("counterComplete", true)
+                    .put("activeMs", activeMs)
+                    .put("measurementTargetMs", measurementTargetMs)
+                    .put("published", required("published").toLong())
+                    .put("publishedFps", required("fps").toDouble())
+                    .put("publicationIntervalP50Us", required("intervalP50Us").toLong())
+                    .put("publicationIntervalP95Us", required("intervalP95Us").toLong())
+                    .put("publicationIntervalP99Us", required("intervalP99Us").toLong())
+                    .put("publicationIntervalP995Us", required("intervalP995Us").toLong())
+                    .put("publicationIntervalMaxUs", required("intervalMaxUs").toLong())
+                    .put("longestConsecutivePublicationGapUs", required("gapMaxUs").toLong())
+                    .put("publicationIntervalCvPpm", required("intervalCvPpm").toLong())
+                    .put(
+                        "publicationIntervalOver1_5xCadenceCount",
+                        required("intervalOver1_5xCount").toLong(),
+                    )
+                    .put(
+                        "publicationIntervalOver2xCadenceCount",
+                        required("intervalOver2xCount").toLong(),
+                    )
+                    .put(
+                        "longestConsecutiveOver1_5xCadenceRunCount",
+                        required("intervalLongestOver1_5xRun").toLong(),
+                    )
+                    .put("publicationIntervalSampleCount", required("intervalSampleCount").toLong())
+                    .put(
+                        "publicationIntervalSequenceStartCount",
+                        required("intervalSequenceStartCount").toLong(),
+                    )
+                    .put("targetCadenceNs", required("targetCadenceNs").toLong())
+                    .put("tailMetricAvailable", required("tailMetricAvailable").toBooleanStrict())
+                    .put("actorQueueDepth", required("actorQueueDepth").toLong())
+                    .put(
+                        "cachedNavigationAttemptCount",
+                        required("cachedNavigationAttemptCount").toLong(),
+                    )
+                    .put(
+                        "cachedNavigationActorBypassCount",
+                        required("cachedNavigationActorBypassCount").toLong(),
+                    )
+                    .put(
+                        "cachedNavigationMissFallbackCount",
+                        required("cachedNavigationMissFallbackCount").toLong(),
+                    )
+                    .put("cachedNavigationStaleCount", required("cachedNavigationStaleCount").toLong())
+                    .put("cachedNavigationErrorCount", required("cachedNavigationErrorCount").toLong())
+                    .put(
+                        "cachedNavigationQueueWaitMaxUs",
+                        required("cachedNavigationQueueWaitMaxUs").toLong(),
+                    )
+                    .put("publicationGapMaxUs", required("gapMaxUs").toLong())
+                    .put("rawLagP50", required("lagP50").toLong())
+                    .put("rawLagP95", required("lagP95").toLong())
+                    .put("rawLagMax", required("lagMax").toLong())
+                    .put(
+                        "outstandingForegroundTargetDepthMax",
+                        required("outstandingForegroundTargetDepthMax").toLong(),
+                    )
+                    .put("acceptedTargetCount", required("acceptedTargetCount").toLong())
+                    .put(
+                        "acceptedTargetSequenceCount",
+                        required("acceptedTargetSequenceCount").toLong(),
+                    )
+                    .put(
+                        "acceptedTargetSequenceSha256",
+                        required("acceptedTargetSequenceSha256"),
+                    )
+                    .put("rawLagSampleCount", required("rawLagSampleCount").toLong())
+                    .put(
+                        "outstandingForegroundTargetSampleCount",
+                        required("outstandingForegroundTargetSampleCount").toLong(),
+                    )
+                    .put(
+                        "releaseAfterAcceptedTargetCount",
+                        required("releaseAfterAcceptedTargetCount").toLong(),
+                    )
+                    .put("holdPrefetchStarted", required("holdPrefetchStarted").toLong())
+                    .put("holdPrefetchCompleted", required("holdPrefetchCompleted").toLong())
+                    .put("foregroundDecoded", required("foregroundDecoded").toLong())
+                    .put("issuedRequestCount", required("issued").toLong())
+                    .put("coalescedRequestCount", required("coalesced").toLong())
+                    .put("prefetchHitCount", required("prefetchHit").toLong())
+                    .put("cacheEvictionCount", required("cacheEviction").toLong())
+                    .put("seekCount", required("seek").toLong())
+                    .put("flushCount", required("flush").toLong())
+                    .put("sequentialEntryCount", required("sequentialEntry").toLong())
+                    .put("sequentialFallbackCount", required("sequentialFallback").toLong())
+                    .put("sequentialOutputCount", required("sequentialOutput").toLong())
+                    .put("swapFailureCount", required("swapFailure").toLong())
+                    .put("codecComponent", required("codecComponent"))
+                    .put("hardwareAccelerated", required("hardwareAccelerated").toBooleanStrict())
+                    .put("canonicalFrameBytes", required("canonicalFrameBytes").toLong())
+                    .put("cacheBudgetBytes", required("cacheBudgetBytes").toLong())
+                    .put("cacheBytes", required("cacheBytes").toLong())
+                    .put("peakCacheBytes", required("peakCacheBytes").toLong())
+                    .put("cacheEntryCount", required("cacheEntryCount").toLong())
+                    .put("peakCacheEntryCount", required("peakCacheEntryCount").toLong())
+                    .put("cacheRejectionCount", required("cacheRejectionCount").toLong())
+                    .put("cacheThrashCount", required("cacheThrashCount").toLong())
+                    .put("liveTextureCount", required("liveTextureCount").toLong())
+                    .put("peakLiveTextureCount", required("peakLiveTextureCount").toLong())
+                    .put("textureDoubleReleaseCount", required("textureDoubleReleaseCount").toLong())
+                    .put("reverseWindowBuildCount", required("reverseWindowBuildCount").toLong())
+                    .put("reverseWindowHitCount", required("reverseWindowHitCount").toLong())
+                    .put("reverseWindowSeekCount", required("reverseWindowSeekCount").toLong())
+                    .put("reverseWindowRefillCount", reverseWindowRefillCount)
+                    .put("reverseWindowInitialReadyCount", reverseWindowInitialReadyCount)
+                    .put("reverseWindowRollingAppendRefillCount", reverseWindowRollingAppendRefillCount)
+                    .put(
+                        "reverseWindowRefillNeeded",
+                        required("reverseWindowRefillNeeded").toBooleanStrict(),
+                    )
+                    .put(
+                        "reverseWindowRefillStallCount",
+                        required("reverseWindowRefillStallCount").toLong(),
+                    )
+                    .put(
+                        "reverseWindowRefillStallMaxUs",
+                        required("reverseWindowRefillStallMaxUs").toLong(),
+                    )
+                    .put(
+                        "reverseWindowRefillStallOver250MsCount",
+                        required("reverseWindowRefillStallOver250MsCount").toLong(),
+                    )
+                    .put(
+                        "reverseWindowRemainingTargetCount",
+                        required("reverseWindowRemainingTargetCount").toLong(),
+                    )
+                    .put(
+                        "reverseWindowStagedTargetCount",
+                        required("reverseWindowStagedTargetCount").toLong(),
+                    )
+                    .put(
+                        "reverseWindowStagedReadyCount",
+                        required("reverseWindowStagedReadyCount").toLong(),
+                    )
+                    .put("reverseRefillGenerationCount", required("reverseRefillGenerationCount").toLong())
+                    .put("reverseRefillInProgress", required("reverseRefillInProgress").toBooleanStrict())
+                    .put("reverseRefillInitialSeekCount", required("reverseRefillInitialSeekCount").toLong())
+                    .put("reverseRefillInitialFlushCount", required("reverseRefillInitialFlushCount").toLong())
+                    .put("reverseRefillResumedSliceCount", required("reverseRefillResumedSliceCount").toLong())
+                    .put("reverseRefillRestartCount", required("reverseRefillRestartCount").toLong())
+                    .put(
+                        "reverseRefillMaxSeekPerGeneration",
+                        required("reverseRefillMaxSeekPerGeneration").toLong(),
+                    )
+                    .put(
+                        "reverseRefillMaxFlushPerGeneration",
+                        required("reverseRefillMaxFlushPerGeneration").toLong(),
+                    )
+                    .put("reverseRefillCachedTargetCount", required("reverseRefillCachedTargetCount").toLong())
+                    .put(
+                        "reverseRefillConsumedDuringBuildCount",
+                        required("reverseRefillConsumedDuringBuildCount").toLong(),
+                    )
+                    .put("reverseLowWaterTriggerCount", required("reverseLowWaterTriggerCount").toLong())
+                    .put(
+                        "reverseRefillStartedRemainingTargets",
+                        required("reverseRefillStartedRemainingTargets").toLong(),
+                    )
+                    .put("reversePartialAppendCount", required("reversePartialAppendCount").toLong())
+                    .put(
+                        "reverseRefillCompletedBeforeDepletionCount",
+                        required("reverseRefillCompletedBeforeDepletionCount").toLong(),
+                    )
+                    .put(
+                        "reverseDepletionBeforeRefillCount",
+                        required("reverseDepletionBeforeRefillCount").toLong(),
+                    )
+                    .put(
+                        "reverseRefillAssociatedGapCount",
+                        required("reverseRefillAssociatedGapCount").toLong(),
+                    )
+                    .put(
+                        "measuredRefillAssociatedLongGapCount",
+                        required("measuredRefillAssociatedLongGapCount").toLong(),
+                    )
+                    .put(
+                        "measuredWindowBuildAssociatedLongGapCount",
+                        required("measuredWindowBuildAssociatedLongGapCount").toLong(),
+                    )
+                    .put("staleDiscardCount", required("staleDiscardCount").toLong())
+                    .put("staleBeforeSwapCount", required("staleBeforeSwapCount").toLong())
+                    .put("surfaceInvalidCount", required("surfaceInvalidCount").toLong())
+                    .put(
+                        "publicationInvariantViolationCount",
+                        required("publicationInvariantViolationCount").toLong(),
+                    )
+                    .put("decoderRecreateCount", required("decoderRecreateCount").toLong())
+                    .put("javaUsedBytes", required("javaUsedBytes").toLong())
+                    .put("nativeAllocatedBytes", required("nativeAllocatedBytes").toLong())
+                    .put("totalPssBytes", required("totalPssBytes").toLong())
+                    .put("gpuMetricAvailability", required("gpuMetricAvailability")),
+            )
+        }
+        val report = JSONObject()
+            .put("schemaVersion", 1)
+            .put("reportKind", "ccr-benchmark-harness-v2")
+            .put("artifactSetRevision", harnessIdentity.artifactSetRevision)
+            .put("runId", harnessIdentity.runId)
+            .put("runtimeSourceSha", harnessIdentity.runtimeSourceSha)
+            .put("harnessSourceSha", harnessIdentity.harnessSourceSha)
+            .put("runtimeInputsTreeSha256", harnessIdentity.runtimeInputsTreeSha256)
+            .put("appApkSha256", harnessIdentity.appApkSha256)
+            .put("testApkSha256", harnessIdentity.testApkSha256)
+            .put("status", "PASS")
+            .put("scenario", scenario)
+            .put("fixture", expectedFixture(scenario))
+            .put("measurementDescription", "source-equivalent pinned benchmark measurement build")
+            .put("expectedTraceCount", REPRESENTATIVE_ITERATIONS)
+            .put("traceIdentityCount", evidence.map(IterationEvidence::traceIdentity).distinct().size)
+            .put("traceArtifactValidation", "PENDING_HOST")
+            .put("iterations", iterations)
+        InstrumentationRegistry.getInstrumentation().sendStatus(
+            HARNESS_REPORT_STATUS_CODE,
+            Bundle().apply { putString(HARNESS_REPORT_STATUS_KEY, report.toString()) },
+        )
+    }
+
+    private fun traceIdentity(scenario: String, iteration: Int): String =
+        "${harnessIdentity.runId}.$scenario.$iteration"
+
+    private fun expectedTargetCadenceNs(scenario: String): Long = when (scenario) {
+        SCENARIO_HOLD_720_PLUS_ONE,
+        SCENARIO_HOLD_1080_PLUS_ONE,
+        SCENARIO_HOLD_1080_MINUS_ONE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+        SCENARIO_HOLD_1080_VFR_MINUS_ONE,
+        SCENARIO_REVERSE_1080 -> STRIDE_ONE_CADENCE_NS
+        SCENARIO_HOLD_720_PLUS_FIVE,
+        SCENARIO_HOLD_1080_PLUS_FIVE,
+        SCENARIO_HOLD_1080_MINUS_FIVE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+        SCENARIO_HOLD_1080_VFR_MINUS_FIVE -> STRIDE_FIVE_CADENCE_NS
+        else -> error("No fixed publication cadence for scenario: $scenario")
+    }
+
+    private fun expectedFixture(scenario: String): String = when (scenario) {
+        SCENARIO_HOLD_720_PLUS_ONE,
+        SCENARIO_HOLD_720_PLUS_FIVE -> FIXTURE_720_H264_BFRAMES
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+        SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE -> FIXTURE_1080_H264_LONG_GOP
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+        SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE -> FIXTURE_1080_HEVC_MAIN8
+        SCENARIO_HOLD_1080_VFR_MINUS_ONE,
+        SCENARIO_HOLD_1080_VFR_MINUS_FIVE -> FIXTURE_1080_VFR
+        SCENARIO_SWITCH_1080_H264_HEVC -> FIXTURE_1080_SWITCH_H264
+        SCENARIO_SWITCH_1080_HEVC_H264 -> FIXTURE_1080_SWITCH_HEVC
+        else -> FIXTURE_1080_H264_BFRAMES
+    }
+
+    private fun readHarnessIdentity(): HarnessIdentity {
+        val arguments = InstrumentationRegistry.getArguments()
+        fun required(name: String): String = arguments.getString(name)?.takeIf(String::isNotBlank)
+            ?: error("Missing instrumentation argument: $name")
+
+        val identity = HarnessIdentity(
+            runId = required(ARG_RUN_ID),
+            runtimeSourceSha = required(ARG_RUNTIME_SOURCE_SHA),
+            harnessSourceSha = required(ARG_HARNESS_SOURCE_SHA),
+            runtimeInputsTreeSha256 = required(ARG_RUNTIME_INPUTS_TREE_SHA256),
+            appApkSha256 = required(ARG_EXPECTED_APP_SHA256),
+            testApkSha256 = required(ARG_EXPECTED_TEST_APK_SHA256),
+            artifactSetRevision = required(ARG_ARTIFACT_SET_REVISION).toIntOrNull()
+                ?: error("Invalid instrumentation argument: $ARG_ARTIFACT_SET_REVISION"),
+        )
+        check(identity.runId.matches(RUN_ID_PATTERN)) { "Invalid runId" }
+        check(identity.runtimeSourceSha == EXPECTED_RUNTIME_SOURCE_SHA) { "Runtime source mismatch" }
+        check(identity.harnessSourceSha.matches(GIT_SHA_PATTERN)) { "Invalid harness source SHA" }
+        check(identity.runtimeInputsTreeSha256.matches(SHA256_PATTERN)) { "Invalid runtime inputs tree SHA" }
+        check(identity.runtimeInputsTreeSha256 == EXPECTED_RUNTIME_INPUTS_TREE_SHA256) {
+            "Runtime inputs tree mismatch"
+        }
+        check(identity.appApkSha256.matches(SHA256_PATTERN)) { "Invalid expected app APK SHA-256" }
+        check(identity.testApkSha256.matches(SHA256_PATTERN)) { "Invalid expected test APK SHA-256" }
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val packageManager = instrumentation.context.packageManager
+        val installedAppSha256 = sha256(
+            File(packageManager.getApplicationInfo(TARGET_PACKAGE, 0).sourceDir),
+        )
+        val installedTestSha256 = sha256(File(instrumentation.context.applicationInfo.sourceDir))
+        check(installedAppSha256 == identity.appApkSha256) { "Installed app APK SHA-256 mismatch" }
+        check(installedTestSha256 == identity.testApkSha256) { "Installed test APK SHA-256 mismatch" }
+        check(identity.artifactSetRevision == ARTIFACT_SET_REVISION) { "Artifact set revision mismatch" }
+        return identity
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
+    companion object {
+        private const val TARGET_PACKAGE = "com.snowberried.ctcinereviewer.internal"
+        private const val BENCHMARK_ACTIVITY =
+            "com.snowberried.ctcinereviewer.benchmark.BenchmarkActivity"
+        private const val ACTION_BENCHMARK = "$TARGET_PACKAGE.BENCHMARK"
+        private const val EXTRA_SCENARIO = "benchmark-scenario"
+        private const val EXTRA_RUN_ID = "benchmark-run-id"
+        private const val EXTRA_RUNTIME_SOURCE_SHA = "benchmark-runtime-source-sha"
+        private const val EXTRA_HARNESS_SOURCE_SHA = "benchmark-harness-source-sha"
+        private const val EXTRA_RUNTIME_INPUTS_TREE_SHA256 = "benchmark-runtime-inputs-tree-sha256"
+        private const val EXTRA_APP_APK_SHA256 = "benchmark-app-apk-sha256"
+        private const val EXTRA_TEST_APK_SHA256 = "benchmark-test-apk-sha256"
+        private const val EXTRA_TRACE_IDENTITY = "benchmark-trace-identity"
+        private const val EXTRA_RUN_ITERATION = "benchmark-run-iteration"
+        private const val EXTRA_ARTIFACT_SET_REVISION = "benchmark-artifact-set-revision"
+        private const val ARG_RUN_ID = "runId"
+        private const val ARG_RUNTIME_SOURCE_SHA = "runtimeSourceSha"
+        private const val ARG_HARNESS_SOURCE_SHA = "harnessSourceSha"
+        private const val ARG_RUNTIME_INPUTS_TREE_SHA256 = "runtimeInputsTreeSha256"
+        private const val ARG_EXPECTED_APP_SHA256 = "expectedAppSha256"
+        private const val ARG_EXPECTED_TEST_APK_SHA256 = "expectedTestApkSha256"
+        private const val ARG_ARTIFACT_SET_REVISION = "artifactSetRevision"
+        private const val HARNESS_REPORT_STATUS_KEY = "ccrBenchmarkHarnessV2"
+        private const val HARNESS_REPORT_STATUS_CODE = 2
+        private const val STATUS_PREFIX = "ccr-benchmark"
+        private const val SUFFIX_COMPLETE = "complete"
+        private const val ITERATIONS = 5
+        private const val SCENARIO_TIMEOUT_MS = 30_000L
+
+        private const val SCENARIO_PREPARE = "prepare"
+        private const val SCENARIO_ENTRY = "entry"
+        private const val SCENARIO_OPEN_INDEX = "open-index"
+        private const val SCENARIO_OPEN_FIRST_FRAME = "open-first-frame"
+        private const val SCENARIO_CACHE_HIT = "plus-one-cache-hit"
+        private const val SCENARIO_CACHE_MISS = "plus-one-cache-miss"
+        private const val SCENARIO_STEP_FIVE = "plus-five"
+        private const val SCENARIO_LONG_PRESS = "long-press"
+        private const val SCENARIO_TIMELINE_SEEK = "timeline-distant-seek"
+        private const val SCENARIO_SWITCH_H264_H264 = "switch-h264-h264"
+        private const val SCENARIO_SWITCH_H264_HEVC = "switch-h264-hevc"
+        private const val SCENARIO_SWITCH_HEVC_H264 = "switch-hevc-h264"
+        private const val SCENARIO_SWITCH_HEVC_HEVC = "switch-hevc-hevc"
+        private const val SCENARIO_BACKGROUND_FOREGROUND = "background-foreground"
+        private const val SCENARIO_HOLD_720_PLUS_ONE = "720p-hold-plus-one"
+        private const val SCENARIO_HOLD_720_PLUS_FIVE = "720p-hold-plus-five"
+        private const val SCENARIO_HOLD_1080_PLUS_ONE = "1080p-hold-plus-one"
+        private const val SCENARIO_HOLD_1080_PLUS_FIVE = "1080p-hold-plus-five"
+        private const val SCENARIO_HOLD_1080_MINUS_ONE = "1080p-hold-minus-one"
+        private const val SCENARIO_HOLD_1080_MINUS_FIVE = "1080p-hold-minus-five"
+        private const val SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE =
+            "1080p-h264-long-gop-hold-minus-one"
+        private const val SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE =
+            "1080p-h264-long-gop-hold-minus-five"
+        private const val SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE =
+            "1080p-hevc-main8-hold-minus-one"
+        private const val SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE =
+            "1080p-hevc-main8-hold-minus-five"
+        private const val SCENARIO_HOLD_1080_VFR_MINUS_ONE = "1080p-vfr-hold-minus-one"
+        private const val SCENARIO_HOLD_1080_VFR_MINUS_FIVE = "1080p-vfr-hold-minus-five"
+        private const val SCENARIO_REVERSE_1080 = "1080p-direction-reverse"
+        private const val SCENARIO_SEEK_1080 = "1080p-distant-seek"
+        private const val SCENARIO_SWITCH_1080_H264_HEVC = "1080p-switch-h264-hevc"
+        private const val SCENARIO_SWITCH_1080_HEVC_H264 = "1080p-switch-hevc-h264"
+
+        private const val TRACE_OPEN_TO_INDEX = "ccr.open_to_index"
+        private const val TRACE_OPEN_TO_FIRST_FRAME = "ccr.open_to_first_frame"
+        private const val TRACE_REQUEST_TO_PUBLISH = "ccr.request_to_publish"
+        private const val TRACE_SWITCH_TO_FIRST_FRAME = "ccr.switch_to_first_frame"
+        private const val TRACE_FIXTURE_ENTRY = "ccr.fixture_entry"
+        private const val TRACE_BACKGROUND_TO_FIRST_FRAME = "ccr.background_to_first_frame"
+        private const val TRACE_REPRESENTATIVE_SMOOTHNESS = "ccr.representative_smoothness"
+        private const val REPRESENTATIVE_ITERATIONS = 3
+        private const val REPRESENTATIVE_SCENARIO_TIMEOUT_MS = 180_000L
+        private const val EXPECTED_HOLD_ACTIVE_MS = 30_000L
+        private const val STRIDE_ONE_CADENCE_NS = 1_000_000_000L / 15L
+        private const val STRIDE_FIVE_CADENCE_NS = 1_000_000_000L / 12L
+        private const val HOLD_HORIZON_TOLERANCE_MS = 2_000L
+        private const val EXPECTED_CACHE_BUDGET_BYTES = 64L * 1_024L * 1_024L
+        private const val FIXTURE_720_H264_BFRAMES = "720p-h264-bframes.mp4"
+        private const val FIXTURE_1080_H264_BFRAMES = "1080p-h264-bframes.mp4"
+        private const val FIXTURE_1080_H264_LONG_GOP = "1080p-h264-long-gop.mp4"
+        private const val FIXTURE_1080_HEVC_MAIN8 = "1080p-hevc-main8.mp4"
+        private const val FIXTURE_1080_VFR = "1080p-vfr.mp4"
+        private const val FIXTURE_1080_SWITCH_H264 = "1080p-switch-a.mp4"
+        private const val FIXTURE_1080_SWITCH_HEVC = "1080p-switch-b.mp4"
+        private const val ARTIFACT_SET_REVISION = 5
+        private const val EXPECTED_RUNTIME_SOURCE_SHA = "c98264f2a10026a908e94c961bb13e4af2d59e60"
+        private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
+            "3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468"
+        private val RUN_ID_PATTERN = Regex("[A-Za-z0-9._:-]{1,48}")
+        private val GIT_SHA_PATTERN = Regex("[0-9a-f]{40}")
+        private val SHA256_PATTERN = Regex("[0-9a-f]{64}")
+        private val REVERSE_HOLD_SCENARIOS = setOf(
+            SCENARIO_HOLD_1080_MINUS_ONE,
+            SCENARIO_HOLD_1080_MINUS_FIVE,
+            SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+            SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+            SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+            SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+            SCENARIO_HOLD_1080_VFR_MINUS_ONE,
+            SCENARIO_HOLD_1080_VFR_MINUS_FIVE,
+        )
+        private val FIXED_HORIZON_HOLD_SCENARIOS = setOf(
+            SCENARIO_HOLD_720_PLUS_ONE,
+            SCENARIO_HOLD_720_PLUS_FIVE,
+            SCENARIO_HOLD_1080_PLUS_ONE,
+            SCENARIO_HOLD_1080_PLUS_FIVE,
+            SCENARIO_HOLD_1080_MINUS_ONE,
+            SCENARIO_HOLD_1080_MINUS_FIVE,
+            SCENARIO_HOLD_1080_LONG_GOP_MINUS_ONE,
+            SCENARIO_HOLD_1080_LONG_GOP_MINUS_FIVE,
+            SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_ONE,
+            SCENARIO_HOLD_1080_HEVC_MAIN8_MINUS_FIVE,
+            SCENARIO_HOLD_1080_VFR_MINUS_ONE,
+            SCENARIO_HOLD_1080_VFR_MINUS_FIVE,
+            SCENARIO_REVERSE_1080,
+        )
+    }
+}

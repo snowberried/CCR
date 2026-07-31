@@ -1,0 +1,9 @@
+# Historical internalRelease example only.
+# This file and CCR_ANDROID_INTERNAL_* are NOT the ccr-internal-pilot-v1 candidate boundary.
+# Candidate APKs must use scripts/build-s24-alpha6-candidate.ps1 and its dedicated
+# CCR_ANDROID_CANDIDATE_* environment boundary.
+# Never reuse a Play production key or standard Android debug key.
+internalStoreFile=C:/secure/ccr-android-internal-release.jks
+internalStorePassword=replace-me
+internalKeyAlias=ccr-internal
+internalKeyPassword=replace-me

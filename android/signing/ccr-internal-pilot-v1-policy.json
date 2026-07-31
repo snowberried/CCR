@@ -1,0 +1,19 @@
+{
+    "schemaVersion":  1,
+    "status":  "SIGNING_BASELINE_READY",
+    "purpose":  "CCR Android internal pilot only",
+    "signingLineage":  "ccr-internal-pilot-v1",
+    "signingMode":  "SIGNED_CANDIDATE",
+    "artifactSetRevision":  5,
+    "alias":  "ccr-internal-pilot-v1",
+    "certificateSha256":  "3a995765c4cb2502815b5bff31afd11aba220874be83f525fcd5ee64ab007e2e",
+    "expectedSigningCertificateSha256":  "3a995765c4cb2502815b5bff31afd11aba220874be83f525fcd5ee64ab007e2e",
+    "subject":  "CN=CCR Android Internal Pilot v1, OU=Internal Pilot, O=CT Cine Reviewer, C=KR",
+    "keyAlgorithm":  "RSA-4096",
+    "createdAtUtc":  "2026-07-27T14:42:32.8850077Z",
+    "certificateNotBeforeUtc":  "2026-07-27T14:42:31.0000000Z",
+    "certificateNotAfterUtc":  "2036-07-24T14:42:31.0000000Z",
+    "productionOrPlayKeyShared":  false,
+    "standardDebugKeyShared":  false,
+    "rotationRequiresExplicitMigration":  true
+}

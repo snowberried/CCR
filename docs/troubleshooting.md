@@ -1,5 +1,234 @@
 # Project Troubleshooting
 
+## 2026-07-29 Alpha 6 fixture smoke 직후 첫 render open이 간헐적으로 실패하는 문제
+
+상태: 원인 검증·host 수정 완료 / CI·새 artifact·S24 제한 검증 Pending
+
+### 증상
+
+Full Stage 1 run `a6s1-362001a-104314`에서 identity smoke와 fixture-open smoke
+`17/17`은 통과했지만 correctness의 첫 `h264-ip` open이
+`indexing → VIDEO_OPEN_FAILED`로 끝났다. fixture, frame과 extractor 진입 수는
+각각 `0/17`, `0/236`, `0`이었고 같은 APK 안의 fixture SHA-256은 smoke 전후
+동일했다.
+
+### 확인된 시간 순서
+
+- correctness process 시작 뒤 기기가 `DOZE_SUSPEND` 상태에서 Activity를
+  create/resume했다가 즉시 pause/stop했다.
+- `GateActivity`의 Surface는 create 후 약 20ms 만에 destroy됐다.
+- 기존 `awaitSurface()`는 이전 create에서 이미 열린 one-shot latch만 확인하므로,
+  현재 Surface가 사라진 뒤에도 성공으로 돌아갈 수 있었다.
+- `EglFrameRenderer.releaseGl()`은 Surface destroy에서 EGL display와 decoder
+  Surface를 해제한다. 이 상태의 `beginFile()`은 provider/extractor보다 먼저
+  실패하며 상위 sanitizer에서 `VIDEO_OPEN_FAILED`로 축약될 수 있다.
+
+최종 원인 분류는
+`STAGE1_SURFACE_LIFECYCLE_AND_TRANSITION_RACE`이며, 세부 원인은
+`DISPLAY_DOZE_INDUCED_ACTIVITY_STOP + STALE_ONE_SHOT_SURFACE_READINESS`다.
+제품 decoder, cache, reverse refill 또는 fixture 손상의 증거는 없다.
+
+### 해결 절차
+
+- frozen runtime 입력에 포함된 debug `GateActivity`는 변경하지 않는다.
+- AndroidTest 공통 게이트가 open 직전에 `ActivityScenario`의 현재 RESUMED
+  Activity를 다시 취득한다.
+- 현재 holder Surface validity, decoder Surface availability, Activity
+  finishing/destroyed 상태와 Surface generation을 함께 확인하고, 동일 generation이
+  300ms 동안 유지된 경우에만 같은 Activity에 open을 전달한다.
+- open 전 generation/Activity가 바뀌면 현재 인스턴스를 다시 취득해 안정화 구간을
+  처음부터 시작한다. open 전달 후 drift는 재시도로 숨기지 않고 구체적인 Surface
+  failure로 종료한다.
+- Stage 1은 Debug APK 한 세트를 identity 전에 한 번만 설치한다. fixture와 새
+  render-open smoke는 설치된 app/test SHA·package·signer를 재검증해 재사용하고,
+  correctness 직전 `install -r`은 수행하지 않는다.
+- settings 적용 뒤 250ms 간격 3개 연속 sample(500ms 안정 구간)에서 target
+  readback, wake/display, configuration/rotation과 잔존 process 0을 확인한다.
+- 새 `h264-ip` render-open smoke가 current Surface에서 index, metadata와 정확한
+  frame 0 publication을 확인한 뒤에만 correctness와 performance로 진행한다.
+
+새 Stage 1 순서는 다음과 같다.
+
+`IdentitySmoke → FixtureOpenSmoke → DeviceSettings → SettingsSettle → RenderOpenSmoke → Correctness → Performance`
+
+Windows PowerShell에서는 변수명이 대소문자를 구분하지 않으므로 settle sampler의
+`$pid`는 읽기 전용 자동 변수 `$PID`와 충돌해 sample 0개 상태로 timeout을 만들었다.
+프로세스 조회 결과 변수는 `$pidResult`처럼 자동 변수와 겹치지 않게 이름을 정하고,
+host test가 실제 settle 함수를 호출해 configuration 변화와 잔존 process가 연속
+sample을 초기화하는지 검증한다. Full Stage 1 없이 같은 경로를 확인할 때는
+`-SurfaceTransitionGateOnly`를 사용하며 render smoke 10회 뒤 반드시 cleanup한다.
+
+Android 16의 `dumpsys input`은 구형 `SurfaceOrientation: 0` 필드 대신
+`Viewport INTERNAL: ... displayId=0, ... orientation=0, ... isActive=[1]` 형식만
+제공할 수 있다. 구형 필드만 파싱하면 실제 portrait 상태도 `-1`로 오판해
+`ALPHA6_STAGE1_DEVICE_SETTINGS_NOT_SETTLED`로 종료된다. settle parser는 구형 필드를
+유지하고, 해당 필드가 없을 때 활성 내부 display 0 viewport를 fallback으로 사용한다.
+두 형식이 함께 있으면 값이 일치할 때만 인정한다. 같은 활성 viewport 레코드가
+반복돼도 orientation이 모두 같아야 하며, 값 충돌·누락·inactive·external·다른
+display는 `-1`로 fail-closed한다.
+전체 출력에서 제한 없이 `orientation=0`을 검색하면 다른 viewport를 오인할 수
+있으므로 사용하지 않는다. host test는 Android 16 실제 형식의 3연속 안정 sample과
+필드 순서 변경, landscape, inactive/external/secondary, 충돌 및 누락을 검증한다.
+
+### 검증 방법
+
+- host tests에서 Debug install 한 세트, settings settle/render smoke의 fail-closed,
+  Resume checkpoint 무결성, report failure 분류와 immutable evidence를 확인한다.
+- AndroidTest Kotlin compile과 source contract에서 모든 correctness open 경로가
+  공통 current-Activity/stable-Surface 게이트를 사용하는지 확인한다.
+- Alpha 6 frozen runtime `40/40`과 제품 runtime diff `0`을 함께 확인한다.
+- 새 signed revision 5 artifact로 Stage 1/Random preflight, identity, fixture
+  `17/17`, settings settle와 서로 다른 runId의 render-open smoke `10/10`만 먼저
+  실행한다. 이 closure에서는 Full Stage 1, Resume와 Random 250을 실행하지 않는다.
+- settle과 각 smoke 회차 cleanup은 app, debugTest, macrobenchmarkTest 세 패키지의
+  process 0을 확인하고 회차별 immutable checkpoint에 기록한다.
+
+현재 local 검증은 candidate bridge `54`, render-open runner `15`, 실제 Surface 상태 머신
+`19`, Stage 1 `178`를
+포함한 전체 PowerShell host test, 47개 script parser, source contract, frozen runtime
+`40/40`과 CI 동일 Android lint/unit/assemble를 통과했다. 새 signed artifact와 S24
+제한 검증 결과는 이 상태와 구분해 후속 evidence에 기록한다.
+
+관련 파일:
+
+- `android/app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/Alpha6StableGateActivity.kt`
+- `android/app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/Alpha6RenderOpenSmokeTest.kt`
+- `android/scripts/run-s24-alpha6-render-open-smoke.ps1`
+- `android/scripts/run-s24-alpha6-stage1.ps1`
+
+## 2026-07-28 Alpha 6 candidate APK compiled runtime identity 불일치
+
+상태: 원인 검증 완료 / candidate build와 S24 선행 Gate 수정
+
+### 증상
+
+Stage 1 run `a6s1-274e5f6-200204`가 correctness 시작 즉시
+`instrumentation was compiled against a different runtime source`로 중단됐다.
+
+### 원인
+
+`app/build.gradle.kts`는 `CCR_ANDROID_COMMIT_SHA`, `GITHUB_SHA`, Git HEAD 순으로
+`BuildConfig.COMMIT_SHA`를 결정한다. CI는 frozen runtime
+`c98264f2a10026a908e94c961bb13e4af2d59e60`을 명시했지만 local candidate wrapper는
+이를 Gradle child에 전달하지 않았다. 따라서 실패 APK에는 harness HEAD
+`274e5f679b635b09424af73577b4e90ec5fd0a4b`가 들어갔다. 이는 decoder/runtime 결함이
+아니며 `ValidationHarnessV2`의 equality 검사는 올바르게 fail-closed한 것이다.
+
+### 해결 절차
+
+- wrapper의 signingReport와 assemble child에 canonical `CCR_ANDROID_COMMIT_SHA`를
+  설정하고 `finally`에서 호출자 값을 복원한다.
+- artifact 생성 전에 SDK `apkanalyzer dex code`로 debugApp과 benchmarkApp의 실제
+  `BuildConfig.COMMIT_SHA`를 읽어 frozen runtime과 비교한다.
+- manifest에 두 embedded runtime identity를 기록하고 revision 5 importer에서 검증한다.
+- full Stage 1 전에 fixture와 settings write가 없는 identity-only instrumentation을
+  실행하고, Stage 1도 이 PASS 뒤에만 settings를 변경한다.
+
+### 검증 방법
+
+- candidate signing/build environment host test: 28 PASS
+- revision 5 candidate bridge host test: 30 PASS
+- identity smoke runner host test: 19 PASS
+- Stage 1 host test: 112 PASS
+- Random host test: 24 PASS
+- 실제 실패 APK를 SDK `apkanalyzer`로 읽어 embedded
+  `274e5f679b635b09424af73577b4e90ec5fd0a4b`를 재확인
+- 제품 runtime Kotlin, frozen 40개 입력과 performance threshold 변경 0
+
+기존 실패 artifact는 `VALID_SIGNED_ARTIFACT_EVIDENCE`이지만
+`REJECTED_FOR_DEVICE_GATE_DUE_TO_EMBEDDED_RUNTIME_IDENTITY_MISMATCH`로 분류하고 수정,
+Resume, Random 또는 새 artifact와의 혼합을 금지한다.
+
+## 2026-07-29 Alpha 6 첫 fixture open 실패가 단일 오류로 합쳐진 문제
+
+상태: 과거 원인 미분류 / 재발 방지 Gate host 검증 완료 / S24 검증 Pending
+
+### 증상
+
+Full Stage 1 run `a6s1-7482800-234808`이 첫 `h264-ip` fixture를 여는 동안
+indexing error와 `VIDEO_OPEN_FAILED`로 중단됐다. verified frame은 `0/236`,
+mismatch는 0이며 performance는 시작하지 않았다.
+
+### 재현 조건
+
+보존된 signed revision 5 APK의 고정 fixture를 S24의 debug fixture provider를 통해
+처음 열던 시점에 발생했다. 같은 실패를 제품 decode로 다시 실행해 증거를 만드는 것은
+이 조사 범위에서 금지했다.
+
+### 원인
+
+당시 `ExactFrameSession`은 provider/PFD, cache materialization, extractor와 codec의
+하위 예외를 `VIDEO_OPEN_FAILED` 하나로 합쳤다. 실패 구간 logcat은 rollover되어
+`LOGCAT_NOT_AVAILABLE`이고 조사 시점 cache 파일도 이미 없어서, 역사적 근본 원인은
+`UNCLASSIFIED_OPEN_PIPELINE_FAILURE`다.
+
+APK asset은 `26,160 bytes`이며 고정 SHA-256과 일치했다. provider의 existence-only
+reuse는 `CACHE_FILE_UNVERIFIED_REUSE` 위험이지만 당시 cache corruption의 증거는
+아니다. 외부 shell에서 provider URI를 직접 연 결과의 `SecurityException`도
+exported=false 권한 경계의 정상 결과이므로 provider 실패 증거로 사용하지 않는다.
+
+### 해결 절차
+
+- 제품 runtime과 frozen provider를 변경하지 않는다.
+- AndroidTest direct probe가 asset → provider/PFD → fd-only extractor →
+  video track/sample → hardware decoder candidate를 단계별로 기록한다.
+- 단일 diagnostic만 explicit offset/range extractor와 codec configure/start까지
+  확인하며 buffer queue와 full-frame decode는 하지 않는다.
+- 17-fixture smoke는 각 단계의 고정 identity와 SHA를 검사하고 내용 불일치 시 자동
+  수정 없이 fail-closed한다.
+- Stage 1은 identity → fixture-open smoke → settings → correctness →
+  performance 순서로 실행하며 앞 Gate 실패 시 settings와 뒤 단계를 건너뛴다.
+- raw instrumentation report는 parsing·contract 실패보다 먼저 immutable evidence로
+  보존한다.
+
+### 검증 방법
+
+- host tests가 17개 fixture identity, 성공/실패 report, timeout, settings 불변,
+  후속 단계 차단과 Resume evidence 재해시를 검증한다.
+- source contract가 `ExactFrameSession` 비사용, full-frame decode/performance 0,
+  selector와 Kotlin method 일치, frozen provider SHA와 Stage 1 순서를 검증한다.
+- S24에서는 새 signed revision 5 artifact로 identity smoke와 17-fixture smoke를
+  별도로 통과하기 전까지 `S24 검증 Pending`을 유지한다.
+
+### 관련 변경
+
+- `android/app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/Alpha6FixtureOpenProbe.kt`
+- `android/scripts/run-s24-alpha6-fixture-open-smoke.ps1`
+- `android/scripts/run-s24-alpha6-stage1.ps1`
+
+## 2026-07-29 candidate builder가 명시한 backup 경로를 잃는 문제
+
+상태: 원인·수정 검증 완료
+
+### 증상
+
+두 backup 디렉터리에 primary와 byte-for-byte 같은 JKS가 있어도
+`build-s24-alpha6-candidate.ps1 -BackupDirectory1 ... -BackupDirectory2 ...`가
+preflight에서 `CANDIDATE_BACKUP_MISSING`으로 중단됐다.
+
+### 원인
+
+builder가 `verify-ccr-android-pilot-signing.ps1`을 인자 없이 dot-source했다. verifier의
+같은 이름 `param()`이 builder에 이미 bind된 두 backup 변수를 빈 환경 기본값으로
+덮어썼다. 파일 부재, 비밀번호 또는 keystore identity 문제가 아니었다.
+
+### 해결 절차
+
+builder가 verifier를 dot-source할 때 이미 bind된 `BackupDirectory1/2`를 명시적으로
+전달한다. 환경변수 우회, backup 복사 또는 keystore 변경은 필요하지 않다.
+
+### 검증 방법
+
+- 별도 PowerShell scope에서 builder를 명시 backup 인자로 dot-source한 뒤 두 값이
+  그대로 보존되는지 검사한다.
+- pilot signing host tests 29 PASS와 source contract를 통과시킨다.
+- primary와 두 backup은 수정하지 않고 존재·크기·SHA 동일성만 읽기 전용으로 확인한다.
+
+### 관련 변경
+
+- `android/scripts/build-s24-alpha6-candidate.ps1`
+- `android/scripts/test-ccr-android-pilot-signing.ps1`
+
 이 문서는 **CT Cine Reviewer 프로젝트에서만 발생하는 문제와 검증된 해결 방법**을 기록한다.
 
 ## 기록 범위
@@ -53,6 +282,55 @@ Codex, Browser, Windows, 권한, 샌드박스, `Path/PATH`, `node_repl`, Vite �
 ```
 
 ## 현재 기록
+
+## 2026-07-27 Android debug signer를 장기 candidate 신원으로 사용한 문제
+
+상태: 원인 검증 완료 / `ccr-internal-pilot-v1` signing baseline 검증 완료
+
+자동 생성되는 Android debug key를 Alpha 6까지 장기 검증 신원으로 상속해 private key
+재현이 불가능해졌다. 제품 runtime 결함이 아니라 signing identity 경계 결함이다.
+공통 재발 방지 원칙은 공용 troubleshooting의 같은 날짜 항목을 따르고, 이 프로젝트의
+인증서 식별자·historical evidence·새 lineage 결정은
+`android/signing/SIGNING_INCIDENT_2026-07-27.md`에만 기록한다.
+2026-07-28 KST에 새 primary와 두 backup, 공개 certificate·policy 검증을 완료했고
+`1ce42c1…`에서 signed candidate APK 네 개와 revision 5 artifact 세트 생성도 성공했다.
+
+## 2026-07-28 Alpha 6 signed candidate가 historical revision 4 runner에 연결된 문제
+
+상태: 검증 완료 / revision 5 device runner bridge 적용
+
+### 증상
+
+revision 5 manifest와 signer 검증기는 준비됐지만 active Stage 1과 Random runner가
+historical revision 4 helper와 literal revision 4 identity를 사용했다. 정상 생성된
+signed candidate를 최종 S24 Gate에 안전하게 연결할 수 없었다.
+
+### 원인
+
+artifact 생성 경계와 device runner 경계가 별도로 발전하면서 active runner의 importer,
+checkpoint/resume identity와 검증 APK revision 식별 상수가 revision 4에 남았다.
+
+### 해결 절차
+
+historical helper를 수정하지 않고 `s24-alpha6-candidate-device-artifacts.ps1` bridge를
+추가했다. active runner는 strict revision 5 candidate importer만 사용하며 public policy,
+fingerprint·PEM hash, 실제 APK 4종 signer와 manifest를 동일 identity로 고정한다.
+검증 APK의 artifact revision 식별 상수만 5로 맞추고 제품 runtime과 성능 threshold는
+변경하지 않는다.
+
+### 검증 방법
+
+- candidate bridge host test 28 PASS
+- Stage 1 host test 107 PASS
+- Random host test 24 PASS
+- historical Alpha 4/5와 Alpha 6 revision 4 verifier PASS
+- Alpha 6 runtime freeze 40/40 PASS
+
+### 관련 변경
+
+기존 `1ce42c1…` artifact는 정상 build evidence로 보존하지만 bridge commit 이후
+`harnessSourceSha`가 달라 최종 device Gate에는 사용하지 않는다. 새 clean bridge HEAD에서
+APK 4종과 revision 5 artifact set을 다시 생성한다.
 
 ## 2026-07-10 FFmpeg setup 스크립트와 Windows PowerShell 5
 
@@ -313,3 +591,68 @@ GitHub Actions run `29384819544`에서 사전 검사, 102개 테스트, Windows 
 
 - `.github/workflows/release-windows.yml`
 - `docs/23_GITHUB_RELEASE_AUTOMATION.md`
+
+## 2026-07-16 Android HD exact fixture의 색 signature가 S24에서만 어긋나는 경우
+
+상태: 검증 완료
+
+### 증상
+
+- 대표 해상도 S24 exact Gate의 첫 frame에서 frame key, PTS, texture timestamp와 embedded ID는 모두 맞지만 signature MAE가 7.53125로 허용값 6을 넘었다.
+
+### 재현 조건
+
+- 색 primaries/transfer/matrix를 명시하지 않은 720p/1080p H.264 또는 HEVC 합성 fixture를 FFmpeg golden과 Android Surface 출력으로 비교할 때 발생했다.
+
+### 원인
+
+- FFmpeg golden은 미지정 색을 BT.601로 계산했고 S24 HD decoder/Surface 경로는 BT.709로 출력했다. 같은 frame을 BT.709로 비교한 독립 MAE 7.552083이 최초 차이와 일치해 frame identity 문제가 아니라 색 계약 문제임을 확인했다.
+
+### 해결 절차
+
+- 생성 시 container와 H.264/HEVC bitstream 모두에 BT.709 primaries/transfer/matrix와 limited range를 기록한다.
+- golden RGB 변환도 BT.709 limited로 고정한다.
+- Android exact test가 decoded `MediaFormat`의 BT.709/limited/SDR 값을 검사하게 한다.
+
+### 검증 방법
+
+- 7개 fixture의 `ffprobe` 색 필드가 모두 `tv,bt709,bt709,bt709`인지 확인한다.
+- S24에서 선택 frame 2,017개의 key·ID·signature mismatch와 write-open이 모두 0인지 확인한다.
+
+### 관련 변경
+
+- `android/tools/generate-representative-resolution-fixtures.mjs`
+- `android/testdata/representative-resolution/manifest.lock.json`
+- `android/app/src/androidTest/java/com/snowberried/ctcinereviewer/gate/S24RepresentativeResolutionAccuracyTest.kt`
+
+## 2026-07-16 Macrobenchmark trace 수집 중 FUSE ENOTCONN이 한 번 발생한 경우
+
+상태: 우회·재시도 절차 검증 완료 / 근본 원인 미확정
+
+### 증상
+
+- 대표 Macrobenchmark batch 중 임시 저장소 접근이 `ENOTCONN`으로 실패해 한 방향 반전 시나리오의 최초 실행이 중단됐다.
+
+### 재현 조건
+
+- S24에서 여러 긴 Macrobenchmark/Perfetto batch를 연속 실행하던 중 한 번 발생했다. 반복 재현되지는 않았다.
+
+### 원인
+
+- Android 테스트 임시 저장소의 FUSE 연결이 일시적으로 끊긴 현상까지 확인했다. 앱 decoder/cache 결함이라는 증거는 없으며 더 깊은 플랫폼 원인은 미확정이다.
+
+### 해결 절차
+
+- 실패 batch를 즉시 성공으로 간주하지 않는다.
+- Gradle 테스트 프로세스를 정리하고 장치 저장소 mount가 정상 응답하는지 확인한 뒤 실패한 test method만 다시 실행한다.
+- 장치 reboot나 앱 데이터 삭제 없이 복구되지 않으면 실기기 검증을 중단한다.
+
+### 검증 방법
+
+- mount 정상 복귀 뒤 실패한 1080p 방향 반전 method가 3/3 통과했다.
+- 최종 8개 시나리오 각각 Perfetto trace 3개가 존재하며 총 24개를 파싱했다.
+
+### 관련 변경
+
+- 코드 변경 없음
+- 로컬 `android/build/reports/macrobenchmark/` 검증 기록

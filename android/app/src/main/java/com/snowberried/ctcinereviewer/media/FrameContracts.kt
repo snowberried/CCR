@@ -1,0 +1,320 @@
+package com.snowberried.ctcinereviewer.media
+
+import java.math.BigInteger
+
+data class FrameKey(
+    val displayFrameIndex: Int,
+    val ptsUs: Long,
+    val duplicateOrdinal: Int,
+)
+
+data class IndexedSample(
+    val sampleOrdinal: Int,
+    val ptsUs: Long,
+    val sync: Boolean,
+)
+
+data class IndexedFrame(
+    val key: FrameKey,
+    val sampleOrdinal: Int,
+    val sync: Boolean,
+)
+
+data class IndexedVideo(
+    val fileGeneration: Long,
+    val samples: List<IndexedSample>,
+    val frames: List<IndexedFrame>,
+) {
+    init {
+        require(frames.indices.all { frames[it].key.displayFrameIndex == it })
+    }
+
+    private val framesByOutputKey = frames.associateBy { frame ->
+        frame.key.ptsUs to frame.key.duplicateOrdinal
+    }
+    private val syncSamples = samples.filter(IndexedSample::sync)
+
+    val frameCount: Int get() = frames.size
+
+    fun frameForOutput(ptsUs: Long, duplicateOrdinal: Int): IndexedFrame? =
+        framesByOutputKey[ptsUs to duplicateOrdinal]
+
+    fun previousSyncSample(target: IndexedFrame): IndexedSample {
+        if (syncSamples.isEmpty()) return samples.first()
+        val result = syncSamples.binarySearchBy(target.sampleOrdinal) { it.sampleOrdinal }
+        if (result >= 0) return syncSamples[result]
+        val insertionIndex = -result - 1
+        return if (insertionIndex == 0) samples.first() else syncSamples[insertionIndex - 1]
+    }
+}
+
+data class GenerationToken(
+    val fileGeneration: Long,
+    val requestGeneration: Long,
+)
+
+data class FrameRequest(
+    val token: GenerationToken,
+    val requestedFrameIndex: Int,
+    val expectedKey: FrameKey,
+)
+
+data class RequestAcceptance(
+    val request: FrameRequest,
+    val eventSequence: Long,
+    val elapsedRealtimeNanos: Long,
+)
+
+enum class PublicationResult {
+    PUBLISHED,
+    STALE_BEFORE_SWAP,
+    SWAP_FAILED,
+    SURFACE_INVALID,
+}
+
+data class PublicationEvent(
+    val eventSequence: Long,
+    val elapsedRealtimeNanos: Long,
+    val fileGeneration: Long,
+    val requestGeneration: Long,
+    val requestedFrameIndex: Int,
+    val expectedKey: FrameKey,
+    val currentFileGeneration: Long,
+    val currentRequestGeneration: Long,
+    val textureTimestampNs: Long,
+    val swapAttempted: Boolean,
+    val eglSwapBuffersResult: Boolean?,
+    val result: PublicationResult,
+    val reverseRefillGeneration: Long = 0,
+    val reverseRefillActivitySequence: Long = 0,
+    val reverseRefillInProgress: Boolean = false,
+    val reverseWindowBuildGeneration: Long = 0,
+)
+
+data class PublicationStats(
+    val publishedSwapCount: Long = 0,
+    val staleBeforeSwapCount: Long = 0,
+    val swapFailureCount: Long = 0,
+    val surfaceInvalidCount: Long = 0,
+    val publicationInvariantViolationCount: Long = 0,
+)
+
+data class FrameImageProbe(
+    val embeddedFrameId: Int?,
+    val imageSignature: List<Int>,
+)
+
+sealed interface FrameResult {
+    val request: FrameRequest
+
+    data class Published(
+        override val request: FrameRequest,
+        val textureTimestampNs: Long,
+        val cacheHit: Boolean,
+        val imageProbe: FrameImageProbe?,
+    ) : FrameResult
+
+    data class DiscardedStale(
+        override val request: FrameRequest,
+        val stage: String,
+    ) : FrameResult
+
+    data class Unsupported(
+        override val request: FrameRequest,
+        val reason: String,
+    ) : FrameResult
+
+    data class Error(
+        override val request: FrameRequest,
+        val code: String,
+    ) : FrameResult
+}
+
+data class ContainerMetadata(
+    val fileGeneration: Long,
+    val mime: String,
+    val profile: Int?,
+    val codedWidth: Int,
+    val codedHeight: Int,
+    val cropLeft: Int,
+    val cropTop: Int,
+    val cropRight: Int,
+    val cropBottom: Int,
+    val rotationDegrees: Int,
+    val pixelAspectRatioWidth: Int,
+    val pixelAspectRatioHeight: Int,
+    val durationUs: Long?,
+    val frameCount: Int,
+    val codecComponent: String,
+    val hardwareAccelerated: Boolean,
+)
+
+data class DecodedOutputMetadata(
+    val width: Int,
+    val height: Int,
+    val cropLeft: Int,
+    val cropTop: Int,
+    val cropRight: Int,
+    val cropBottom: Int,
+    val colorStandard: Int?,
+    val colorRange: Int?,
+    val colorTransfer: Int?,
+    val mime: String?,
+    val profile: Int?,
+    val colorFormat: Int?,
+    val hdrStaticInfoPresent: Boolean,
+)
+
+data class DecoderDiagnostics(
+    val indexBuildMs: Long = 0,
+    val decodeOrdinal: Long = 0,
+    val foregroundDecodedFrameCount: Long = 0,
+    val seekCount: Long = 0,
+    val flushCount: Long = 0,
+    val sequentialEntryCount: Long = 0,
+    val sequentialFallbackCount: Long = 0,
+    val sequentialOutputCount: Long = 0,
+    val requestCoalescedCount: Long = 0,
+    val actorQueueDepth: Int = 0,
+    val renderedCallbackCount: Long = 0,
+    val cacheHitCount: Long = 0,
+    val cacheMissCount: Long = 0,
+    val cachedNavigationAttemptCount: Long = 0,
+    val cachedNavigationActorBypassCount: Long = 0,
+    val cachedNavigationMissFallbackCount: Long = 0,
+    val cachedNavigationStaleCount: Long = 0,
+    val cachedNavigationErrorCount: Long = 0,
+    val cachedNavigationQueueWaitMaxUs: Long = 0,
+    val prefetchedFrameCount: Long = 0,
+    val prefetchRequested: Long = 0,
+    val prefetchStarted: Long = 0,
+    val prefetchCompleted: Long = 0,
+    val prefetchCacheHit: Long = 0,
+    val prefetchCancelled: Long = 0,
+    val prefetchEvictedBeforeUse: Long = 0,
+    val prefetchWasted: Long = 0,
+    val currentPrefetchDepth: Int = 0,
+    val effectivePrefetchLimit: Int = 0,
+    val canonicalFrameBytes: Long = 0,
+    val cacheBudgetBytes: Long = 0,
+    val cacheBytes: Long = 0,
+    val peakCacheBytes: Long = 0,
+    val cacheEntryCount: Int = 0,
+    val peakCacheEntryCount: Int = 0,
+    val cacheEvictionCount: Long = 0,
+    val cacheRejectionCount: Long = 0,
+    val cacheThrashCount: Long = 0,
+    val textureCreatedCount: Long = 0,
+    val textureReleasedCount: Long = 0,
+    val liveTextureCount: Int = 0,
+    val peakLiveTextureCount: Int = 0,
+    val textureDoubleReleaseCount: Long = 0,
+    val protectedTextureCount: Int = 0,
+    val backwardHistoryCapacity: Int = 0,
+    val backwardHistoryDepth: Int = 0,
+    val backwardHistoryHitCount: Long = 0,
+    val reverseWindowReadyCount: Int = 0,
+    val reverseWindowRemainingTargetCount: Int = 0,
+    val reverseWindowStagedTargetCount: Int = 0,
+    val reverseWindowStagedReadyCount: Int = 0,
+    val reverseWindowHitCount: Long = 0,
+    val reverseWindowBuildCount: Long = 0,
+    val reverseWindowFallbackCount: Long = 0,
+    val reverseWindowSeekCount: Long = 0,
+    val reverseWindowCachedFrameCount: Long = 0,
+    /** Compatibility total: initial READY installations plus rolling append refills. */
+    val reverseWindowRefillCount: Long = 0,
+    val reverseWindowInitialReadyCount: Long = 0,
+    val reverseWindowRollingAppendRefillCount: Long = 0,
+    val reverseWindowRefillNeeded: Boolean = false,
+    val reverseWindowRefillStallCount: Long = 0,
+    val reverseWindowRefillStallMaxUs: Long = 0,
+    val reverseWindowRefillStallOver250MsCount: Long = 0,
+    val reverseWindowConsumedCount: Long = 0,
+    val reverseWindowInvalidationCount: Long = 0,
+    val reverseRefillGenerationCount: Long = 0,
+    val reverseRefillInProgress: Boolean = false,
+    val reverseRefillInitialSeekCount: Long = 0,
+    val reverseRefillInitialFlushCount: Long = 0,
+    val reverseRefillResumedSliceCount: Long = 0,
+    val reverseRefillRestartCount: Long = 0,
+    val reverseRefillMaxSeekPerGeneration: Int = 0,
+    val reverseRefillMaxFlushPerGeneration: Int = 0,
+    val reverseRefillCachedTargetCount: Long = 0,
+    val reverseRefillConsumedDuringBuildCount: Long = 0,
+    val reverseRefillLastCancelledReason: String? = null,
+    val reverseLowWaterTriggerCount: Long = 0,
+    val reverseRefillStartedRemainingTargets: Int = 0,
+    val reversePartialAppendCount: Long = 0,
+    val reverseRefillCompletedBeforeDepletionCount: Long = 0,
+    val reverseDepletionBeforeRefillCount: Long = 0,
+    val reverseRefillAssociatedGapCount: Long = 0,
+    val randomSeekNoOpPlanCount: Long = 0,
+    val randomSeekCachePlanCount: Long = 0,
+    val randomSeekHistoryPlanCount: Long = 0,
+    val randomSeekReverseWindowPlanCount: Long = 0,
+    val randomSeekSequentialPlanCount: Long = 0,
+    val randomSeekSameGopPlanCount: Long = 0,
+    val randomSeekPreviousSyncPlanCount: Long = 0,
+    val lastRandomSeekAttemptedPlanKind: String? = null,
+    val lastRandomSeekPlanKind: String? = null,
+    val lastRandomSeekFallbackReason: String? = null,
+    val lastRandomSeekDecoderCursorFrameIndex: Int? = null,
+    val lastRandomSeekPreviousSyncFrameIndex: Int? = null,
+    val lastRandomSeekAuxiliaryUsed: Boolean = false,
+    val lastRandomSeekCacheSource: String? = null,
+    val lastRandomSeekEstimatedOutputCount: Int? = null,
+    val lastRandomSeekActualOutputCount: Int? = null,
+    val staleDiscardCount: Long = 0,
+    val decoderRecreateCount: Long = 0,
+    val configuredOutputMetadata: DecodedOutputMetadata? = null,
+    val decodedOutputFormatHistory: List<DecodedOutputMetadata> = emptyList(),
+    val outputFormatChangeCount: Long = 0,
+    val publishedSwapCount: Long = 0,
+    val staleBeforeSwapCount: Long = 0,
+    val swapFailureCount: Long = 0,
+    val surfaceInvalidCount: Long = 0,
+    val publicationInvariantViolationCount: Long = 0,
+    val fullFrameReadbackCount: Long = 0,
+    val publicationEventHistory: List<PublicationEvent> = emptyList(),
+)
+
+fun publicationInvariantViolationCount(events: Iterable<PublicationEvent>): Long = events.count { event ->
+    event.result == PublicationResult.PUBLISHED && (
+        event.fileGeneration != event.currentFileGeneration ||
+            event.requestGeneration != event.currentRequestGeneration ||
+            !event.swapAttempted ||
+            event.eglSwapBuffersResult != true
+        )
+}.toLong()
+
+fun buildFrameIndex(fileGeneration: Long, samples: List<IndexedSample>): IndexedVideo {
+    require(samples.isNotEmpty())
+    require(samples.map(IndexedSample::sampleOrdinal).distinct().size == samples.size)
+    val duplicateCounts = mutableMapOf<Long, Int>()
+    val frames = samples
+        .sortedWith(compareBy<IndexedSample> { it.ptsUs }.thenBy { it.sampleOrdinal })
+        .mapIndexed { displayFrameIndex, sample ->
+            val duplicateOrdinal = duplicateCounts.getOrDefault(sample.ptsUs, 0)
+            duplicateCounts[sample.ptsUs] = duplicateOrdinal + 1
+            IndexedFrame(
+                key = FrameKey(displayFrameIndex, sample.ptsUs, duplicateOrdinal),
+                sampleOrdinal = sample.sampleOrdinal,
+                sync = sample.sync,
+            )
+        }
+    return IndexedVideo(fileGeneration, samples.sortedBy(IndexedSample::sampleOrdinal), frames)
+}
+
+fun rescalePtsToUs(
+    rawPts: String,
+    timeBaseNumerator: Long,
+    timeBaseDenominator: Long,
+): Long {
+    require(timeBaseDenominator != 0L)
+    val value = BigInteger(rawPts)
+        .multiply(BigInteger.valueOf(timeBaseNumerator))
+        .multiply(BigInteger.valueOf(1_000_000L))
+        .divide(BigInteger.valueOf(timeBaseDenominator))
+    return value.longValueExact()
+}
