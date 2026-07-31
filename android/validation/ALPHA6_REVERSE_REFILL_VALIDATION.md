@@ -1,5 +1,30 @@
 # Android 0.2.0-alpha.6 역방향 refill·random tail 검증 계약
 
+## 2026-07-31 내부 사용자 합격과 자동 QA 부채
+
+사용자가 S24 Ultra의 실제 제품 화면에서 실제 CCR 영상을 사용해 평가한 결과는
+`실제 영상 실사용에 큰 문제 없음`이며, 최종 제품 판정은 다음과 같다.
+
+`PASS — ANDROID_ALPHA6_INTERNAL_USER_ACCEPTED`
+
+내부 파일럿 기준선은 applicationId
+`com.snowberried.ctcinereviewer.internal`, versionName/versionCode
+`0.2.0-alpha.6`/`7`, 제품 APK SHA-256
+`b5d7c927518cadaf19309bcbcc0be711db5703b5198a2c57a8056f6e456e907a`, signer
+certificate SHA-256
+`3a995765c4cb2502815b5bff31afd11aba220874be83f525fcd5ee64ab007e2e`, 제품 runtime
+source SHA `c98264f2a10026a908e94c961bb13e4af2d59e60`이다. 사용자 합격일은
+`2026-07-31 KST`다.
+
+사용자 acceptance와 자동 검증 상태는 분리한다. 이 판정은 Full Stage 1 또는 Random
+250의 자동 PASS가 아니며 Play Store release-ready 또는 의료기기 검증 완료도 아니다.
+Full Stage 1, Random 250과 GateActivity/Surface harness 문제는
+`DEFERRED_AUTOMATION_QA_DEBT`다. 이 부채는 내부 파일럿을 차단하지 않으며, 아래의 실패와
+Pending 결과는 변경하지 않고 historical evidence로 보존한다.
+
+현재 설치 앱은 삭제·재설치하지 않고 앱 데이터와 SAF grant를 보존한다. 후속 수정은
+실제 사용 중 재현되는 제품 결함만 대상으로 한다.
+
 ## compiled runtime identity 선행 Gate
 
 실패 run `a6s1-274e5f6-200204`의 candidate APK에는
@@ -275,6 +300,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 ## 현재 판정
 
-`BLOCKED_FOR_RELEASE — host contracts prepared; final same-artifact S24 correctness, tail performance, random performance, and user smoothness are pending.`
+`PASS — ANDROID_ALPHA6_INTERNAL_USER_ACCEPTED`
+
+Full Stage 1, Random 250과 GateActivity/Surface harness 문제는
+`DEFERRED_AUTOMATION_QA_DEBT`이며 자동 PASS로 간주하지 않는다. 이 내부 사용자 합격은
+Play Store release-ready 또는 의료기기 검증 완료를 뜻하지 않는다.
 
 tag, merge, GitHub Release와 binary upload는 수행하지 않는다.

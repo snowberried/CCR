@@ -1,5 +1,37 @@
 # CT Cine Reviewer Android Alpha 6 Handoff
 
+## 2026-07-31 Android Alpha 6 내부 사용자 합격 closure
+
+최종 제품 판정은 다음과 같다.
+
+`PASS — ANDROID_ALPHA6_INTERNAL_USER_ACCEPTED`
+
+사용자가 S24 Ultra의 실제 제품 화면에서 실제 CCR 영상을 사용해 평가했으며,
+`실제 영상 실사용에 큰 문제 없음`으로 확인했다. 아래 APK를 Android Alpha 6 내부
+파일럿 기준선으로 사용한다.
+
+| 항목 | 기준선 |
+| --- | --- |
+| applicationId | `com.snowberried.ctcinereviewer.internal` |
+| versionName / versionCode | `0.2.0-alpha.6` / `7` |
+| 제품 APK SHA-256 | `b5d7c927518cadaf19309bcbcc0be711db5703b5198a2c57a8056f6e456e907a` |
+| signer certificate SHA-256 | `3a995765c4cb2502815b5bff31afd11aba220874be83f525fcd5ee64ab007e2e` |
+| 제품 runtime source SHA | `c98264f2a10026a908e94c961bb13e4af2d59e60` |
+| 사용자 합격일 | `2026-07-31 KST` |
+
+이 사용자 acceptance는 자동 Full Stage 1 또는 Random 250의 PASS를 뜻하지 않는다.
+Play Store release-ready 또는 의료기기 검증 완료도 뜻하지 않는다. Full Stage 1,
+Random 250과 GateActivity/Surface harness 문제는
+`DEFERRED_AUTOMATION_QA_DEBT`로 분류하며, 이 자동 QA 부채는 내부 파일럿을 차단하지
+않는다. 아래의 자동 검증 실패와 Pending 기록은 삭제하거나 성공으로 바꾸지 않고
+historical evidence로 유지한다.
+
+현재 설치 앱은 삭제하거나 재설치하지 않으며 앱 데이터와 SAF grant를 보존한다.
+후속 수정은 실제 사용 중 재현되는 제품 결함만 대상으로 삼는다. 별도 다음 버전 범위를
+시작하려면 명시적인 승인이 필요하다.
+
+`ONLY_FIX_REPRODUCIBLE_REAL_PRODUCT_DEFECTS_OR_START_AN_EXPLICIT_NEXT_VERSION_SCOPE`
+
 ## 2026-07-28 compiled runtime identity blocker와 재개 조건
 
 `a6s1-274e5f6-200204` Stage 1은 제품 runtime이나 decoder 결함이 아니라 candidate
@@ -112,7 +144,7 @@ local host 검증은 candidate bridge `54`, render-open runner `15`, 실제 Surf
 `40/40`과 CI 동일 Android lint/unit/assemble까지 통과했다. CI, 새 signed revision 5
 artifact와 S24 제한 검증은 Pending이다.
 
-## 결론
+## 2026-07-29 자동 검증 시점 결론 (historical evidence)
 
 Android `0.2.0-alpha.6` 제품 runtime의 exactness 수정과 역방향 cache-only 게시·rolling refill 구현은 소스와 원격 Draft PR에 보존됐다. S24 Stage 1 correctness는 최종 후보에서 7/7 통과했지만, 첫 reverse performance 시나리오는 정상적인 `cached probe miss → 동일 요청 actor fallback → 단일 publish`를 macrobenchmark가 금지해 fail-closed했다.
 
@@ -127,7 +159,7 @@ Stage 1/Random의 historical revision 4 결합은 제품 runtime을 바꾸지 �
 device bridge로 제거했다. bridge를 포함하는 새 clean HEAD에서 APK 4종과 artifact set을
 다시 생성해야 하며 S24 PreflightOnly, Stage 1, Random 250과 사용자 smoothness는 Pending이다.
 
-현재 판정은 다음과 같다.
+당시 자동 검증 판정은 다음과 같다.
 
 `BLOCKED_FOR_RELEASE — ALPHA6_REV5_DEVICE_RUNNER_BRIDGE_READY; CLEAN_HEAD CANDIDATE REBUILD, S24 STAGE 1, RANDOM 250, AND USER SMOOTHNESS REVIEW PENDING`
 
@@ -429,4 +461,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - 사용자 승인 전 tag, merge, GitHub Release, binary upload를 수행하지 않는다.
 - DICOM/PACS, AI, cloud, 프로젝트 저장과 Play 배포로 범위를 넓히지 않는다.
 
-최종 합격에는 동일 artifact Stage 1, Random 250, exactness·tail hard Gate와 사용자 역방향 smoothness 검수가 모두 필요하다.
+동일 artifact Stage 1, Random 250과 GateActivity/Surface harness 문제는 2026-07-31
+내부 사용자 합격 closure에서 `DEFERRED_AUTOMATION_QA_DEBT`로 분리됐다. 이 항목을
+PASS로 바꾼 것은 아니며 Play Store 또는 의료기기 검증 기준으로 사용하지 않는다.

@@ -1,5 +1,32 @@
 # CCR Android 0.2.0-alpha.6 Internal Viewer
 
+## 내부 사용자 합격 기준선
+
+2026-07-31 KST, 사용자가 S24 Ultra의 실제 제품 화면에서 실제 CCR 영상을 사용해
+평가했고 `실제 영상 실사용에 큰 문제 없음`으로 확인했다.
+
+`PASS — ANDROID_ALPHA6_INTERNAL_USER_ACCEPTED`
+
+- applicationId: `com.snowberried.ctcinereviewer.internal`
+- versionName / versionCode: `0.2.0-alpha.6` / `7`
+- 제품 APK SHA-256:
+  `b5d7c927518cadaf19309bcbcc0be711db5703b5198a2c57a8056f6e456e907a`
+- signer certificate SHA-256:
+  `3a995765c4cb2502815b5bff31afd11aba220874be83f525fcd5ee64ab007e2e`
+- 제품 runtime source SHA:
+  `c98264f2a10026a908e94c961bb13e4af2d59e60`
+
+이 APK를 Android Alpha 6 내부 파일럿 기준선으로 사용한다. 사용자 acceptance는 자동
+Full Stage 1 또는 Random 250 PASS, Play Store release-ready, 의료기기 검증 완료를
+뜻하지 않는다. Full Stage 1, Random 250과 GateActivity/Surface harness 문제는
+`DEFERRED_AUTOMATION_QA_DEBT`이며 내부 파일럿을 차단하지 않는다. 기존 자동 검증
+실패와 Pending evidence는 historical evidence로 유지한다.
+
+현재 설치 앱은 삭제·재설치하지 않고 앱 데이터와 SAF grant를 보존한다. 후속 수정은
+실제 사용 중 재현되는 제품 결함만 대상으로 한다.
+
+`ONLY_FIX_REPRODUCIBLE_REAL_PRODUCT_DEFECTS_OR_START_AN_EXPLICIT_NEXT_VERSION_SCOPE`
+
 ## Alpha 6 candidate compiled identity
 
 Alpha 6의 `runtimeSourceSha`와 APK `BuildConfig.COMMIT_SHA`는
@@ -210,9 +237,9 @@ Alpha 2 시점의 Gate 4A 판정은 실제 비식별 MP4 20-frame 비교와 분�
 
 ## 개인정보 및 제외 범위
 
-Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. 프로젝트 저장, DICOM/PACS, AI, cloud, 주석, 비교 보기, PNG export, 필터, zoom/pan, Play 배포는 Android 0.2.0-alpha.6 범위 밖이다. alpha.6 정확성·성능 Gate와 사용자 체감 합격 전에는 tag를 만들지 않는다.
+Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. 프로젝트 저장, DICOM/PACS, AI, cloud, 주석, 비교 보기, PNG export, 필터, zoom/pan, Play 배포는 Android 0.2.0-alpha.6 범위 밖이다. 이번 내부 사용자 합격 closure에서는 tag, merge, GitHub Release와 binary upload를 수행하지 않는다.
 
-## Alpha 6 검증 상태
+## Alpha 6 자동 검증 상태와 내부 사용자 합격의 구분
 
 renderer cache-hit 게시와 single-decoder rolling reverse refill, random 최종 실행 plan 진단,
 historical pinned artifact v4 host runner를 구현했다. v4의 `49379c…` signer private key는
@@ -226,5 +253,10 @@ historical pinned artifact v4 host runner를 구현했다. v4의 `49379c…` sig
 policy·fingerprint·PEM hash와 실제 APK 4종 signer까지 checkpoint/resume/failure identity에
 고정하며 revision 4를 거부한다. pre-bridge set은 유효한 build evidence로 보존하지만 새
 bridge HEAD의 S24 Gate에는 사용할 수 없으므로 APK 4종을 새 clean HEAD에서 다시 만든다.
-S24 exactness·tail·random·사용자 smoothness와 장기 Gate는 모두 Pending이며 release 합격으로 간주하지 않는다. 구조와 동일-artifact 실행 순서는
+기존 S24 exactness·tail·random·장기 Gate의 실패와 Pending 상태는 historical evidence로
+유지한다. Full Stage 1, Random 250과 GateActivity/Surface harness 문제는
+`DEFERRED_AUTOMATION_QA_DEBT`이며 자동 PASS로 바꾸지 않는다. 이 상태와 별개로 실제
+제품 사용자 평가는 `PASS — ANDROID_ALPHA6_INTERNAL_USER_ACCEPTED`다. 이는 내부
+파일럿 합격이며 Play Store release-ready 또는 의료기기 검증 완료가 아니다. 구조와
+동일-artifact 자동 실행 계약은
 [ALPHA6_REVERSE_REFILL_VALIDATION.md](validation/ALPHA6_REVERSE_REFILL_VALIDATION.md)에 기록한다.
