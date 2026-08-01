@@ -37,6 +37,60 @@
 3. 검증: 가능한 명령, 테스트, 파일 확인으로 결과를 확인한다.
 4. 요약: 변경 내용과 남은 위험을 짧게 보고한다.
 
+## 실행 시간·정체 방지 규칙 (강제)
+
+다음 규칙은 권고가 아니라 필수 작업 지침이다.
+
+### 적용 범위
+
+- `git`, `gh`, Node/npm, Java/keytool, Gradle, Android SDK, ADB, APK 검사·압축,
+  대규모 hash·재귀 검색처럼 native 또는 외부 자식 process를 만드는 모든 실행
+- 예상 총시간이 5분 이상인 build·test·검증·모니터링 및 다단계 작업
+- 이전에 timeout 무시, 무응답 또는 장시간 정체가 발생한 실행 경로
+
+정확한 파일 하나를 읽는 `Get-Item`·`Get-Content`처럼 자식 process를 만들지 않고
+예상 10초 이하인 bounded 순수 PowerShell 읽기만 한 번에 하나씩 직접 실행할 수 있다.
+
+### 명령 실행
+
+- 적용 범위의 shell/native 명령은 process-tree 종료 권한이 승인된 외부 hard
+  watchdog을 통해서만 시작한다.
+- shell/native 명령을 `multi_tool_use.parallel`에 넣지 않는다.
+- shell 도구의 `timeout_ms`는 보조 제한일 뿐 종료 보장이 아니므로 hard watchdog
+  대신 사용하지 않는다.
+- watchdog은 시작 시 exact PID, 시작 시각, 고유 stdout/stderr 로그 경로와 deadline을
+  확보해야 한다. deadline 초과 시 exact PID tree를 종료하고
+  `COMMAND_WATCHDOG_TIMEOUT`으로 보고한다.
+- watchdog 또는 exact PID tree 종료 권한을 준비할 수 없으면 명령을 시작하지 않고
+  `BLOCKED — WATCHDOG_NOT_READY`로 중단한다.
+- 새 실행 환경의 첫 적용 작업, watchdog 변경 뒤, timeout 이상 발생 뒤에는 120초
+  synthetic hang을 2~5초 deadline으로 먼저 검증한다. exact PID tree 종료와 잔류
+  process 0이 확인되기 전 적용 범위 작업을 재개하지 않는다.
+
+### 장기 작업
+
+- 장기 작업은 동기식 shell 호출로 기다리지 않는다.
+- `Start-Process -WindowStyle Hidden -PassThru`로 한 번만 시작하고 PID와 고유 로그
+  경로를 기록한 뒤 즉시 제어권을 돌려받는다.
+- 20~30초 간격으로 process 상태, 로그 마지막 시각·크기와 새 결과를 짧게 poll한다.
+- 사용자 진행 보고가 60초 이상 끊기지 않게 한다.
+- process 생존만으로 진전을 판정하지 않는다. 로그 변화, 새 checkpoint·결과 또는
+  완료 단계처럼 검증 가능한 진행 증거가 있어야 한다.
+
+### 5분 작업 임대제
+
+- 적용 범위 작업을 시작할 때 시작 시각, 현재 phase, 성공 기준과 active PID·로그를
+  기록한다.
+- 시작 후 5분 이내와 이후 매 5분마다 새 작업 예약을 멈추고 강제 재평가한다.
+- 새 로그·checkpoint·결과 또는 단계 완료가 확인되면 `PROGRESS_CONFIRMED`로
+  중간보고하고 다음 5분을 연장한다.
+- 진전 증거가 불충분하면 `PROGRESS_UNCERTAIN`으로 분류하고 새 작업을 시작하지 않은
+  채 bounded 진단만 수행한다.
+- 진전이 없거나 같은 단계가 비정상 반복되면 exact PID tree를 종료하고
+  `STALLED_OPERATION`으로 중단 보고한다.
+- 같은 blocker 또는 동일 실행 형태를 자동 재시도하지 않는다. 같은 blocker가 두 번
+  발생하면 추가 시도는 사용자 승인 없이는 금지한다.
+
 ## 현재 단계: v0.5.9 Configurable RAM Cache
 
 - Phase 0 기획은 완료됐다.
