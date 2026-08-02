@@ -10,25 +10,48 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -36,26 +59,45 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.window.core.layout.WindowSizeClass
 import com.snowberried.ctcinereviewer.media.timelineFractionForFrame
+import com.snowberried.ctcinereviewer.render.CorrectionLimit
+import com.snowberried.ctcinereviewer.render.CorrectionPanelState
+import com.snowberried.ctcinereviewer.render.VideoCorrection
+import com.snowberried.ctcinereviewer.render.VideoCorrectionLimits
+import com.snowberried.ctcinereviewer.render.VideoViewport
+import com.snowberried.ctcinereviewer.render.ViewTransform
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.Job
+import java.util.Locale
+import kotlin.math.roundToInt
 
 internal object AndroidSdkContract {
     const val MIN_SDK = 34
@@ -69,16 +111,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         viewer = ViewModelProvider(this)[ViewerViewModel::class.java]
         setContent {
-            MaterialTheme {
+            CcrTheme {
                 CcrSpikeApp(
                     state = viewer.uiState,
                     onOpen = viewer::openVideo,
-                    onRequest = viewer::requestFrame,
                     onNavigationGestureStart = viewer::beginNavigationGesture,
                     onNavigationStep = viewer::moveByGesture,
                     onNavigationHoldStart = viewer::startHoldTraversal,
                     onNavigationGestureEnd = viewer::endNavigationGesture,
-                    onDirectInputChange = viewer::setDirectInput,
                     onTimelineRequest = viewer::requestTimelineFraction,
                     onCancel = viewer::cancel,
                     onCopyDiagnostics = ::copyDiagnostics,
@@ -125,85 +165,242 @@ class MainActivity : ComponentActivity() {
 internal fun CcrSpikeApp(
     state: ViewerUiState,
     onOpen: (Uri) -> Unit,
-    onRequest: (Int) -> Unit,
     onNavigationGestureStart: () -> Long,
     onNavigationStep: (Int, Long) -> Unit,
     onNavigationHoldStart: (Int, Long) -> Unit,
     onNavigationGestureEnd: (Long) -> Unit,
-    onDirectInputChange: (String) -> Unit,
     onTimelineRequest: (Float, Boolean) -> Unit,
     onCancel: () -> Unit,
     onCopyDiagnostics: () -> Unit,
-    viewport: (android.content.Context) -> android.view.View,
+    viewport: (android.content.Context) -> VideoViewport,
 ) {
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(onOpen)
     }
-    val windowSizeClass = currentWindowAdaptiveInfo().windowSizeClass
-    val twoPane = windowSizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND)
-    Surface(modifier = Modifier.fillMaxSize()) {
-        if (twoPane) {
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(12.dp)
-                    .testTag("viewer-two-pane"),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "CT Cine Reviewer · Android ${BuildConfig.VERSION_NAME} internal",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    AndroidView(factory = viewport, modifier = Modifier.fillMaxSize())
-                }
-                ViewerControls(
-                    state = state,
-                    directInput = state.directInput,
-                    onDirectInputChange = onDirectInputChange,
-                    onOpen = { launcher.launch(arrayOf("video/mp4")) },
-                    onRequest = onRequest,
-                    onNavigationGestureStart = onNavigationGestureStart,
-                    onNavigationStep = onNavigationStep,
-                    onNavigationHoldStart = onNavigationHoldStart,
-                    onNavigationGestureEnd = onNavigationGestureEnd,
-                    onTimelineRequest = onTimelineRequest,
-                    onCancel = onCancel,
-                    onCopyDiagnostics = onCopyDiagnostics,
-                    modifier = Modifier
-                        .weight(1f)
-                        .verticalScroll(rememberScrollState()),
-                )
-            }
-        } else {
+    CcrViewerScreen(
+        state = state,
+        onOpen = { launcher.launch(arrayOf("video/mp4")) },
+        onNavigationGestureStart = onNavigationGestureStart,
+        onNavigationStep = onNavigationStep,
+        onNavigationHoldStart = onNavigationHoldStart,
+        onNavigationGestureEnd = onNavigationGestureEnd,
+        onTimelineRequest = onTimelineRequest,
+        onCancel = onCancel,
+        onCopyDiagnostics = onCopyDiagnostics,
+        viewport = viewport,
+    )
+}
+
+@Composable
+internal fun CcrViewerScreen(
+    state: ViewerUiState,
+    onOpen: () -> Unit,
+    onNavigationGestureStart: () -> Long,
+    onNavigationStep: (Int, Long) -> Unit,
+    onNavigationHoldStart: (Int, Long) -> Unit,
+    onNavigationGestureEnd: (Long) -> Unit,
+    onTimelineRequest: (Float, Boolean) -> Unit,
+    onCancel: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
+    viewport: (android.content.Context) -> VideoViewport,
+) {
+    val fileSelected = state.selectedUri != null
+    var panelState by remember(state.activeFileGeneration) { mutableStateOf(CorrectionPanelState()) }
+    var comparingOriginal by remember(state.activeFileGeneration) { mutableStateOf(false) }
+    var viewportView by remember { mutableStateOf<VideoViewport?>(null) }
+    var viewTransform by remember(state.activeFileGeneration) { mutableStateOf<ViewTransform?>(null) }
+
+    DisposableEffect(viewportView) {
+        val currentViewport = viewportView
+        onDispose {
+            currentViewport?.updateCorrection(panelState.correction, false)
+            currentViewport?.onTransformChanged = null
+        }
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("window-root"),
+        color = CcrColors.Canvas,
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(CcrColors.Canvas)
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .testTag("safe-drawing-root"),
+        ) {
             Column(
                 modifier = Modifier
-                    .padding(12.dp)
-                    .testTag("viewer-single-pane"),
+                    .fillMaxSize()
+                    .background(CcrColors.Shell)
+                    .testTag("safe-drawing-content"),
             ) {
-                Text(
-                    "CT Cine Reviewer · Android ${BuildConfig.VERSION_NAME} internal",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                AndroidView(
-                    factory = viewport,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                )
-                ViewerControls(
-                    state = state,
-                    directInput = state.directInput,
-                    onDirectInputChange = onDirectInputChange,
-                    onOpen = { launcher.launch(arrayOf("video/mp4")) },
-                    onRequest = onRequest,
-                    onNavigationGestureStart = onNavigationGestureStart,
-                    onNavigationStep = onNavigationStep,
-                    onNavigationHoldStart = onNavigationHoldStart,
-                    onNavigationGestureEnd = onNavigationGestureEnd,
-                    onTimelineRequest = onTimelineRequest,
+                CcrHeader(
+                    fileSelected = fileSelected,
+                    canCancel = state.activeFileGeneration != null &&
+                        state.restoreState != ViewerRestoreState.CANCELLED,
+                    onOpen = onOpen,
                     onCancel = onCancel,
                     onCopyDiagnostics = onCopyDiagnostics,
+                )
+                if (!fileSelected) {
+                    EmptyViewer(onOpen, Modifier.weight(1f))
+                } else {
+                    Text(
+                        text = displayFileName(state.selectedUri) ?: "선택한 동영상",
+                        color = CcrColors.SecondaryText,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .testTag("selected-file-name"),
+                    )
+                    VideoArea(
+                        state = state,
+                        correction = panelState.correction,
+                        comparingOriginal = comparingOriginal,
+                        viewTransform = viewTransform,
+                        onViewportCreated = { viewportView = it },
+                        onTransformChanged = { viewTransform = it },
+                        onFitReset = { viewportView?.resetView() },
+                        viewport = viewport,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .heightIn(min = 120.dp)
+                            .padding(horizontal = 8.dp),
+                    )
+                    if (state.metadata != null) {
+                        FrameControls(
+                            state = state,
+                            onNavigationGestureStart = onNavigationGestureStart,
+                            onNavigationStep = onNavigationStep,
+                            onNavigationHoldStart = onNavigationHoldStart,
+                            onNavigationGestureEnd = onNavigationGestureEnd,
+                            modifier = Modifier.padding(start = 8.dp, top = 6.dp, end = 8.dp),
+                        )
+                        FrameTimeline(
+                            state = state,
+                            onTimelineRequest = onTimelineRequest,
+                            modifier = Modifier.padding(horizontal = 8.dp),
+                        )
+                        CorrectionSection(
+                            state = panelState,
+                            onStateChange = { panelState = it },
+                            comparingOriginal = comparingOriginal,
+                            onComparingOriginalChange = { comparingOriginal = it },
+                            modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CcrHeader(
+    fileSelected: Boolean,
+    canCancel: Boolean,
+    onOpen: () -> Unit,
+    onCancel: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
+) {
+    Surface(
+        color = CcrColors.TopBar,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        ) {
+            Icon(
+                painter = painterResource(R.drawable.ic_ccr_logo),
+                contentDescription = null,
+                tint = CcrColors.ActiveBlue,
+                modifier = Modifier.size(30.dp),
+            )
+            Text(
+                text = "CT Cine Reviewer",
+                color = CcrColors.PrimaryText,
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 10.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (fileSelected) {
+                IconButton(onClick = onOpen, modifier = Modifier.size(48.dp)) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_folder_open),
+                        contentDescription = "파일 열기",
+                        tint = CcrColors.PrimaryText,
+                    )
+                }
+            }
+            OverflowMenu(
+                fileSelected = fileSelected,
+                canCancel = canCancel,
+                onOpen = onOpen,
+                onCancel = onCancel,
+                onCopyDiagnostics = onCopyDiagnostics,
+            )
+        }
+    }
+}
+
+@Composable
+private fun OverflowMenu(
+    fileSelected: Boolean,
+    canCancel: Boolean,
+    onOpen: () -> Unit,
+    onCancel: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }, modifier = Modifier.size(48.dp)) {
+            Icon(
+                painter = painterResource(R.drawable.ic_more_vert),
+                contentDescription = "더보기",
+                tint = CcrColors.PrimaryText,
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.background(CcrColors.Raised),
+        ) {
+            DropdownMenuItem(
+                text = { Text("파일 열기", color = CcrColors.PrimaryText) },
+                onClick = {
+                    expanded = false
+                    onOpen()
+                },
+            )
+            if (fileSelected && canCancel) {
+                DropdownMenuItem(
+                    text = { Text("현재 작업 취소", color = CcrColors.PrimaryText) },
+                    onClick = {
+                        expanded = false
+                        onCancel()
+                    },
+                )
+            }
+            if (fileSelected && BuildConfig.DEBUG) {
+                DropdownMenuItem(
+                    text = { Text("진단 복사", color = CcrColors.PrimaryText) },
+                    onClick = {
+                        expanded = false
+                        onCopyDiagnostics()
+                    },
                 )
             }
         }
@@ -211,86 +408,163 @@ internal fun CcrSpikeApp(
 }
 
 @Composable
-private fun ViewerControls(
+private fun EmptyViewer(onOpen: () -> Unit, modifier: Modifier = Modifier) {
+    Box(modifier = modifier.fillMaxWidth().testTag("viewer-empty"), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                painter = painterResource(R.drawable.ic_folder_open),
+                contentDescription = null,
+                tint = CcrColors.MutedText,
+                modifier = Modifier.size(42.dp),
+            )
+            Text(
+                text = "검토할 동영상 파일을 여세요",
+                color = CcrColors.SecondaryText,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 14.dp, bottom = 16.dp),
+            )
+            Button(
+                onClick = onOpen,
+                shape = ControlShape,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = CcrColors.PrimaryBlue,
+                    contentColor = CcrColors.PrimaryText,
+                ),
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("empty-file-open"),
+            ) {
+                Text("파일 열기")
+            }
+        }
+    }
+}
+
+@Composable
+private fun VideoArea(
     state: ViewerUiState,
-    directInput: String,
-    onDirectInputChange: (String) -> Unit,
-    onOpen: () -> Unit,
-    onRequest: (Int) -> Unit,
+    correction: VideoCorrection,
+    comparingOriginal: Boolean,
+    viewTransform: ViewTransform?,
+    onViewportCreated: (VideoViewport) -> Unit,
+    onTransformChanged: (ViewTransform) -> Unit,
+    onFitReset: () -> Unit,
+    viewport: (android.content.Context) -> VideoViewport,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .clip(ControlShape)
+            .background(Color.Black)
+            .border(1.dp, CcrColors.VideoBorder, ControlShape)
+            .testTag("video-viewport"),
+    ) {
+        AndroidView(
+            factory = { context ->
+                viewport(context).also { view ->
+                    view.onTransformChanged = onTransformChanged
+                    onViewportCreated(view)
+                }
+            },
+            update = { view ->
+                view.onTransformChanged = onTransformChanged
+                view.updateCorrection(correction, comparingOriginal)
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+        if (state.metadata == null) {
+            Text(
+                text = if (state.errorOrUnsupportedMessage == null) {
+                    "동영상을 준비하고 있습니다"
+                } else {
+                    "동영상을 열 수 없습니다"
+                },
+                color = if (state.errorOrUnsupportedMessage == null) CcrColors.MutedText else CcrColors.Danger,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.align(Alignment.Center),
+            )
+        }
+        viewTransform?.takeUnless(ViewTransform::isFit)?.let { transform ->
+            ZoomOverlay(transform.zoom, onFitReset)
+        }
+    }
+}
+
+@Composable
+private fun BoxScope.ZoomOverlay(zoom: Float, onFitReset: () -> Unit) {
+    Surface(
+        color = CcrColors.Shell.copy(alpha = 0.92f),
+        shape = ControlShape,
+        border = BorderStroke(1.dp, CcrColors.VideoBorder),
+        modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .padding(8.dp)
+            .testTag("zoom-fit-overlay"),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "${(zoom * 100f).roundToInt()}%",
+                color = CcrColors.PrimaryText,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 10.dp, end = 4.dp),
+            )
+            IconButton(onClick = onFitReset, modifier = Modifier.size(48.dp)) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_fit),
+                    contentDescription = "화면 맞춤",
+                    tint = CcrColors.PrimaryText,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FrameControls(
+    state: ViewerUiState,
     onNavigationGestureStart: () -> Long,
     onNavigationStep: (Int, Long) -> Unit,
     onNavigationHoldStart: (Int, Long) -> Unit,
     onNavigationGestureEnd: (Long) -> Unit,
-    onTimelineRequest: (Float, Boolean) -> Unit,
-    onCancel: () -> Unit,
-    onCopyDiagnostics: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val metadata = state.metadata
-    val requestedIndex = state.requestedFrameIndex
-    val lastIndex = (metadata?.frameCount ?: 1) - 1
-    val canNavigate = metadata != null && state.surfaceAvailable
-    val canCancel = state.activeFileGeneration != null && state.restoreState != ViewerRestoreState.CANCELLED
-    val directIndex = directInput.toIntOrNull()
-
-    Column(modifier = modifier) {
-        Row(
+    val metadata = requireNotNull(state.metadata)
+    val lastIndex = metadata.frameCount - 1
+    val canNavigate = state.surfaceAvailable
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .testTag("frame-controls"),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        NavigationButton("−5", -5, canNavigate && state.requestedFrameIndex > 0, onNavigationGestureStart, onNavigationStep, onNavigationHoldStart, onNavigationGestureEnd)
+        NavigationButton("−1", -1, canNavigate && state.requestedFrameIndex > 0, onNavigationGestureStart, onNavigationStep, onNavigationHoldStart, onNavigationGestureEnd)
+        Surface(
+            color = CcrColors.Card,
+            shape = ControlShape,
+            border = BorderStroke(1.dp, CcrColors.Border),
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                .weight(1.9f)
+                .height(48.dp)
+                .testTag("frame-position-card")
+                .semantics(mergeDescendants = true) {
+                    contentDescription = "현재 프레임 ${displayedFrameText(state)}"
+                },
         ) {
-            Button(onClick = onOpen, modifier = Modifier.weight(1f)) { Text("열기") }
-            Button(onClick = onCancel, enabled = canCancel, modifier = Modifier.weight(1f)) { Text("취소") }
-            Button(onClick = { onRequest(0) }, enabled = canNavigate, modifier = Modifier.weight(1f)) { Text("처음") }
-            Button(onClick = { onRequest(lastIndex) }, enabled = canNavigate, modifier = Modifier.weight(1f)) {
-                Text("마지막")
+            Box(contentAlignment = Alignment.Center) {
+                val current = state.displayedFrameIndex?.plus(1)?.toString() ?: "—"
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(current, color = CcrColors.ActiveBlue, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                    Text(" / ${metadata.frameCount}", color = CcrColors.MutedText, fontSize = 13.sp)
+                }
             }
         }
-        FrameTimeline(state, onTimelineRequest)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            NavigationButton("−5", -5, canNavigate && requestedIndex > 0, onNavigationGestureStart, onNavigationStep, onNavigationHoldStart, onNavigationGestureEnd)
-            NavigationButton("−1", -1, canNavigate && requestedIndex > 0, onNavigationGestureStart, onNavigationStep, onNavigationHoldStart, onNavigationGestureEnd)
-            NavigationButton("+1", 1, canNavigate && requestedIndex < lastIndex, onNavigationGestureStart, onNavigationStep, onNavigationHoldStart, onNavigationGestureEnd)
-            NavigationButton("+5", 5, canNavigate && requestedIndex < lastIndex, onNavigationGestureStart, onNavigationStep, onNavigationHoldStart, onNavigationGestureEnd)
-        }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = directInput,
-                onValueChange = onDirectInputChange,
-                label = { Text("0-based frame") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.weight(1f),
-            )
-            Button(
-                onClick = { directIndex?.let(onRequest) },
-                enabled = canNavigate && directIndex != null && directIndex in 0..lastIndex,
-                modifier = Modifier.heightIn(min = 56.dp),
-            ) {
-                Text("이동")
-            }
-        }
-        state.errorOrUnsupportedMessage?.let { message ->
-            Text(
-                text = "열 수 없음: $message",
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
-        if (state.diagnosticsVisible) {
-            DiagnosticPanel(state, onCopyDiagnostics, modifier = Modifier.fillMaxWidth())
-        }
+        NavigationButton("+1", 1, canNavigate && state.requestedFrameIndex < lastIndex, onNavigationGestureStart, onNavigationStep, onNavigationHoldStart, onNavigationGestureEnd)
+        NavigationButton("+5", 5, canNavigate && state.requestedFrameIndex < lastIndex, onNavigationGestureStart, onNavigationStep, onNavigationHoldStart, onNavigationGestureEnd)
     }
 }
 
@@ -298,6 +572,7 @@ private fun ViewerControls(
 private fun FrameTimeline(
     state: ViewerUiState,
     onTimelineRequest: (Float, Boolean) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val ptsUs = state.framePtsUs
     if (ptsUs.isEmpty()) return
@@ -307,13 +582,7 @@ private fun FrameTimeline(
     LaunchedEffect(requestedFraction, dragging) {
         if (!dragging) dragFraction = requestedFraction
     }
-
-    Text(
-        text = "표시 ${state.displayedFrameIndex ?: "-"} / ${ptsUs.lastIndex} (전체 ${ptsUs.size}, 0-based) · " +
-            "PTS ${state.displayedFrame?.ptsUs ?: "-"} µs",
-        modifier = Modifier.padding(top = 8.dp),
-    )
-    Slider(
+    CcrSlider(
         value = dragFraction,
         onValueChange = { value ->
             dragging = true
@@ -324,15 +593,309 @@ private fun FrameTimeline(
             dragging = false
             onTimelineRequest(dragFraction, true)
         },
-        enabled = state.metadata != null && state.surfaceAvailable,
-        modifier = Modifier
+        enabled = state.surfaceAvailable,
+        modifier = modifier
             .fillMaxWidth()
+            .heightIn(min = 48.dp)
             .testTag("pts-timeline"),
     )
 }
 
 @Composable
-internal fun androidx.compose.foundation.layout.RowScope.NavigationButton(
+private fun CorrectionSection(
+    state: CorrectionPanelState,
+    onStateChange: (CorrectionPanelState) -> Unit,
+    comparingOriginal: Boolean,
+    onComparingOriginalChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        color = CcrColors.Panel,
+        shape = ControlShape,
+        border = BorderStroke(1.dp, CcrColors.Border),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 52.dp)
+                    .clickable(role = Role.Button) { onStateChange(state.toggled()) }
+                    .padding(horizontal = 12.dp)
+                    .testTag("correction-row"),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "화면 보정",
+                    color = CcrColors.PrimaryText,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                if (!state.correction.isDefault) {
+                    Box(
+                        modifier = Modifier
+                            .padding(start = 8.dp)
+                            .size(8.dp)
+                            .background(CcrColors.ActiveBlue, CircleShape)
+                            .testTag("correction-status-dot"),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                Icon(
+                    painter = painterResource(
+                        if (state.expanded) R.drawable.ic_chevron_down else R.drawable.ic_chevron_up,
+                    ),
+                    contentDescription = if (state.expanded) "화면 보정 접기" else "화면 보정 펼치기",
+                    tint = CcrColors.PrimaryText,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+            if (state.expanded) {
+                HorizontalDivider(color = CcrColors.Border)
+                CorrectionPanel(
+                    correction = state.correction,
+                    onCorrectionChange = { onStateChange(state.withCorrection(it)) },
+                    comparingOriginal = comparingOriginal,
+                    onComparingOriginalChange = onComparingOriginalChange,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CorrectionPanel(
+    correction: VideoCorrection,
+    onCorrectionChange: (VideoCorrection) -> Unit,
+    comparingOriginal: Boolean,
+    onComparingOriginalChange: (Boolean) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 228.dp)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 8.dp, vertical = 6.dp)
+            .testTag("correction-panel"),
+    ) {
+        CorrectionSlider("밝기", "correction-level-slider", correction.level, VideoCorrectionLimits.Level) {
+            onCorrectionChange(correction.withLevel(it))
+        }
+        CorrectionSlider("명암", "correction-width-slider", correction.width, VideoCorrectionLimits.Width) {
+            onCorrectionChange(correction.withWidth(it))
+        }
+        CorrectionSlider("감마", "correction-gamma-slider", correction.gamma, VideoCorrectionLimits.Gamma) {
+            onCorrectionChange(correction.withGamma(it))
+        }
+        CorrectionSlider(
+            "선명도",
+            "correction-sharp-slider",
+            correction.sharpAmount,
+            VideoCorrectionLimits.SharpAmount,
+        ) {
+            onCorrectionChange(correction.withSharpAmount(it))
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            CorrectionActionButton(
+                label = "반전",
+                icon = R.drawable.ic_inverse,
+                active = correction.invert,
+                onClick = { onCorrectionChange(correction.toggledInvert()) },
+            )
+            OriginalCompareButton(
+                comparingOriginal = comparingOriginal,
+                onComparingOriginalChange = onComparingOriginalChange,
+            )
+            CorrectionActionButton(
+                label = "초기화",
+                icon = R.drawable.ic_reset,
+                active = false,
+                onClick = { onCorrectionChange(VideoCorrection.Default) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun CorrectionSlider(
+    label: String,
+    testTag: String,
+    value: Float,
+    limit: CorrectionLimit,
+    onValueChange: (Float) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, color = CcrColors.PrimaryText, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.widthIn(min = 48.dp))
+        CcrSlider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = limit.min..limit.max,
+            steps = (((limit.max - limit.min) / limit.step).roundToInt() - 1).coerceAtLeast(0),
+            modifier = Modifier
+                .weight(1f)
+                .heightIn(min = 48.dp)
+                .testTag(testTag),
+        )
+        Text(
+            text = String.format(Locale.US, "%.2f", value),
+            color = CcrColors.PrimaryText,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.widthIn(min = 44.dp),
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun CcrSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
+    steps: Int = 0,
+    onValueChangeFinished: (() -> Unit)? = null,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val colors = SliderDefaults.colors(
+        thumbColor = CcrColors.ActiveBlue,
+        activeTrackColor = CcrColors.ActiveBlue,
+        inactiveTrackColor = CcrColors.StrongBorder,
+        disabledThumbColor = CcrColors.MutedText,
+        disabledActiveTrackColor = CcrColors.Border,
+        disabledInactiveTrackColor = CcrColors.Border,
+    )
+    Slider(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        enabled = enabled,
+        valueRange = valueRange,
+        steps = steps,
+        onValueChangeFinished = onValueChangeFinished,
+        colors = colors,
+        interactionSource = interactionSource,
+        thumb = {
+            SliderDefaults.Thumb(
+                interactionSource = interactionSource,
+                modifier = Modifier.testTag("ccr-slider-thumb"),
+                colors = colors,
+                enabled = enabled,
+                thumbSize = DpSize(12.dp, 12.dp),
+            )
+        },
+        track = { sliderState ->
+            SliderDefaults.Track(
+                sliderState = sliderState,
+                modifier = Modifier
+                    .height(2.dp)
+                    .testTag("ccr-slider-track"),
+                enabled = enabled,
+                colors = colors,
+                drawStopIndicator = null,
+                drawTick = { _, _ -> },
+                thumbTrackGapSize = 0.dp,
+                trackInsideCornerSize = 1.dp,
+            )
+        },
+    )
+}
+
+@Composable
+private fun RowScope.CorrectionActionButton(
+    label: String,
+    icon: Int,
+    active: Boolean,
+    onClick: () -> Unit,
+) {
+    Button(
+        onClick = onClick,
+        shape = ControlShape,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (active) CcrColors.ActiveBlue.copy(alpha = 0.24f) else CcrColors.Control,
+            contentColor = CcrColors.PrimaryText,
+        ),
+        border = BorderStroke(1.dp, if (active) CcrColors.ActiveBlue else CcrColors.Border),
+        contentPadding = PaddingValues(horizontal = 6.dp),
+        modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 48.dp),
+    ) {
+        Icon(painterResource(icon), contentDescription = null, modifier = Modifier.size(18.dp))
+        Text(label, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp), maxLines = 1)
+    }
+}
+
+@Composable
+internal fun RowScope.OriginalCompareButton(
+    comparingOriginal: Boolean,
+    onComparingOriginalChange: (Boolean) -> Unit,
+) {
+    val currentOnChange by rememberUpdatedState(onComparingOriginalChange)
+    val previewScope = rememberCoroutineScope()
+    var accessiblePreviewJob by remember { mutableStateOf<Job?>(null) }
+    DisposableEffect(Unit) {
+        onDispose {
+            accessiblePreviewJob?.cancel()
+            currentOnChange(false)
+        }
+    }
+    Button(
+        onClick = {
+            accessiblePreviewJob?.cancel()
+            currentOnChange(true)
+            accessiblePreviewJob = previewScope.launch {
+                delay(ACCESSIBLE_ORIGINAL_PREVIEW_MS)
+                currentOnChange(false)
+            }
+        },
+        shape = ControlShape,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (comparingOriginal) CcrColors.Pressed else CcrColors.Control,
+            contentColor = CcrColors.PrimaryText,
+        ),
+        border = BorderStroke(1.dp, CcrColors.Border),
+        contentPadding = PaddingValues(horizontal = 4.dp),
+        modifier = Modifier
+            .weight(1.35f)
+            .heightIn(min = 48.dp)
+            .testTag("original-compare")
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    accessiblePreviewJob?.cancel()
+                    currentOnChange(true)
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val primary = event.changes.firstOrNull { it.id == down.id }
+                            val outside = primary == null || primary.position.isOutside(size.width, size.height)
+                            val secondPointer = event.changes.any { it.id != down.id && it.pressed }
+                            event.changes.forEach { it.consume() }
+                            if (outside || secondPointer || !primary.pressed) break
+                        }
+                    } finally {
+                        currentOnChange(false)
+                    }
+                }
+            }
+            .semantics { role = Role.Button },
+    ) {
+        Text("원본 비교", fontSize = 13.sp, maxLines = 1)
+    }
+}
+
+@Composable
+internal fun RowScope.NavigationButton(
     label: String,
     delta: Int,
     enabled: Boolean,
@@ -360,10 +923,28 @@ internal fun androidx.compose.foundation.layout.RowScope.NavigationButton(
     }
 
     Button(
-        onClick = {},
+        onClick = {
+            val generation = currentOnGestureStart()
+            try {
+                currentOnTap(delta, generation)
+            } finally {
+                currentOnGestureEnd(generation)
+            }
+        },
         enabled = enabled,
+        shape = ControlShape,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = CcrColors.Control,
+            contentColor = CcrColors.PrimaryText,
+            disabledContainerColor = CcrColors.Control,
+            disabledContentColor = CcrColors.MutedText,
+        ),
+        border = BorderStroke(1.dp, CcrColors.Border),
+        contentPadding = PaddingValues(0.dp),
         modifier = Modifier
             .weight(1f)
+            .widthIn(min = 48.dp)
+            .heightIn(min = 48.dp)
             .pointerInput(enabled, activeGesture) {
                 if (!enabled) return@pointerInput
                 coroutineScope {
@@ -405,8 +986,22 @@ internal fun androidx.compose.foundation.layout.RowScope.NavigationButton(
                 }
             },
     ) {
-        Text(label)
+        Text(label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
     }
+}
+
+internal fun displayedFrameText(state: ViewerUiState): String {
+    val total = state.metadata?.frameCount ?: return "— / —"
+    val current = state.displayedFrameIndex?.plus(1)?.coerceIn(1, total)?.toString() ?: "—"
+    return "$current / $total"
+}
+
+internal fun displayFileName(uri: Uri?): String? {
+    val raw = uri?.lastPathSegment ?: return null
+    return Uri.decode(raw)
+        .substringAfterLast(':')
+        .substringAfterLast('/')
+        .takeIf(String::isNotBlank)
 }
 
 private fun Offset.isOutside(width: Int, height: Int): Boolean =
@@ -445,60 +1040,6 @@ private class ActiveNavigationGesture {
     }
 }
 
-@Composable
-private fun DiagnosticPanel(
-    state: ViewerUiState,
-    onCopyDiagnostics: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val metadata = state.metadata
-    val frame = state.displayedFrame
-    val diagnostics = state.diagnostics
-    Column(
-        modifier = modifier
-            .heightIn(max = 180.dp)
-            .verticalScroll(rememberScrollState())
-            .padding(top = 8.dp),
-    ) {
-        Text("상태: ${state.status}${state.detail?.let { " · $it" } ?: ""}")
-        state.notice?.let { Text("안내: $it") }
-        Text("요청 프레임: ${state.requestedFrameIndex} / ${(metadata?.frameCount?.minus(1)) ?: "-"} (0-based)")
-        Text("표시 프레임: ${frame?.displayFrameIndex ?: "-"}")
-        Text("PTS: ${frame?.ptsUs ?: "-"} µs · duplicate: ${frame?.duplicateOrdinal ?: "-"}")
-        if (metadata != null) {
-            Text("영상: ${metadata.mime} · ${metadata.codedWidth}×${metadata.codedHeight} · 회전 ${metadata.rotationDegrees}°")
-            Text("디코더: ${metadata.codecComponent} · hardware=${metadata.hardwareAccelerated}")
-        }
-        Text("인덱스: ${diagnostics.indexBuildMs} ms · 디코드 출력: ${diagnostics.decodeOrdinal}")
-        Text(
-            "캐시 hit/miss: ${diagnostics.cacheHitCount}/${diagnostics.cacheMissCount} · " +
-                "미리읽기: ${diagnostics.prefetchedFrameCount} · ${diagnostics.cacheBytes} bytes",
-        )
-        Text("stale discard/before-swap: ${diagnostics.staleDiscardCount}/${diagnostics.staleBeforeSwapCount} · recreate: ${diagnostics.decoderRecreateCount}")
-        Text("swap 성공/실패/invalid: ${diagnostics.publishedSwapCount}/${diagnostics.swapFailureCount}/${diagnostics.surfaceInvalidCount}")
-        Text("publication invariant violation: ${diagnostics.publicationInvariantViolationCount}")
-        Text("full-frame readback: ${diagnostics.fullFrameReadbackCount}")
-        Text(
-            "보호/history: ${diagnostics.protectedTextureCount} · " +
-                "${diagnostics.backwardHistoryDepth}/${diagnostics.backwardHistoryCapacity} · " +
-                "hit ${diagnostics.backwardHistoryHitCount}",
-        )
-        Text(
-            "reverse window: ready ${diagnostics.reverseWindowReadyCount} · " +
-                "hit ${diagnostics.reverseWindowHitCount} · build ${diagnostics.reverseWindowBuildCount} · " +
-                "fallback ${diagnostics.reverseWindowFallbackCount} · " +
-                "stall ${diagnostics.reverseWindowRefillStallCount}/" +
-                "${diagnostics.reverseWindowRefillStallMaxUs}us",
-        )
-        Text("복구: ${state.restoreState} · surface=${state.surfaceAvailable}")
-        Text("세대: ${state.activeFileGeneration ?: "-"}/${state.activeRequestGeneration ?: "-"}")
-        if (BuildConfig.DEBUG) {
-            Button(
-                onClick = onCopyDiagnostics,
-                modifier = Modifier.testTag("copy-sanitized-diagnostics"),
-            ) {
-                Text("진단 복사")
-            }
-        }
-    }
-}
+private val ControlShape = RoundedCornerShape(5.dp)
+
+private const val ACCESSIBLE_ORIGINAL_PREVIEW_MS = 1_000L

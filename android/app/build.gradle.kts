@@ -77,6 +77,13 @@ android {
     }
 
     buildTypes {
+        create("redesign") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".redesign"
+            isDebuggable = true
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("debug")
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("internalRelease")
@@ -110,6 +117,9 @@ android {
     sourceSets.getByName("debug").assets.directories.addAll(
         listOf("../testdata", "../.generated/testdata"),
     )
+    sourceSets.getByName("redesign").assets.directories.addAll(
+        listOf("../testdata", "../.generated/testdata"),
+    )
     sourceSets.getByName("benchmark").assets.directories.addAll(
         listOf("../testdata", "../.generated/testdata"),
     )
@@ -123,7 +133,6 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material3.adaptive:adaptive:1.2.0")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")

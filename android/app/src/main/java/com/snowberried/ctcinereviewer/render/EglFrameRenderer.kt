@@ -209,9 +209,14 @@ class EglFrameRenderer(
     private var sourceWidth = 1
     private var sourceHeight = 1
     private var canonicalGeometry = CanonicalGeometry(1, 1, 1, 1, 0)
+    private var viewTransform: ViewTransform? = null
+    private var viewTransformListener: ((ViewTransform) -> Unit)? = null
+    private var correction = VideoCorrection.Default
+    private var comparingOriginal = false
     private var fileGeneration = 0L
     private var pendingTarget: PendingTarget? = null
     private var lastPublishedKey: FrameKey? = null
+    private var lastPublishedTexture: CachedTexture? = null
     private val prefetchedKeys = mutableSetOf<FrameKey>()
     private val reverseWindowKeys = mutableSetOf<FrameKey>()
     private val stagedReverseWindowKeys = mutableSetOf<FrameKey>()
@@ -243,15 +248,25 @@ class EglFrameRenderer(
             backwardHistory.remove(key)
             reverseWindowKeys.remove(key)
             stagedReverseWindowKeys.remove(key)
-            if (lastPublishedKey == key) lastPublishedKey = null
+            if (lastPublishedKey == key) {
+                lastPublishedKey = null
+                lastPublishedTexture = null
+            }
         },
     )
 
-    fun attachWindow(surfaceLeaseId: Long, surface: Surface, width: Int, height: Int) {
+    internal fun attachWindow(
+        surfaceLeaseId: Long,
+        surface: Surface,
+        width: Int,
+        height: Int,
+        onViewTransformChanged: (ViewTransform) -> Unit,
+    ) {
         if (unavailable()) return
         handler.post {
             if (unavailable()) return@post
             if (!surfaceLeases.attach(surfaceLeaseId)) return@post
+            viewTransformListener = onViewTransformChanged
             releaseGl()
             try {
                 initializeGl(surface, width, height)
@@ -262,14 +277,29 @@ class EglFrameRenderer(
         }
     }
 
-    fun resize(surfaceLeaseId: Long, width: Int, height: Int) {
-        if (unavailable()) return
-        handler.post {
-            if (unavailable()) return@post
-            if (!surfaceLeases.isActive(surfaceLeaseId)) return@post
-            windowWidth = width.coerceAtLeast(1)
-            windowHeight = height.coerceAtLeast(1)
+    fun resize(
+        surfaceLeaseId: Long,
+        width: Int,
+        height: Int,
+        onRedrawn: (() -> Unit)? = null,
+    ) {
+        if (unavailable()) {
+            onRedrawn?.invoke()
+            return
         }
+        val posted = handler.post {
+            try {
+                if (unavailable()) return@post
+                if (!surfaceLeases.isActive(surfaceLeaseId)) return@post
+                windowWidth = width.coerceAtLeast(1)
+                windowHeight = height.coerceAtLeast(1)
+                resizeViewTransformForWindow()
+                redrawLastPublishedTexture()
+            } finally {
+                onRedrawn?.invoke()
+            }
+        }
+        if (!posted) onRedrawn?.invoke()
     }
 
     fun detachWindow(surfaceLeaseId: Long) {
@@ -278,6 +308,53 @@ class EglFrameRenderer(
             if (unavailable()) return@post
             if (!surfaceLeases.detach(surfaceLeaseId)) return@post
             releaseGl()
+            viewTransformListener = null
+        }
+    }
+
+    internal fun zoomBy(scaleFactor: Float, anchorX: Float, anchorY: Float) {
+        if (unavailable()) return
+        handler.post {
+            val current = viewTransform ?: return@post
+            val next = zoomViewTransform(current, scaleFactor, ViewPoint(anchorX, anchorY))
+            if (next == current) return@post
+            viewTransform = next
+            notifyViewTransform()
+            redrawLastPublishedTexture()
+        }
+    }
+
+    internal fun panBy(deltaX: Float, deltaY: Float) {
+        if (unavailable()) return
+        handler.post {
+            val current = viewTransform ?: return@post
+            val next = panViewTransform(current, ViewPoint(deltaX, deltaY))
+            if (next == current) return@post
+            viewTransform = next
+            notifyViewTransform()
+            redrawLastPublishedTexture()
+        }
+    }
+
+    internal fun resetView() {
+        if (unavailable()) return
+        handler.post {
+            val current = viewTransform ?: return@post
+            val next = fitViewTransform(current)
+            if (next == current) return@post
+            viewTransform = next
+            notifyViewTransform()
+            redrawLastPublishedTexture()
+        }
+    }
+
+    internal fun updateCorrection(next: VideoCorrection, compareOriginal: Boolean) {
+        if (unavailable()) return
+        handler.post {
+            if (correction == next && comparingOriginal == compareOriginal) return@post
+            correction = next
+            comparingOriginal = compareOriginal
+            redrawLastPublishedTexture()
         }
     }
 
@@ -306,6 +383,10 @@ class EglFrameRenderer(
             backwardHistory.reset()
             rebindDecoderInputSurface()
             lastPublishedKey = null
+            lastPublishedTexture = null
+            viewTransform = null
+            correction = VideoCorrection.Default
+            comparingOriginal = false
             prefetchedKeys.clear()
             reverseWindowKeys.clear()
             stagedReverseWindowKeys.clear()
@@ -345,9 +426,18 @@ class EglFrameRenderer(
                 if (display != EGL14.EGL_NO_DISPLAY) cache.clear()
                 backwardHistory.reset()
                 lastPublishedKey = null
+                lastPublishedTexture = null
                 sourceWidth = nextSourceWidth
                 sourceHeight = nextSourceHeight
                 canonicalGeometry = nextGeometry
+            }
+            val imageSize = ViewSize(nextGeometry.width.toFloat(), nextGeometry.height.toFloat())
+            if (viewTransform?.imageSize != imageSize) {
+                viewTransform = createViewTransform(
+                    imageSize = imageSize,
+                    viewportSize = ViewSize(windowWidth.toFloat(), windowHeight.toFloat()),
+                )
+                notifyViewTransform()
             }
             surfaceTexture?.setDefaultBufferSize(sourceWidth, sourceHeight)
             latch.countDown()
@@ -378,7 +468,7 @@ class EglFrameRenderer(
                 if (backwardHistoryHit) backwardHistoryHitCount += 1
                 if (prefetched && prefetchedKeys.remove(request.expectedKey)) prefetchCacheHitCount += 1
                 if (reverseWindow && reverseWindowKeys.remove(request.expectedKey)) reverseWindowHitCount += 1
-                recordPublished(request.expectedKey)
+                recordPublished(request.expectedKey, cached)
             }
             renderAckFor(
                 event,
@@ -494,7 +584,7 @@ class EglFrameRenderer(
                     if (backwardHistoryHit) backwardHistoryHitCount += 1
                     if (prefetched && prefetchedKeys.remove(key)) prefetchCacheHitCount += 1
                     if (reverseWindowHit && reverseWindowKeys.remove(key)) reverseWindowHitCount += 1
-                    recordPublished(key)
+                    recordPublished(key, cached)
                     completeCachedNavigation(
                         ticket,
                         CachedNavigationOutcome.Published(input, event, source, cached.imageProbe),
@@ -833,6 +923,7 @@ class EglFrameRenderer(
 
         windowWidth = width.coerceAtLeast(1)
         windowHeight = height.coerceAtLeast(1)
+        resizeViewTransformForWindow()
         createGeometry()
         oesProgram = createProgram(VERTEX_SHADER, OES_FRAGMENT_SHADER)
         textureProgram = createProgram(VERTEX_SHADER, TEXTURE_FRAGMENT_SHADER)
@@ -983,7 +1074,9 @@ class EglFrameRenderer(
                     drawTextureToWindow(cached)
                 }
                 val event = publish(publicationRequest, timestampNs)
-                if (event.result == PublicationResult.PUBLISHED) recordPublished(handle.expectedKey)
+                if (event.result == PublicationResult.PUBLISHED) {
+                    recordPublished(handle.expectedKey, cached.takeIf { retained })
+                }
                 handle.complete(renderAckFor(event, imageProbe = cached.imageProbe))
                 if (!retained) releaseCachedTexture(cached)
             },
@@ -1147,18 +1240,32 @@ class EglFrameRenderer(
         GLES30.glViewport(0, 0, windowWidth, windowHeight)
         GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-        val frameAspect = texture.width.toFloat() / texture.height.toFloat()
-        val windowAspect = windowWidth.toFloat() / windowHeight.toFloat()
-        val scaleX: Float
-        val scaleY: Float
-        if (frameAspect > windowAspect) {
-            scaleX = 1f
-            scaleY = windowAspect / frameAspect
-        } else {
-            scaleX = frameAspect / windowAspect
-            scaleY = 1f
-        }
-        draw(textureProgram, GLES30.GL_TEXTURE_2D, texture.textureId, IDENTITY_MATRIX, scaleX, scaleY, 0)
+        val transform = viewTransform
+            ?.takeIf { it.imageSize == ViewSize(texture.width.toFloat(), texture.height.toFloat()) }
+            ?: createViewTransform(
+                imageSize = ViewSize(texture.width.toFloat(), texture.height.toFloat()),
+                viewportSize = ViewSize(windowWidth.toFloat(), windowHeight.toFloat()),
+            ).also {
+                viewTransform = it
+                notifyViewTransform()
+            }
+        val placement = viewPlacement(transform)
+        val centerX = placement.left + placement.width / 2f
+        val centerY = placement.top + placement.height / 2f
+        draw(
+            program = textureProgram,
+            target = GLES30.GL_TEXTURE_2D,
+            textureId = texture.textureId,
+            matrix = IDENTITY_MATRIX,
+            scaleX = placement.width / windowWidth,
+            scaleY = placement.height / windowHeight,
+            rotationDegrees = 0,
+            offsetX = centerX * 2f / windowWidth - 1f,
+            offsetY = 1f - centerY * 2f / windowHeight,
+            textureWidth = texture.width,
+            textureHeight = texture.height,
+            applyCorrection = true,
+        )
     }
 
     private fun draw(
@@ -1169,17 +1276,66 @@ class EglFrameRenderer(
         scaleX: Float,
         scaleY: Float,
         rotationDegrees: Int,
+        offsetX: Float = 0f,
+        offsetY: Float = 0f,
+        textureWidth: Int = 1,
+        textureHeight: Int = 1,
+        applyCorrection: Boolean = false,
     ) {
         GLES30.glUseProgram(program)
         GLES30.glBindVertexArray(vertexArray)
         GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(program, "uTextureMatrix"), 1, false, matrix, 0)
         GLES30.glUniform2f(GLES30.glGetUniformLocation(program, "uScale"), scaleX, scaleY)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(program, "uOffset"), offsetX, offsetY)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uRotationDegrees"), rotationDegrees)
+        if (applyCorrection) applyCorrectionUniforms(program, textureWidth, textureHeight)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(target, textureId)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uTexture"), 0)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
         GLES30.glBindVertexArray(0)
+    }
+
+    private fun applyCorrectionUniforms(program: Int, textureWidth: Int, textureHeight: Int) {
+        val effective = if (comparingOriginal) VideoCorrection.Default else correction
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "displayLevel"), effective.level)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "displayWidth"), effective.width)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "displayGamma"), effective.gamma)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "displayInvert"), if (effective.invert) 1f else 0f)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "displaySharp"), effective.sharpAmount)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "displayBypass"), if (effective.isDefault) 1f else 0f)
+        GLES30.glUniform2f(
+            GLES30.glGetUniformLocation(program, "texelSize"),
+            1f / textureWidth.coerceAtLeast(1),
+            1f / textureHeight.coerceAtLeast(1),
+        )
+    }
+
+    private fun resizeViewTransformForWindow() {
+        val current = viewTransform ?: return
+        val next = resizeViewTransform(
+            current,
+            ViewSize(windowWidth.toFloat(), windowHeight.toFloat()),
+        )
+        viewTransform = next
+        notifyViewTransform()
+    }
+
+    private fun notifyViewTransform() {
+        viewTransform?.let { viewTransformListener?.invoke(it) }
+    }
+
+    private fun redrawLastPublishedTexture() {
+        val texture = lastPublishedTexture ?: return
+        if (
+            display == EGL14.EGL_NO_DISPLAY ||
+            eglWindowSurface == EGL14.EGL_NO_SURFACE ||
+            windowSurface?.isValid != true
+        ) return
+        runCatching {
+            drawTextureToWindow(texture)
+            EGL14.eglSwapBuffers(display, eglWindowSurface)
+        }
     }
 
     private fun createGeometry() {
@@ -1289,6 +1445,7 @@ class EglFrameRenderer(
             cache.clear()
             backwardHistory.reset()
             lastPublishedKey = null
+            lastPublishedTexture = null
             if (oesProgram != 0) GLES30.glDeleteProgram(oesProgram)
             if (textureProgram != 0) GLES30.glDeleteProgram(textureProgram)
             if (vertexBuffer != 0) GLES30.glDeleteBuffers(1, intArrayOf(vertexBuffer), 0)
@@ -1387,10 +1544,11 @@ class EglFrameRenderer(
         addAll(stagedReverseWindowKeys)
     }
 
-    private fun recordPublished(key: FrameKey) {
+    private fun recordPublished(key: FrameKey, texture: CachedTexture?) {
         val previous = lastPublishedKey?.takeIf(cache::containsKey)
         backwardHistory.recordPublished(previous, key)
         lastPublishedKey = key
+        lastPublishedTexture = texture
     }
 
     companion object {
@@ -1407,12 +1565,12 @@ class EglFrameRenderer(
             0f, 0f, 0f, 1f,
         )
 
-        private const val VERTEX_SHADER = """
-            #version 300 es
+        private const val VERTEX_SHADER = """#version 300 es
             layout(location = 0) in vec2 aPosition;
             layout(location = 1) in vec2 aTextureCoordinate;
             uniform mat4 uTextureMatrix;
             uniform vec2 uScale;
+            uniform vec2 uOffset;
             uniform int uRotationDegrees;
             out vec2 vTextureCoordinate;
             vec2 inverseClockwiseRotation(vec2 uv) {
@@ -1422,14 +1580,13 @@ class EglFrameRenderer(
               return uv;
             }
             void main() {
-              gl_Position = vec4(aPosition * uScale, 0.0, 1.0);
+              gl_Position = vec4(aPosition * uScale + uOffset, 0.0, 1.0);
               vec2 sourceCoordinate = inverseClockwiseRotation(aTextureCoordinate);
               vTextureCoordinate = (uTextureMatrix * vec4(sourceCoordinate, 0.0, 1.0)).xy;
             }
         """
 
-        private const val OES_FRAGMENT_SHADER = """
-            #version 300 es
+        private const val OES_FRAGMENT_SHADER = """#version 300 es
             #extension GL_OES_EGL_image_external_essl3 : require
             precision mediump float;
             uniform samplerExternalOES uTexture;
@@ -1438,13 +1595,47 @@ class EglFrameRenderer(
             void main() { color = texture(uTexture, vTextureCoordinate); }
         """
 
-        private const val TEXTURE_FRAGMENT_SHADER = """
-            #version 300 es
-            precision mediump float;
+        internal const val TEXTURE_FRAGMENT_SHADER = """#version 300 es
+            precision highp float;
             uniform sampler2D uTexture;
+            uniform float displayLevel;
+            uniform float displayWidth;
+            uniform float displayGamma;
+            uniform float displayInvert;
+            uniform float displaySharp;
+            uniform float displayBypass;
+            uniform vec2 texelSize;
             in vec2 vTextureCoordinate;
             out vec4 color;
-            void main() { color = texture(uTexture, vTextureCoordinate); }
+            float mappedLuma(vec2 point) {
+              vec3 rgb = texture(uTexture, point).rgb;
+              float luminance = dot(rgb, vec3(0.299, 0.587, 0.114));
+              float lower = displayLevel - displayWidth * 0.5;
+              float mapped = clamp((luminance - lower) / displayWidth, 0.0, 1.0);
+              mapped = pow(mapped, 1.0 / displayGamma);
+              return mix(mapped, 1.0 - mapped, displayInvert);
+            }
+            void main() {
+              vec3 rgb = texture(uTexture, vTextureCoordinate).rgb;
+              if (displayBypass > 0.5) {
+                color = vec4(rgb, 1.0);
+                return;
+              }
+              float originalLuma = dot(rgb, vec3(0.299, 0.587, 0.114));
+              float adjustedLuma = mappedLuma(vTextureCoordinate);
+              if (displaySharp > 0.0) {
+                float neighbors = mappedLuma(vTextureCoordinate - vec2(texelSize.x, 0.0))
+                  + mappedLuma(vTextureCoordinate + vec2(texelSize.x, 0.0))
+                  + mappedLuma(vTextureCoordinate - vec2(0.0, texelSize.y))
+                  + mappedLuma(vTextureCoordinate + vec2(0.0, texelSize.y));
+                adjustedLuma = clamp(
+                  adjustedLuma + displaySharp * 0.25 * (4.0 * adjustedLuma - neighbors),
+                  0.0,
+                  1.0
+                );
+              }
+              color = vec4(clamp(rgb + vec3(adjustedLuma - originalLuma), 0.0, 1.0), 1.0);
+            }
         """
     }
 }

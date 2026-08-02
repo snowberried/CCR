@@ -13,13 +13,13 @@ import android.view.accessibility.AccessibilityEvent
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import com.snowberried.ctcinereviewer.BuildConfig
 import com.snowberried.ctcinereviewer.CcrSpikeApp
+import com.snowberried.ctcinereviewer.CcrTheme
 import com.snowberried.ctcinereviewer.NavigationCadencePolicy
 import com.snowberried.ctcinereviewer.PublicationTailCalculator
 import com.snowberried.ctcinereviewer.PublicationTailMetrics
@@ -199,16 +199,14 @@ class BenchmarkActivity : ComponentActivity() {
         val viewport = viewer.createViewport(this)
         val composeView = ComposeView(this).apply {
             setContent {
-                MaterialTheme {
+                CcrTheme {
                     CcrSpikeApp(
                         state = viewer.uiState,
                         onOpen = viewer::openVideo,
-                        onRequest = viewer::requestFrame,
                         onNavigationGestureStart = viewer::beginNavigationGesture,
                         onNavigationStep = viewer::moveByGesture,
                         onNavigationHoldStart = viewer::startHoldTraversal,
                         onNavigationGestureEnd = viewer::endNavigationGesture,
-                        onDirectInputChange = viewer::setDirectInput,
                         onTimelineRequest = viewer::requestTimelineFraction,
                         onCancel = viewer::cancel,
                         onCopyDiagnostics = {},

@@ -43,7 +43,6 @@ data class ViewerUiState(
     val requestedFrameIndex: Int = 0,
     val displayedFrame: FrameKey? = null,
     val framePtsUs: List<Long> = emptyList(),
-    val directInput: String = "",
     val diagnostics: DecoderDiagnostics = DecoderDiagnostics(),
     val diagnosticsVisible: Boolean = BuildConfig.DEBUG,
     val notice: String? = null,
@@ -149,7 +148,7 @@ class ViewerViewModel(
         savedState[KEY_STATE_SCHEMA_VERSION] = VIEWER_STATE_SCHEMA_VERSION
     }
 
-    fun createViewport(context: Context): VideoViewport = session.createViewport(context)
+    internal fun createViewport(context: Context): VideoViewport = session.createViewport(context)
 
     fun openVideo(uri: Uri) {
         navigationGestureGate.invalidate()
@@ -186,7 +185,6 @@ class ViewerViewModel(
             requestedFrameIndex = 0,
             displayedFrame = null,
             framePtsUs = emptyList(),
-            directInput = "",
             diagnostics = DecoderDiagnostics(),
             notice = if (persisted) null else SESSION_ONLY_PERMISSION_NOTICE,
             activeFileGeneration = null,
@@ -207,6 +205,20 @@ class ViewerViewModel(
     }
 
     fun moveBy(delta: Int) {
+        moveByInternal(delta, SystemClock.elapsedRealtime())
+    }
+
+    internal fun moveByForTest(
+        delta: Int,
+        directionalInputElapsedRealtimeMs: Long,
+    ) {
+        moveByInternal(delta, directionalInputElapsedRealtimeMs)
+    }
+
+    private fun moveByInternal(
+        delta: Int,
+        directionalInputElapsedRealtimeMs: Long,
+    ) {
         val next = uiState.moveRequestedBy(delta)
         val direction = when {
             delta > 0 -> DirectionalPrefetchDirection.FORWARD
@@ -216,7 +228,7 @@ class ViewerViewModel(
         requestFrameInternal(
             frameIndex = next.requestedFrameIndex,
             prefetchPermit = direction?.let {
-                session.newDirectionalPrefetchPermit(it, SystemClock.elapsedRealtime())
+                session.newDirectionalPrefetchPermit(it, directionalInputElapsedRealtimeMs)
             },
             mode = NavigationMode.DISCRETE_TAP,
         )
@@ -251,10 +263,6 @@ class ViewerViewModel(
         holdController.end(gestureGeneration)
         session.endHoldTraversal(gestureGeneration)
         cancelScheduledHoldDrive()
-    }
-
-    fun setDirectInput(value: String) {
-        uiState = uiState.copy(directInput = value.filter(Char::isDigit))
     }
 
     fun requestTimelineFraction(fraction: Float, final: Boolean) {

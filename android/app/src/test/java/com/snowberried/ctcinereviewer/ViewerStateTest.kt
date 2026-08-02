@@ -11,6 +11,17 @@ import org.junit.Test
 
 class ViewerStateTest {
     @Test
+    fun `frame display is one based while internal boundaries stay zero based`() {
+        val first = ViewerUiState(metadata = metadata(), displayedFrame = FrameKey(0, 0, 0))
+        val last = ViewerUiState(metadata = metadata(), displayedFrame = FrameKey(11, 11_000, 0))
+
+        assertEquals("1 / 12", displayedFrameText(first))
+        assertEquals("12 / 12", displayedFrameText(last))
+        assertEquals(0, first.displayedFrameIndex)
+        assertEquals(11, last.displayedFrameIndex)
+    }
+
+    @Test
     fun `rapid moves accumulate from requested while displayed remains unchanged`() {
         val displayed = FrameKey(0, 0, 0)
         var state = ViewerUiState(metadata = metadata(), displayedFrame = displayed)

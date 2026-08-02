@@ -1,4 +1,97 @@
-# CCR v0.5.2 Design QA
+# CCR Android Portrait Redesign Design QA
+
+## Ground truth
+
+- Source visual: `C:/Users/snowb/Downloads/CCR_Android_UI_Final_Reference.png`
+- Implementation contract: `C:/Users/snowb/Downloads/CCR_Android_UI_Implementation_Brief.md`
+- Asset contract: `C:/Users/snowb/Downloads/CCR_Android_UI_Asset_Manifest.md`
+- Implementation screenshots:
+  - `android/validation/ui-redesign-screenshots/01-correction-collapsed-default.png`
+  - `android/validation/ui-redesign-screenshots/02-correction-expanded.png`
+  - `android/validation/ui-redesign-screenshots/03-correction-collapsed-adjusted.png`
+  - `android/validation/ui-redesign-screenshots/s24-01-correction-collapsed-default.png`
+  - `android/validation/ui-redesign-screenshots/s24-02-correction-expanded.png`
+  - `android/validation/ui-redesign-screenshots/s24-03-correction-collapsed-adjusted.png`
+
+## Viewport and state normalization
+
+- The source is a 1024×1536 design board containing three S24-oriented phone states, not a
+  single device framebuffer. Its small text and raw pixels are illustrative.
+- The implementation captures are 1080×1920 from an API 36 portrait emulator. Raw 1:1 pixel
+  matching is therefore not meaningful; comparison uses the brief's hierarchy, symmetry,
+  token colors, safe areas and state behavior.
+- Final physical captures are 1440×3120 from the target Galaxy S24 Ultra. They verify the
+  same three states at production density with the real status, cutout and gesture-navigation
+  areas retained.
+- Compared states are correction collapsed/default, correction expanded/default, and
+  correction adjusted then collapsed with the blue status dot.
+- The reference and all three implementation screenshots were inspected together in one
+  combined comparison input, followed by focused checks of the top bar, symmetric frame row,
+  PTS timeline, correction row/panel, video border and system-bar boundaries.
+
+## Required fidelity surfaces
+
+1. Desktop CCR navy/near-black tokens, blue accent, blue-gray borders and system sans.
+2. Supplied CCR logo, folder, inverse, reset and Fit assets plus Android overflow and matching
+   chevrons.
+3. Portrait single pane bounded by status/navigation safe drawing insets.
+4. Dominant black contain-fit video canvas, one-line filename, symmetric navigation controls
+   and display-only current/total card.
+5. Inline correction panel that reduces the viewport instead of overlaying it, and a blue
+   status dot only after adjustment.
+6. Copy/content: Korean product labels are concise, consistent with the brief, and omit
+   diagnostic/version strings from the normal viewer.
+
+## Comparison findings
+
+1. Passed — the top bar, filename, dominant video area, frame row, timeline and correction
+   hierarchy follow the selected source state and implementation brief.
+2. Passed — navigation cells are symmetric and the center card is visually flat; disabled
+   negative controls at frame 1 remain distinguishable.
+3. Passed — exact repository tokens and converted source assets are used; no image color
+   sampling, emoji, font file or pen asset was introduced.
+4. Passed — status and navigation bars remain visible, measured top/bottom insets are positive,
+   and app content does not enter those areas.
+5. Passed — expanded correction controls remain inline and internally scrollable. The shorter
+   emulator viewport clips only the panel's scroll content, as permitted by the contract.
+6. Passed — the adjusted collapsed state preserves the correction effect and shows the blue
+   status dot; the default collapsed state has no dot.
+7. Passed — the source board uses an X-ray example while the implementation uses the
+   non-identifying `burst.mp4` fixture. This intentional media difference does not alter UI
+   geometry or fidelity judgment.
+8. Passed — no actionable P0, P1 or P2 visual mismatch remains.
+9. Passed — app-specific copy matches the contracted actions and states; dynamic filename and
+   frame count are fixture data rather than design drift.
+10. Passed — the correction and timeline sliders use a 2dp visible track, 12dp round thumb and
+   no visible tick/stop marks while retaining Material Slider progress semantics. The prior
+   heavy track, vertical pill thumb and dense dot field no longer compete with the video.
+11. Passed — navigation semantic clicks execute one discrete step, while pointer press/hold
+   keeps the existing repeat cadence. Original Compare exposes a finite accessible preview on
+   semantic click and still reverts immediately on pointer up/leave/cancel.
+12. Passed — the user-confirmed action-direction chevrons show up while collapsed (expand) and
+   down while expanded (collapse); the accessibility descriptions remain “펼치기/접기”.
+
+## Comparison history
+
+- Pass 1 found a P1 Surface resize defect: expanding or collapsing the inline panel could
+  capture a black or stale-size video buffer.
+- The renderer/view bridge was corrected with `SurfaceHolder.Callback2` asynchronous redraw
+  completion so the resized Surface transaction receives a current contain-fit frame.
+- Pass 2 reran the isolated screenshot instrumentation and inspected all three captures. Video
+  content, borders, state transitions and system safe areas are correct in every state.
+- Pass 3 found the default Material slider styling and pointer-only button callbacks as the
+  largest remaining visual/accessibility drift. The slider visuals and semantic click paths
+  were corrected without changing navigation hold cadence or correction values.
+- Pass 4 ran the focused navigation/accessibility/UI-contract/screenshot set (15/15) and the
+  isolated screenshot capture (1/1). The reference and all three final captures were compared
+  together; no actionable mismatch remains.
+- Pass 5 completed physical S24 Ultra portrait/inset, navigation, timeline, correction,
+  scroll, lifecycle, pinch/pan/Fit and three-state screenshot smoke. The user confirmed all
+  interactions and the final chevron direction; no physical-device design blocker remains.
+
+Final result: passed
+
+# Historical CCR v0.5.2 Design QA
 
 ## Ground truth
 

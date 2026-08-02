@@ -96,7 +96,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-apk-pri
 - 미리읽기는 화면 draw·EGL swap·PublicationEvent를 만들지 않는다. cache/texture의 현재·peak·제거·거절·thrash와 exact-once 해제를 internal diagnostics에만 기록한다.
 - `displayedFrame`은 현재 file/request generation의 `FrameResult.Published`와 성공한 실제 EGL swap 뒤에만 바뀐다. stale, error, unsupported 결과는 표시 프레임을 바꾸지 않는다.
 - `ViewerViewModel`이 MediaCodec actor와 EGL render thread를 소유한다. Activity와 Surface가 codec을 직접 호출하지 않는다.
-- 화면 회전 시 ViewModel, URI, 마지막 requested index를 유지한다. 새 Surface에서 해당 프레임이 다시 게시되기 전에는 복구 완료로 표시하지 않는다.
+- MainActivity는 portrait로 고정한다. Activity가 재생성돼도 ViewModel, URI, 마지막 requested index를 유지하며 새 Surface에서 해당 프레임이 다시 게시되기 전에는 복구 완료로 표시하지 않는다.
 - persistable read permission을 얻은 URI만 process recreation용 `SavedStateHandle`에 보존한다. 권한이 없거나 소실되면 재선택 안내를 표시하며 source를 열지 않는다.
 - persistable grant가 없는 URI는 현재 앱 실행에서만 사용한다.
 - background 진입 시 현재 요청을 취소하고 displayed frame을 비운다. foreground와 새 Surface가 모두 준비되면 마지막 requested index를 다시 요청한다.
@@ -104,7 +104,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-apk-pri
 - Surface lease는 단조 증가한다. 이전 Activity의 늦은 destroy는 새 Surface나 새 요청을 무효화하지 않는다.
 - GL cache는 trim level 5에서 예산의 75%, 10에서 50%, 15 이상(앱 UI hidden 포함)에서 0으로 단계적으로 반환한다.
 - 실제 PTS 비례 타임라인을 사용하며 VFR 위치를 평균 FPS로 계산하지 않는다. 드래그 요청은 최신 값으로 합치고 손을 놓으면 최종 정확 프레임을 요청한다.
-- 권장 adaptive WindowSizeClass의 medium width 이상에서는 영상과 컨트롤을 좌우로 배치한다. 그보다 좁으면 위아래 단일 pane을 사용한다.
+- 최상위 화면은 portrait 단일 pane이며 `WindowInsets.safeDrawing`을 status bar, navigation bar와 display cutout의 유일한 inset 기준으로 사용한다. adaptive/two-pane/landscape 분기는 두지 않는다.
 - internal/debug에서만 `진단 복사`를 제공한다. 앱·기기·codec·frame/cache/prefetch/latency/generation과 비식별 오류 코드만 클립보드에 넣으며 URI, 파일명, 경로, 영상 hash는 포함하지 않는다.
 - internalDebug는 StrictMode로 UI thread disk read/write를 코드값으로만 기록한다. media actor나 EGL thread를 UI thread에서 기다리지 않는다.
 
@@ -237,7 +237,7 @@ Alpha 2 시점의 Gate 4A 판정은 실제 비식별 MP4 20-frame 비교와 분�
 
 ## 개인정보 및 제외 범위
 
-Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. 프로젝트 저장, DICOM/PACS, AI, cloud, 주석, 비교 보기, PNG export, 필터, zoom/pan, Play 배포는 Android 0.2.0-alpha.6 범위 밖이다. 이번 내부 사용자 합격 closure에서는 tag, merge, GitHub Release와 binary upload를 수행하지 않는다.
+Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. Android 0.2.0-alpha.6 화면에는 RGB 이후 화면 보정과 pinch zoom/pan/Fit을 포함한다. 프로젝트 저장, DICOM/PACS, AI, cloud, 펜·주석, 비교 보기, PNG export와 Play 배포는 범위 밖이다. 이번 내부 사용자 합격 closure에서는 tag, merge, GitHub Release와 binary upload를 수행하지 않는다.
 
 ## Alpha 6 자동 검증 상태와 내부 사용자 합격의 구분
 
@@ -260,3 +260,89 @@ bridge HEAD의 S24 Gate에는 사용할 수 없으므로 APK 4종을 새 clean H
 파일럿 합격이며 Play Store release-ready 또는 의료기기 검증 완료가 아니다. 구조와
 동일-artifact 자동 실행 계약은
 [ALPHA6_REVERSE_REFILL_VALIDATION.md](validation/ALPHA6_REVERSE_REFILL_VALIDATION.md)에 기록한다.
+
+## 2026-08-02 portrait UI redesign 로컬 검증
+
+이 항목은 기존 Alpha 6 S24 합격 기록을 수정하지 않고, UI redesign 작업 트리에서 새로
+수행한 로컬·에뮬레이터·S24 smoke 검증만 기록한다. 기준 branch와 HEAD는
+`main` / `126d3b709c000a94e296accabeeb5b3e98025f06`이며 version bump, tag, push,
+release와 candidate 승격은 수행하지 않았다.
+
+### 구현 범위
+
+- CCR desktop `src/styles.css` 토큰과 제공 SVG를 portrait Compose 화면에 옮겼다.
+- 파일 미선택 화면에는 로고, 제목, overflow, 파일 열기 안내만 남겼다. 파일을 열면
+  파일명, contain-fit 영상, 대칭 `-5/-1/현재·전체/+1/+5`, 실제 PTS timeline과
+  inline 화면 보정 행을 표시한다.
+- 중앙 프레임 카드는 성공한 EGL swap 뒤의 `displayedFrameIndex + 1`만 보여 주는
+  display-only 영역이다. 직접 입력, IME, jump dialog와 click semantics는 없다.
+- pinch anchor zoom, zoom 상태의 한 손가락 pan, 빈 공간 방지 clamp, viewport resize
+  clamp와 Fit reset을 desktop View Transform 의미로 구현했다.
+- level/width/gamma/sharp/invert, hold-to-original과 reset을 RGB 이후 desktop 수식으로
+  구현했다. 패널은 영상 위를 덮지 않고 내부만 scroll하며, 접어도 값과 파란 상태 점을
+  유지하고 새 파일 또는 앱 재실행 때 기본값으로 돌아간다.
+- timeline과 보정 slider는 progress semantics를 유지하면서 2dp track, 12dp 원형 thumb,
+  tick/stop 미표시로 경량화했다. 탐색 버튼의 semantic click은 한 번만 이동하고 pointer
+  long-press cadence는 유지한다. Original 비교는 semantic click에도 유한 preview를 제공한다.
+- 보정 행 chevron은 사용자가 확인한 다음 동작 방향을 따른다. 접힘 상태는 위(펼치기),
+  펼침 상태는 아래(접기)이며 접근성 설명은 “화면 보정 펼치기/접기”를 유지한다.
+- 기존 candidate package를 보존하기 위해 별도 `internalRedesign` build type을 추가했다.
+  개발 앱은 `com.snowberried.ctcinereviewer.internal.redesign`, label `CCR Redesign Dev`,
+  Android debug signer를 사용하며 기존 `internalDebug`와 candidate identity는 그대로다.
+- 펜, 자유선, S Pen, annotation model/overlay, undo/redo/clear와 비교 보기 코드는
+  추가하지 않았다.
+- `EglFrameRenderer`는 transform·보정 uniform/shader와 Surface resize redraw에만
+  확장했다. `ExactFrameSession`, frame-index 생성, publication gate, cache,
+  stale-result 폐기, Surface lease, 파일 전환·background 보호 및
+  `CompletionDrivenHoldController`/`NavigationCadencePolicy` 의미는 바꾸지 않았다.
+
+### 검증 결과
+
+- `lintInternalDebug testInternalDebugUnitTest assembleInternalDebug assembleInternalDebugAndroidTest assembleInternalBenchmark :macrobenchmark:assembleInternalBenchmark assembleInternalRedesign --offline --no-daemon`:
+  화살표 피드백 반영 후 최종 재실행 `BUILD SUCCESSFUL in 56s`, 205 tasks.
+  JVM XML 32 suites / 174 tests,
+  failure 0, error 0, skip 0.
+- lint: error 0, warning 5. 고정 portrait 관련 2건은 제품 계약상 의도적이며 나머지는
+  기존 Composable naming, data extraction rules, application icon 경고다.
+- API 36 emulator의 UI/navigation/lifecycle/shader/screenshot 선택 instrumentation:
+  `BUILD SUCCESSFUL in 1m 17s`. JUnit XML 기준 24 tests 중 pass 21, skip 3,
+  failure/error 0. 세 skip은 S24 물리 기기 전용 lifecycle/cache 검증이다.
+- 격리 screenshot instrumentation: 1/1 pass. 모든 상태에서 status/navigation bar
+  visibility와 양의 top/bottom inset을 확인했다.
+- 탐색·접근성·UI 계약·screenshot focused instrumentation: 15/15 pass. 격리 screenshot
+  instrumentation도 1/1 pass로 최종 세 상태를 다시 생성했다.
+- privacy preflight: 기존 applicationId `com.snowberried.ctcinereviewer.internal`와 개발용
+  `com.snowberried.ctcinereviewer.internal.redesign` 모두 version `0.2.0-alpha.6` / code 7,
+  forbidden permission 0.
+- signing host test: 29 passed. 실제 candidate signing preflight는 secret과 명시적
+  opt-in이 필요한 별도 경계이므로 실행하지 않았다.
+
+### 생성 APK
+
+| 역할 | 경로 | SHA-256 |
+| --- | --- | --- |
+| internal debug app | `app/build/outputs/apk/internal/debug/app-internal-debug.apk` | `ffded38ea3cae43ef7b6f8a118fc428d0a49fddc13ab511899286e66baa4005a` |
+| internal debug test | `app/build/outputs/apk/androidTest/internal/debug/app-internal-debug-androidTest.apk` | `b7f0f71da7be081c2c7e0c3d9d94e85da377a0ee422e32174322c25a199b754f` |
+| internal benchmark app | `app/build/outputs/apk/internal/benchmark/app-internal-benchmark.apk` | `b6ebc04787b64d29151c92ec159f824226159e2cbd36c1449641250ca3200af2` |
+| macrobenchmark test | `macrobenchmark/build/outputs/apk/internal/benchmark/macrobenchmark-internal-benchmark.apk` | `4b05125ad1a20eb420f6f948a57f5f1f1e965bede045cf2ab3c7d5375a0b046c` |
+| redesign dev app | `app/build/outputs/apk/internal/redesign/app-internal-redesign.apk` | `f0710f816303338b902acb5aa8e8d47a5f41058a975bbfd239681dd3fe8396cc` |
+
+### 화면 근거와 실기기 결과
+
+- `validation/ui-redesign-screenshots/01-correction-collapsed-default.png`
+- `validation/ui-redesign-screenshots/02-correction-expanded.png`
+- `validation/ui-redesign-screenshots/03-correction-collapsed-adjusted.png`
+- `validation/ui-redesign-screenshots/s24-01-correction-collapsed-default.png`
+- `validation/ui-redesign-screenshots/s24-02-correction-expanded.png`
+- `validation/ui-redesign-screenshots/s24-03-correction-collapsed-adjusted.png`
+
+S24 Ultra의 기존 `CCR Android Internal Pilot v1` 후보 서명 앱은 삭제·덮어쓰기 없이
+보존했다. 별도 `CCR Redesign Dev`를 debug signer와 suffix applicationId로 병렬 설치했다.
+S24 Ultra에서 rotation 0, app safe content `[0,129][1440,2940]`, navigation 영역
+`[0,2940][1440,3120]`을 확인했고 상태·하단 navigation·cutout 침범은 없었다.
+파일 미선택 controls 숨김, 표시 전용 frame card, `+1` 단일 이동, `+5` hold, 실제 PTS
+drag, inline 보정 panel scroll, 값 유지·reset·상태 점, Original 비교, HOT background 복귀를
+smoke했다. pinch/pan/Fit과 최종 chevron 방향(접힘 위/펼침 아래)은 사용자가 실기기에서
+정상 확인했다. 비식별 fixture와 device 임시 XML·screenshot은 검증 후 삭제했고,
+두 앱과 독립 앱 데이터는 유지했다.
+Full Stage 1, Random 250, candidate 승격과 release Gate는 이 기록에서 PASS로 판정하지 않는다.

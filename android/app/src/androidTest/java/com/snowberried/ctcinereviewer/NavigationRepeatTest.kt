@@ -12,6 +12,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -34,6 +35,16 @@ class NavigationRepeatTest {
         setButton { moves.incrementAndGet() }
 
         compose.onNodeWithText("+1").performTouchInput { click(center) }
+
+        assertEquals(1, moves.get())
+    }
+
+    @Test
+    fun semanticsClickMovesExactlyOnce() {
+        val moves = AtomicInteger()
+        setButton { moves.incrementAndGet() }
+
+        compose.onNodeWithText("+1").performClick()
 
         assertEquals(1, moves.get())
     }

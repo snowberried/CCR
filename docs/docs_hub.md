@@ -51,7 +51,7 @@
 | Android Alpha 6 Handoff | `../HANDOFF_ANDROID_ALPHA6.md` | Alpha 6 내부 사용자 합격, 제품 APK·signer·runtime 기준선과 closure 원칙 |
 | Android Internal-pilot Signing | `../android/signing/README.md` | 검증 완료된 ccr-internal-pilot-v1 공개 정책, revision 5 runner identity와 복구 절차 |
 | Android Local Sample Pilot | `../local-samples/README.md` | 실제 파일을 추적하지 않는 비식별 로컬 파일럿 manifest와 수동 체크리스트 |
-| v0.5.2 Design QA | `../design-qa.md` | 최종 시안과 1440×900·720×600 구현 비교 및 판정 |
+| Latest Design QA | `../design-qa.md` | Android portrait redesign 최신 비교·판정과 과거 v0.5.2 desktop 기록 |
 | v0.5.2 Modern Dark Handoff | `../HANDOFF_V052_MODERN_DARK.md` | 최신 UI·확대율 의미, 검증 결과, 설치본과 후속 작업 상태 |
 | v0.5.3 Handoff | `../HANDOFF_V053.md` | 버전 표시, 설정 모달, 수동 업데이트 확인과 검증된 설치본 |
 | v0.5.4 Handoff | `../HANDOFF_V054.md` | 앱·바로가기·설치 프로그램 공통 아이콘과 설치 안내 메시지 |

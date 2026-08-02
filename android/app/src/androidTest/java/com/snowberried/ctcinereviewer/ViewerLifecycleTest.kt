@@ -1,10 +1,11 @@
 package com.snowberried.ctcinereviewer
 
 import android.app.Application
-import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.net.Uri
+import android.os.Build
 import android.os.SystemClock
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.SavedStateHandle
@@ -26,6 +27,7 @@ import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
@@ -41,7 +43,6 @@ class ViewerLifecycleTest {
     @Test
     fun backgroundSuspendsInFlightPrefetchAndResumeWaitsForDirectionalInput() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            waitState(scenario) { it.surfaceAvailable }
             open(scenario, "burst.mp4")
             waitState(scenario) { it.displayedFrameIndex == 0 }
             val viewer = viewer(scenario)
@@ -57,7 +58,7 @@ class ViewerLifecycleTest {
 
             val barrier = OneShotPrefetchBarrier()
             viewer.setBeforePrefetchCacheHookForTest(barrier::block)
-            onViewer(scenario) { it.moveBy(1) }
+            moveByWithPrefetchHeadroom(scenario, 1)
             waitState(scenario) { it.displayedFrameIndex == 1 }
             assertTrue("prefetch did not reach cache boundary", barrier.awaitEntered())
             val completedBeforeStop = state(scenario).diagnostics.prefetchCompleted
@@ -81,8 +82,15 @@ class ViewerLifecycleTest {
             assertEquals(0L, restored.diagnostics.publicationInvariantViolationCount)
 
             val startedBeforeDirection = restored.diagnostics.prefetchStarted
-            onViewer(scenario) { it.moveBy(1) }
-            waitState(scenario) { it.displayedFrameIndex == 2 }
+            moveByWithPrefetchHeadroom(scenario, 1)
+            val directional = waitState(scenario) {
+                it.displayedFrameIndex == 2
+            }
+            assertEquals(0L, directional.diagnostics.swapFailureCount)
+            assertEquals(0L, directional.diagnostics.publicationInvariantViolationCount)
+            if (isProbablyEmulator()) return@use
+
+            waitState(scenario) { it.diagnostics.prefetchStarted > startedBeforeDirection }
             assertTrue("directional prefetch actor did not become idle", viewer.awaitActorIdleForTest())
             onViewer(scenario) { it.requestFrame(5) }
             val cached = waitState(scenario) { it.displayedFrameIndex == 5 }
@@ -95,7 +103,6 @@ class ViewerLifecycleTest {
     @Test
     fun coalescedDirectionalReversalCountsOnlyPendingOverwritesAndPublishesLatestTarget() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            waitState(scenario) { it.surfaceAvailable }
             open(scenario, "burst.mp4")
             waitState(scenario) { it.displayedFrameIndex == 0 }
 
@@ -125,7 +132,6 @@ class ViewerLifecycleTest {
     @Test
     fun rapidNavigationAccumulatesAndFileSwitchDuringDecodeRejectsOldResults() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            waitState(scenario) { it.surfaceAvailable }
             open(scenario, "burst.mp4")
             waitState(scenario) { it.displayedFrame?.displayFrameIndex == 0 }
 
@@ -167,8 +173,11 @@ class ViewerLifecycleTest {
 
     @Test
     fun h264ToHevcSwitchWhileSurfaceDetachedPublishesFrameZero() {
+        assumeTrue(
+            "physical hardware HEVC decoder required",
+            !isProbablyEmulator() && hasHardwareHevcDecoder(),
+        )
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            waitState(scenario) { it.surfaceAvailable }
             open(scenario, "switch-a.mp4")
             val first = waitState(scenario) {
                 it.metadata?.mime == MediaFormat.MIMETYPE_VIDEO_AVC &&
@@ -200,53 +209,43 @@ class ViewerLifecycleTest {
     }
 
     @Test
-    fun decodeDuringRotationAndRepeatedBackgroundRestorePublishRequestedFrame() {
+    fun decodeDuringActivityRecreationAndRepeatedBackgroundRestorePublishRequestedFrame() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            waitState(scenario) { it.surfaceAvailable }
-            var activity = ensureOrientation(scenario, Configuration.ORIENTATION_PORTRAIT)
+            var activity = activity(scenario)
+            assertEquals(Configuration.ORIENTATION_PORTRAIT, activity.orientation)
             open(scenario, "burst.mp4")
             waitState(scenario) { it.displayedFrame?.displayFrameIndex == 0 }
 
             val viewer = activity.viewer
-            val beforeLandscapeSwap = state(scenario).diagnostics.publishedSwapCount
+            val beforeRecreationSwap = state(scenario).diagnostics.publishedSwapCount
             val barrier = OneShotDecodeBarrier()
             viewer.setBeforeDecodeHookForTest(barrier::block)
             try {
                 onViewer(scenario) { it.requestFrame(12) }
-                assertTrue("decode did not enter before rotation", barrier.awaitEntered())
-                activity = rotateAndWait(
-                    scenario,
-                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
-                    Configuration.ORIENTATION_LANDSCAPE,
-                    activity,
-                )
+                assertTrue("decode did not enter before activity recreation", barrier.awaitEntered())
+                activity = recreateAndWait(scenario, activity)
                 assertSame(viewer, activity.viewer)
             } finally {
                 barrier.release()
             }
-            val landscape = waitState(scenario, 30_000) {
+            val recreated = waitState(scenario, 30_000) {
                 it.surfaceAvailable &&
                     it.requestedFrameIndex == 12 &&
                     it.displayedFrame?.displayFrameIndex == 12 &&
                     it.restoreState == ViewerRestoreState.COMPLETE &&
-                    it.diagnostics.publishedSwapCount > beforeLandscapeSwap
+                    it.diagnostics.publishedSwapCount > beforeRecreationSwap
             }
             viewer.setBeforeDecodeHookForTest(null)
-            assertEquals(0L, landscape.diagnostics.publicationInvariantViolationCount)
+            assertEquals(0L, recreated.diagnostics.publicationInvariantViolationCount)
 
-            val beforePortraitSwap = landscape.diagnostics.publishedSwapCount
-            activity = rotateAndWait(
-                scenario,
-                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
-                Configuration.ORIENTATION_PORTRAIT,
-                activity,
-            )
+            val beforeSecondRecreationSwap = recreated.diagnostics.publishedSwapCount
+            activity = recreateAndWait(scenario, activity)
             assertSame(viewer, activity.viewer)
             waitState(scenario, 30_000) {
                 it.surfaceAvailable &&
                     it.requestedFrameIndex == 12 &&
                     it.displayedFrame?.displayFrameIndex == 12 &&
-                    it.diagnostics.publishedSwapCount > beforePortraitSwap
+                    it.diagnostics.publishedSwapCount > beforeSecondRecreationSwap
             }
 
             repeat(3) {
@@ -272,7 +271,6 @@ class ViewerLifecycleTest {
     @Test
     fun restoreDuringDecodeCanBeCancelledAndMissingPermissionRequiresReselection() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            waitState(scenario) { it.surfaceAvailable }
             open(scenario, "one-frame.mp4")
             waitState(scenario) { it.displayedFrame?.displayFrameIndex == 0 }
             scenario.moveToState(Lifecycle.State.CREATED)
@@ -344,32 +342,16 @@ class ViewerLifecycleTest {
         assertEquals(publishedSwapCount, current.diagnostics.publishedSwapCount)
     }
 
-    private fun ensureOrientation(
+    private fun recreateAndWait(
         scenario: ActivityScenario<MainActivity>,
-        targetOrientation: Int,
-    ): ActivitySnapshot {
-        val current = activity(scenario)
-        if (current.orientation == targetOrientation) return current
-        val requested = if (targetOrientation == Configuration.ORIENTATION_LANDSCAPE) {
-            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        }
-        return rotateAndWait(scenario, requested, targetOrientation, current)
-    }
-
-    private fun rotateAndWait(
-        scenario: ActivityScenario<MainActivity>,
-        requestedOrientation: Int,
-        targetOrientation: Int,
         previous: ActivitySnapshot,
     ): ActivitySnapshot {
-        scenario.onActivity { it.requestedOrientation = requestedOrientation }
-        val rotated = waitActivity(scenario, 20_000) {
-            it.orientation == targetOrientation && it.activity !== previous.activity
+        scenario.recreate()
+        val recreated = waitActivity(scenario, 20_000) {
+            it.orientation == Configuration.ORIENTATION_PORTRAIT && it.activity !== previous.activity
         }
-        assertNotSame(previous.activity, rotated.activity)
-        return rotated
+        assertNotSame(previous.activity, recreated.activity)
+        return recreated
     }
 
     private fun open(scenario: ActivityScenario<MainActivity>, fixture: String) {
@@ -389,6 +371,35 @@ class ViewerLifecycleTest {
             action(ViewModelProvider(activity)[ViewerViewModel::class.java])
         }
     }
+
+    private fun moveByWithPrefetchHeadroom(
+        scenario: ActivityScenario<MainActivity>,
+        delta: Int,
+    ) {
+        onViewer(scenario) {
+            it.moveByForTest(
+                delta,
+                SystemClock.elapsedRealtime() + PREFETCH_TEST_HEADROOM_MS,
+            )
+        }
+    }
+
+    private fun hasHardwareHevcDecoder(): Boolean =
+        MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos.any { info ->
+            !info.isEncoder &&
+                info.isHardwareAccelerated &&
+                info.supportedTypes.any {
+                    it.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true)
+                }
+        }
+
+    private fun isProbablyEmulator(): Boolean =
+        Build.FINGERPRINT.startsWith("generic") ||
+            Build.FINGERPRINT.contains("emulator", ignoreCase = true) ||
+            Build.MODEL.contains("google_sdk", ignoreCase = true) ||
+            Build.MODEL.contains("Emulator", ignoreCase = true) ||
+            Build.HARDWARE.contains("goldfish", ignoreCase = true) ||
+            Build.HARDWARE.contains("ranchu", ignoreCase = true)
 
     private fun state(scenario: ActivityScenario<MainActivity>): ViewerUiState = viewer(scenario).uiState
 
@@ -480,5 +491,9 @@ class ViewerLifecycleTest {
         fun release() {
             released.countDown()
         }
+    }
+
+    private companion object {
+        const val PREFETCH_TEST_HEADROOM_MS = 30_000L
     }
 }

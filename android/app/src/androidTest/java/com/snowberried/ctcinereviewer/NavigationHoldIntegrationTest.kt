@@ -1,12 +1,10 @@
 package com.snowberried.ctcinereviewer
 
 import android.net.Uri
-import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.SystemClock
 import android.view.ViewConfiguration
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
-import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performTouchInput
 import androidx.lifecycle.Lifecycle
@@ -57,23 +55,23 @@ class NavigationHoldIntegrationTest {
     }
 
     @Test
-    fun orientationChangeDuringHoldStopsWithoutRequestedIndexOvershoot() {
+    fun activityRecreationDuringHoldStopsWithoutRequestedIndexOvershoot() {
         val viewer = ViewModelProvider(compose.activity)[ViewerViewModel::class.java]
         openBurst(viewer)
         val button = compose.onNodeWithText("+1")
 
         button.performTouchInput { down(center) }
         advancePastLongPress(2)
-        compose.activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        compose.activityRule.scenario.recreate()
         compose.waitUntil(timeoutMillis = 20_000) {
-            compose.onAllNodesWithTag("viewer-two-pane").fetchSemanticsNodes().isNotEmpty()
+            ViewModelProvider(compose.activity)[ViewerViewModel::class.java].uiState.surfaceAvailable
         }
-        val afterOrientationStop = viewer.uiState.requestedFrameIndex
+        val afterRecreationStop = viewer.uiState.requestedFrameIndex
         compose.mainClock.advanceTimeBy(HOLD_SETTLE_MS)
 
         assertEquals(
-            "orientation disposal allowed a stale repeat",
-            afterOrientationStop,
+            "activity recreation allowed a stale repeat",
+            afterRecreationStop,
             viewer.uiState.requestedFrameIndex,
         )
     }
@@ -430,7 +428,6 @@ class NavigationHoldIntegrationTest {
     }
 
     private fun openBurst(viewer: ViewerViewModel) {
-        compose.waitUntil(timeoutMillis = 20_000) { viewer.uiState.surfaceAvailable }
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         compose.runOnUiThread {
             viewer.openVideo(Uri.parse("content://${context.packageName}.fixture/burst.mp4"))
