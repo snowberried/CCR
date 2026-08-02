@@ -1147,11 +1147,11 @@ class BenchmarkActivity : ComponentActivity() {
         val installedAppSha256 = runCatching { sha256(File(applicationInfo.sourceDir)) }.getOrNull()
         return source.getIntExtra(EXTRA_ARTIFACT_SET_REVISION, 0) == ARTIFACT_SET_REVISION &&
             runId.matches(RUN_ID_PATTERN) &&
-            runtimeSourceSha == EXPECTED_RUNTIME_SOURCE_SHA &&
-            BuildConfig.COMMIT_SHA == EXPECTED_RUNTIME_SOURCE_SHA &&
+            runtimeSourceSha.matches(GIT_SHA_PATTERN) &&
+            runtimeSourceSha == BuildConfig.COMMIT_SHA.lowercase() &&
             harnessSourceSha.matches(GIT_SHA_PATTERN) &&
             runtimeInputsTreeSha256.matches(SHA256_PATTERN) &&
-            runtimeInputsTreeSha256 == EXPECTED_RUNTIME_INPUTS_TREE_SHA256 &&
+            runtimeInputsTreeSha256 == BuildConfig.RUNTIME_INPUTS_TREE_SHA256.lowercase() &&
             appApkSha256.matches(SHA256_PATTERN) &&
             testApkSha256.matches(SHA256_PATTERN) &&
             installedAppSha256 == appApkSha256 &&
@@ -1566,9 +1566,6 @@ class BenchmarkActivity : ComponentActivity() {
         private const val RELEASE_ACCEPTANCE_GRACE_MS = 500L
         private const val ENTRY_TRACE_COOKIE = 1L
         private const val ARTIFACT_SET_REVISION = 5
-        private const val EXPECTED_RUNTIME_SOURCE_SHA = "c98264f2a10026a908e94c961bb13e4af2d59e60"
-        private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
-            "3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468"
         private val RUN_ID_PATTERN = Regex("[A-Za-z0-9._:-]{1,80}")
         private val TRACE_IDENTITY_PATTERN = Regex("[A-Za-z0-9._:-]{1,120}")
         private val GIT_SHA_PATTERN = Regex("[0-9a-f]{40}")

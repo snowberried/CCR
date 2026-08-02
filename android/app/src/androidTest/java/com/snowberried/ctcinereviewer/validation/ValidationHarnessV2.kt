@@ -19,9 +19,6 @@ internal data class ValidationHarnessIdentity(
 )
 
 internal object ValidationHarnessV2 {
-    private const val EXPECTED_RUNTIME_SOURCE_SHA = "c98264f2a10026a908e94c961bb13e4af2d59e60"
-    private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
-        "3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468"
     private const val EXPECTED_ARTIFACT_SET_REVISION = 5
     private const val RUN_ID_LEDGER = "validation-harness-v2-run-ids.txt"
     private val shaPattern = Regex("[0-9a-f]{64}")
@@ -46,7 +43,6 @@ internal object ValidationHarnessV2 {
         require(runIdPattern.matches(runId)) { "invalid instrumentation runId" }
         val runtimeSourceSha = required("runtimeSourceSha").lowercase()
         require(sourceShaPattern.matches(runtimeSourceSha)) { "invalid runtimeSourceSha" }
-        require(runtimeSourceSha == EXPECTED_RUNTIME_SOURCE_SHA) { "runtimeSourceSha mismatch" }
         require(BuildConfig.COMMIT_SHA.lowercase() == runtimeSourceSha) {
             "instrumentation was compiled against a different runtime source"
         }
@@ -54,7 +50,7 @@ internal object ValidationHarnessV2 {
         require(sourceShaPattern.matches(harnessSourceSha)) { "invalid harnessSourceSha" }
         val runtimeInputsTreeSha256 = required("runtimeInputsTreeSha256").lowercase()
         require(shaPattern.matches(runtimeInputsTreeSha256)) { "invalid runtimeInputsTreeSha256" }
-        require(runtimeInputsTreeSha256 == EXPECTED_RUNTIME_INPUTS_TREE_SHA256) {
+        require(runtimeInputsTreeSha256 == BuildConfig.RUNTIME_INPUTS_TREE_SHA256.lowercase()) {
             "runtimeInputsTreeSha256 mismatch"
         }
         val artifactSetRevision = required("artifactSetRevision").toIntOrNull()

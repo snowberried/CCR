@@ -1207,12 +1207,9 @@ class CcrProductMacrobenchmark {
                 ?: error("Invalid instrumentation argument: $ARG_ARTIFACT_SET_REVISION"),
         )
         check(identity.runId.matches(RUN_ID_PATTERN)) { "Invalid runId" }
-        check(identity.runtimeSourceSha == EXPECTED_RUNTIME_SOURCE_SHA) { "Runtime source mismatch" }
+        check(identity.runtimeSourceSha.matches(GIT_SHA_PATTERN)) { "Invalid runtime source SHA" }
         check(identity.harnessSourceSha.matches(GIT_SHA_PATTERN)) { "Invalid harness source SHA" }
         check(identity.runtimeInputsTreeSha256.matches(SHA256_PATTERN)) { "Invalid runtime inputs tree SHA" }
-        check(identity.runtimeInputsTreeSha256 == EXPECTED_RUNTIME_INPUTS_TREE_SHA256) {
-            "Runtime inputs tree mismatch"
-        }
         check(identity.appApkSha256.matches(SHA256_PATTERN)) { "Invalid expected app APK SHA-256" }
         check(identity.testApkSha256.matches(SHA256_PATTERN)) { "Invalid expected test APK SHA-256" }
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -1326,9 +1323,6 @@ class CcrProductMacrobenchmark {
         private const val FIXTURE_1080_SWITCH_H264 = "1080p-switch-a.mp4"
         private const val FIXTURE_1080_SWITCH_HEVC = "1080p-switch-b.mp4"
         private const val ARTIFACT_SET_REVISION = 5
-        private const val EXPECTED_RUNTIME_SOURCE_SHA = "c98264f2a10026a908e94c961bb13e4af2d59e60"
-        private const val EXPECTED_RUNTIME_INPUTS_TREE_SHA256 =
-            "3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468"
         private val RUN_ID_PATTERN = Regex("[A-Za-z0-9._:-]{1,48}")
         private val GIT_SHA_PATTERN = Regex("[0-9a-f]{40}")
         private val SHA256_PATTERN = Regex("[0-9a-f]{64}")

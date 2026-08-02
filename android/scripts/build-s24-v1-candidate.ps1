@@ -18,14 +18,19 @@ function Invoke-CcrV1CandidateGradle {
   param(
     [Parameter(Mandatory = $true)][string]$AndroidRoot,
     [Parameter(Mandatory = $true)][string[]]$Arguments,
-    [Parameter(Mandatory = $true)][string]$RuntimeSourceSha
+    [Parameter(Mandatory = $true)][string]$RuntimeSourceSha,
+    [Parameter(Mandatory = $true)][string]$RuntimeInputsTreeSha256
   )
   if ($RuntimeSourceSha -cnotmatch "^[a-f0-9]{40}$") {
     throw "V1_CANDIDATE_RUNTIME_SOURCE_SHA_INVALID"
   }
+  if ($RuntimeInputsTreeSha256 -cnotmatch "^[a-f0-9]{64}$") {
+    throw "V1_CANDIDATE_RUNTIME_INPUTS_TREE_SHA_INVALID"
+  }
   $environmentNames = @(
     "CCR_ANDROID_CANDIDATE_MODE",
     "CCR_ANDROID_COMMIT_SHA",
+    "CCR_ANDROID_RUNTIME_INPUTS_TREE_SHA256",
     "CCR_ANDROID_INTERNAL_KEYSTORE_PATH",
     "CCR_ANDROID_INTERNAL_KEYSTORE_PASSWORD",
     "CCR_ANDROID_INTERNAL_KEY_ALIAS",
@@ -38,6 +43,11 @@ function Invoke-CcrV1CandidateGradle {
   try {
     [Environment]::SetEnvironmentVariable("CCR_ANDROID_CANDIDATE_MODE", "1", "Process")
     [Environment]::SetEnvironmentVariable("CCR_ANDROID_COMMIT_SHA", $RuntimeSourceSha, "Process")
+    [Environment]::SetEnvironmentVariable(
+      "CCR_ANDROID_RUNTIME_INPUTS_TREE_SHA256",
+      $RuntimeInputsTreeSha256,
+      "Process"
+    )
     foreach ($name in $environmentNames | Where-Object { $_ -like "CCR_ANDROID_INTERNAL_*" }) {
       [Environment]::SetEnvironmentVariable($name, $null, "Process")
     }
@@ -107,6 +117,31 @@ function Get-CcrV1EmbeddedRuntimeSourceSha {
   return $runtimeSourceSha
 }
 
+function Assert-CcrV1EmbeddedRuntimeInputsTreeSha256 {
+  param(
+    [Parameter(Mandatory = $true)][string]$ApkPath,
+    [Parameter(Mandatory = $true)][string]$ApkAnalyzer,
+    [Parameter(Mandatory = $true)][string]$ExpectedRuntimeInputsTreeSha256
+  )
+  if (-not (Test-Path -LiteralPath $ApkPath -PathType Leaf)) {
+    throw "V1_CANDIDATE_APK_MISSING"
+  }
+  $lines = @(& $ApkAnalyzer "dex" "code" "--class" "com.snowberried.ctcinereviewer.BuildConfig" $ApkPath 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    throw "V1_CANDIDATE_APK_RUNTIME_TREE_INSPECTION_FAILED"
+  }
+  $matches = @([regex]::Matches(
+      ($lines -join [Environment]::NewLine),
+      '(?m)^\.field public static final RUNTIME_INPUTS_TREE_SHA256:Ljava/lang/String; = "([a-f0-9]{64})"\s*$'
+    ))
+  if ($matches.Count -ne 1) {
+    throw "V1_CANDIDATE_APK_RUNTIME_TREE_PARSE_FAILED"
+  }
+  if ($matches[0].Groups[1].Value -cne $ExpectedRuntimeInputsTreeSha256) {
+    throw "V1_CANDIDATE_APK_RUNTIME_TREE_MISMATCH"
+  }
+}
+
 function Invoke-CcrS24V1CandidateBuild {
   param(
     [string]$OutputRoot,
@@ -140,7 +175,7 @@ function Invoke-CcrS24V1CandidateBuild {
   $candidateInputs = Get-CcrCandidateEnvironmentInputs
   $initScript = Join-Path $androidRoot "gradle\candidate-signing.init.gradle"
   $signingReport = Invoke-CcrV1CandidateGradle -AndroidRoot $androidRoot `
-    -RuntimeSourceSha $headSha -Arguments @(
+    -RuntimeSourceSha $headSha -RuntimeInputsTreeSha256 ([string]$runtime.runtimeInputsTreeSha256) -Arguments @(
       "--no-daemon", "--offline", "-I", $initScript, "signingReport"
     )
   if ($signingReport.exitCode -ne 0) {
@@ -156,7 +191,7 @@ function Invoke-CcrS24V1CandidateBuild {
   }
 
   $build = Invoke-CcrV1CandidateGradle -AndroidRoot $androidRoot `
-    -RuntimeSourceSha $headSha -Arguments @(
+    -RuntimeSourceSha $headSha -RuntimeInputsTreeSha256 ([string]$runtime.runtimeInputsTreeSha256) -Arguments @(
       "--no-daemon", "--offline", "-I", $initScript,
       "assembleInternalDebug",
       "assembleInternalDebugAndroidTest",
@@ -194,6 +229,10 @@ function Invoke-CcrS24V1CandidateBuild {
       -ApkPath $sourceArtifacts[$role] `
       -ApkAnalyzer $tools.ApkAnalyzer `
       -ExpectedRuntimeSourceSha $headSha
+    Assert-CcrV1EmbeddedRuntimeInputsTreeSha256 `
+      -ApkPath $sourceArtifacts[$role] `
+      -ApkAnalyzer $tools.ApkAnalyzer `
+      -ExpectedRuntimeInputsTreeSha256 ([string]$runtime.runtimeInputsTreeSha256)
   }
 
   [System.IO.Directory]::CreateDirectory($setDirectory) | Out-Null

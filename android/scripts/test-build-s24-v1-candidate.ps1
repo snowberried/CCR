@@ -35,6 +35,11 @@ Assert-CcrV1BuilderTest (
     $gradleSource -match 'versionCode\s*=\s*8\b'
 ) "version-contract"
 
+Assert-CcrV1BuilderTest (
+  $gradleSource.Contains("CCR_ANDROID_RUNTIME_INPUTS_TREE_SHA256") -and
+    $gradleSource.Contains("RUNTIME_INPUTS_TREE_SHA256")
+) "runtime-tree-build-config-contract"
+
 foreach ($required in @(
   "Assert-CcrCandidateBuildSigningReady",
   "candidate-signing.init.gradle",
@@ -44,6 +49,8 @@ foreach ($required in @(
   "Import-CcrAlpha6CandidateArtifactManifest",
   "ExpectedVersionName",
   "ExpectedVersionCode",
+  "CCR_ANDROID_RUNTIME_INPUTS_TREE_SHA256",
+  "Assert-CcrV1EmbeddedRuntimeInputsTreeSha256",
   "Assert-CcrCandidateExternalOutputRoot"
 )) {
   Assert-CcrV1BuilderTest ($source.Contains($required)) "source-contract-$required"
@@ -57,8 +64,12 @@ Assert-CcrV1BuilderThrows {
   Invoke-CcrV1CandidateGradle `
     -AndroidRoot (Join-Path $repo "android") `
     -Arguments @("help") `
-    -RuntimeSourceSha "invalid" | Out-Null
+    -RuntimeSourceSha "invalid" -RuntimeInputsTreeSha256 ("a" * 64) | Out-Null
 } "*V1_CANDIDATE_RUNTIME_SOURCE_SHA_INVALID*" "invalid-runtime-source-rejected-before-gradle"
+
+Assert-CcrV1BuilderThrows {
+  Invoke-CcrV1CandidateGradle -AndroidRoot (Join-Path $repo "android") -Arguments @("help") -RuntimeSourceSha ("a" * 40) -RuntimeInputsTreeSha256 "invalid" | Out-Null
+} "*V1_CANDIDATE_RUNTIME_INPUTS_TREE_SHA_INVALID*" "invalid-runtime-tree-rejected-before-gradle"
 
 $historicalSource = @(& git -C $repo rev-parse "HEAD^" 2>$null)
 if ($LASTEXITCODE -ne 0 -or $historicalSource.Count -ne 1) {

@@ -43,6 +43,18 @@ val escapedCommitSha = commitSha
     .replace("\\", "\\\\")
     .replace("\"", "\\\"")
 
+val runtimeInputsTreeSha256 = providers
+    .environmentVariable("CCR_ANDROID_RUNTIME_INPUTS_TREE_SHA256")
+    .orNull
+    ?.trim()
+    ?.lowercase()
+    ?: "3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468"
+require(runtimeInputsTreeSha256.matches(Regex("[a-f0-9]{64}"))) {
+    "CCR_ANDROID_RUNTIME_INPUTS_TREE_SHA256 must be a lowercase SHA-256."
+}
+val quotedRuntimeInputsTreeSha256 =
+    34.toChar() + runtimeInputsTreeSha256 + 34.toChar()
+
 android {
     namespace = "com.snowberried.ctcinereviewer"
     compileSdk = 37
@@ -54,6 +66,11 @@ android {
         versionCode = 8
         versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField(
+            "String",
+            "RUNTIME_INPUTS_TREE_SHA256",
+            quotedRuntimeInputsTreeSha256,
+        )
         buildConfigField("String", "COMMIT_SHA", "\"$escapedCommitSha\"")
     }
 
