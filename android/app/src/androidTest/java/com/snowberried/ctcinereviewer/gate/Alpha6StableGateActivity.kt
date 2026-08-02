@@ -199,10 +199,11 @@ internal class Alpha6StableGateActivity(
             publishAttemptEvidence()
 
             try {
+                val scenarioState = scenario.state
                 scenario.onActivity { current ->
                     beforeSnapshot = snapshotOnMain(
                         activity = current,
-                        scenarioState = scenario.state,
+                        scenarioState = scenarioState,
                         decoderSurfaceAvailable = decoderReadyMatches(current),
                     )
                     attemptActivity = current
@@ -228,7 +229,7 @@ internal class Alpha6StableGateActivity(
                             recordAttemptEvent("OPEN_DISPATCHED", "OPEN_FIXTURE_DISPATCHED")
                             afterOpen = snapshotOnMain(
                                 activity = current,
-                                scenarioState = scenario.state,
+                                scenarioState = scenarioState,
                                 decoderSurfaceAvailable = decoderReadyMatches(current),
                             )
                             attemptAfterOpen = afterOpen
