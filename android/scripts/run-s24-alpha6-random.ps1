@@ -5,6 +5,8 @@ param(
   [Parameter(Mandatory = $true)][string]$HarnessSourceSha,
   [Parameter(Mandatory = $true)][string]$RuntimeInputsTreeSha256,
   [Parameter(Mandatory = $true)][string]$ExpectedDebugAppSha256,
+  [string]$ExpectedVersionName = "0.2.0-alpha.6",
+  [int]$ExpectedVersionCode = 7,
   [Parameter(Mandatory = $true)][string]$OutputDirectory,
   [Parameter(Mandatory = $true)][string]$RunId,
   [ValidateRange(1, 240)][int]$MaxMinutes = 25,
@@ -622,6 +624,8 @@ $hostParameters = @{
   HarnessSourceSha = $HarnessSourceSha
   RuntimeInputsTreeSha256 = $RuntimeInputsTreeSha256
   ExpectedDebugAppSha256 = $ExpectedDebugAppSha256
+  ExpectedVersionName = $ExpectedVersionName
+  ExpectedVersionCode = $ExpectedVersionCode
   PreflightOnly = [bool]$PreflightOnly
   BuildCommandCount = 0L
   ValidationScriptPaths = $closedValidationScripts

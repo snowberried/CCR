@@ -869,6 +869,8 @@ function Invoke-CcrAlpha6CandidateDeviceHostPreflight {
     [Parameter(Mandatory = $true)][string]$HarnessSourceSha,
     [Parameter(Mandatory = $true)][string]$RuntimeInputsTreeSha256,
     [Parameter(Mandatory = $true)][string]$ExpectedDebugAppSha256,
+    [string]$ExpectedVersionName = "0.2.0-alpha.6",
+    [int]$ExpectedVersionCode = 7,
     [Parameter(Mandatory = $true)][bool]$PreflightOnly,
     [Parameter(Mandatory = $true)][long]$BuildCommandCount,
     [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$ValidationScriptPaths,
@@ -913,6 +915,8 @@ function Invoke-CcrAlpha6CandidateDeviceHostPreflight {
     -ExpectedDebugAppSha256 $ExpectedDebugAppSha256.ToLowerInvariant() `
     -ExpectedRuntimeSourceSha $RuntimeSourceSha.ToLowerInvariant() `
     -ExpectedRuntimeInputsTreeSha256 $RuntimeInputsTreeSha256.ToLowerInvariant() `
+    -ExpectedVersionName $ExpectedVersionName `
+    -ExpectedVersionCode $ExpectedVersionCode `
     -RepoRoot $repo `
     -FingerprintPath ([string]$publicIdentity.publicFingerprint.path) `
     -AndroidTools $AndroidTools `

@@ -1,8 +1,8 @@
 param(
   [string]$Apk = "$PSScriptRoot\..\app\build\outputs\apk\internal\debug\app-internal-debug.apk",
   [string]$ExpectedApplicationId = "com.snowberried.ctcinereviewer.internal",
-  [string]$ExpectedVersionName = "0.2.0-alpha.6",
-  [int]$ExpectedVersionCode = 7
+  [string]$ExpectedVersionName = "1.0.0",
+  [int]$ExpectedVersionCode = 8
 )
 
 $ErrorActionPreference = "Stop"

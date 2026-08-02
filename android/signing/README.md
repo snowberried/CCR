@@ -39,9 +39,11 @@ key 접근 검사가 모두 통과했다. 검증 증거는 저장소 밖 evidenc
 
 - 일반 `internalDebug`와 CI compile/test는 `CI_EPHEMERAL_DEBUG` 또는 일반 개발 debug다.
   S24 candidate나 보존 artifact가 아니다.
-- S24 candidate는
-  `android/scripts/build-s24-alpha6-candidate.ps1`만 사용한다.
-- candidate wrapper는 명시적 opt-in, key·공개 인증서·두 백업 preflight,
+- S24 1.0.0 candidate는
+  `android/scripts/build-s24-v1-candidate.ps1`만 사용한다.
+- `build-s24-alpha6-candidate.ps1`은 기존 Alpha 6 identity 재현 전용 historical
+  wrapper이며 1.0.0 candidate로 승격하지 않는다.
+- v1 candidate wrapper는 명시적 opt-in, key·공개 인증서·두 백업 preflight,
   `signingReport`, 네 APK signer 일치와 revision 5 manifest 검증을 모두 통과해야 한다.
 - 네 역할은 `debugApp`, `debugTest`, `benchmarkApp`, `macrobenchmarkTest`다.
 - `1ce42c1…`에서 signed candidate APK 네 개와 revision 5 artifact 세트 생성은 성공했다.
@@ -49,9 +51,9 @@ key 접근 검사가 모두 통과했다. 검증 증거는 저장소 밖 evidenc
 - active Stage 1/Random은 candidate device bridge를 통해 public policy·fingerprint·PEM
   hash와 실제 APK signer를 동일 identity로 고정한다. historical revision 4 verifier는
   유지되지만 active runner는 revision 4를 거부한다.
-- bridge commit으로 harness HEAD가 달라지므로 다음 단계는 새 final clean HEAD에서 wrapper를
-  처음부터 다시 실행해 APK 네 개와 revision 5 artifact set을 재생성하는 것이다.
-  S24 Gate와 사용자 smoothness 검증은 아직 Pending이다.
+- 1.0.0 wrapper는 최종 clean HEAD를 runtime/harness/embedded APK identity로 함께 고정하고
+  canonical runtime input tree SHA-256을 manifest에 기록한다. Full Stage 1, Random 250과
+  사용자 최종 smoke 결과는 새 1.0.0 검증 기록에서만 판정한다.
 
 사고 기록은 [SIGNING_INCIDENT_2026-07-27.md](SIGNING_INCIDENT_2026-07-27.md), 복구와
 백업 절차는 [SIGNING_RECOVERY_RUNBOOK.md](SIGNING_RECOVERY_RUNBOOK.md)를 따른다.

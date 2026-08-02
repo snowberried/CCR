@@ -1,6 +1,21 @@
-# CCR Android 0.2.0-alpha.6 Internal Viewer
+# CCR Android 1.0.0 Internal Viewer
 
-## 내부 사용자 합격 기준선
+## 1.0.0 최종 후보 계약
+
+- applicationId: `com.snowberried.ctcinereviewer.internal`
+- versionName / versionCode: `1.0.0` / `8`
+- signing lineage: `ccr-internal-pilot-v1`
+- artifact set revision: `5`
+- candidate builder: `scripts/build-s24-v1-candidate.ps1`
+
+1.0.0 후보는 현재 clean Git HEAD를 `runtimeSourceSha`, `harnessSourceSha`와 APK
+`BuildConfig.COMMIT_SHA`에 동일하게 기록한다. Android runtime 입력은
+`tools/compute-runtime-inputs-v1.mjs`의 canonical SHA-256 tree로 고정한다. candidate
+wrapper는 기존 key·공개 인증서·서로 다른 두 backup preflight, `signingReport`, 네 APK의
+동일 signer와 package/version/source identity를 모두 확인한 뒤에만 외부 artifact set을
+만든다. 기존 Alpha 6 builder와 검증 결과는 historical evidence로 유지한다.
+
+## Historical Alpha 6 내부 사용자 합격 기준선
 
 2026-07-31 KST, 사용자가 S24 Ultra의 실제 제품 화면에서 실제 CCR 영상을 사용해
 평가했고 `실제 영상 실사용에 큰 문제 없음`으로 확인했다.
@@ -68,7 +83,7 @@ correctness/performance는 실행하지 않는다.
 - Android Gradle Plugin 9.3.0
 - minSdk 34, compileSdk/targetSdk 37
 - application ID `com.snowberried.ctcinereviewer.internal`
-- versionName `0.2.0-alpha.6`, versionCode `7`
+- versionName `1.0.0`, versionCode `8`
 - `internalDebug`는 표준 Android debug key 사용
 - GitHub Release와 desktop Latest Release를 만들지 않음
 
@@ -76,7 +91,7 @@ Android SDK Platform 37.0, Build Tools 36.0.0, platform-tools가 필요하다.
 
 ```powershell
 $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
-$env:CCR_ANDROID_COMMIT_SHA = "c98264f2a10026a908e94c961bb13e4af2d59e60"
+$env:CCR_ANDROID_COMMIT_SHA = (git rev-parse HEAD)
 .\gradlew.bat --version
 node .\tools\verify-frame-accuracy.mjs
 node .\tools\verify-representative-resolution-fixtures.mjs --manifest-only
@@ -162,8 +177,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-s24-batter
 GitHub CI의 secret 없는 build도 `CI_EPHEMERAL_DEBUG`이며 candidate가 아니다.
 
 새 candidate signing lineage는 `ccr-internal-pilot-v1`, artifact set revision은 `5`다.
-candidate APK 네 개는 `build-s24-alpha6-candidate.ps1`을 통한 명시적 opt-in에서만 만들며
-다음 전용 입력을 모두 요구한다.
+1.0.0 candidate APK 네 개는 `build-s24-v1-candidate.ps1`을 통한 명시적 opt-in에서만
+만들며 다음 전용 입력을 모두 요구한다. `build-s24-alpha6-candidate.ps1`은 기존 Alpha 6
+identity 재현 전용으로 보존하며 1.0.0 후보를 만들거나 승격하는 데 사용하지 않는다.
 
 - `CCR_ANDROID_CANDIDATE_KEYSTORE_PATH`
 - `CCR_ANDROID_CANDIDATE_KEYSTORE_PASSWORD`
@@ -171,7 +187,7 @@ candidate APK 네 개는 `build-s24-alpha6-candidate.ps1`을 통한 명시적 op
 - `CCR_ANDROID_CANDIDATE_KEY_PASSWORD`
 - `CCR_ANDROID_CANDIDATE_EXPECTED_CERT_SHA256`
 
-wrapper는 `--no-daemon`과 전용 Gradle init script를 사용해 `debugApp`, `debugTest`,
+v1 wrapper는 `--no-daemon --offline`과 전용 Gradle init script를 사용해 `debugApp`, `debugTest`,
 `benchmarkApp`, `macrobenchmarkTest`에 같은 signer를 적용한다. key·공개 인증서·두
 backup preflight, `signingReport`, APK signer 일치와 revision 5 manifest 검증 중 하나라도
 실패하면 candidate를 만들지 않는다. 실제 key path·password는 tracked 파일에 기록하지
@@ -237,7 +253,7 @@ Alpha 2 시점의 Gate 4A 판정은 실제 비식별 MP4 20-frame 비교와 분�
 
 ## 개인정보 및 제외 범위
 
-Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. Android 0.2.0-alpha.6 화면에는 RGB 이후 화면 보정과 pinch zoom/pan/Fit을 포함한다. 프로젝트 저장, DICOM/PACS, AI, cloud, 펜·주석, 비교 보기, PNG export와 Play 배포는 범위 밖이다. 이번 내부 사용자 합격 closure에서는 tag, merge, GitHub Release와 binary upload를 수행하지 않는다.
+Manifest에는 INTERNET, READ_MEDIA_VIDEO, 광범위 저장소 권한이 없다. 외부 전송·analytics 의존성도 없다. Android 1.0.0 화면에는 RGB 이후 화면 보정과 pinch zoom/pan/Fit을 포함한다. 프로젝트 저장, DICOM/PACS, AI, cloud, 펜·주석, 비교 보기, PNG export와 Play 배포는 범위 밖이다. 이번 최종 후보 검증에서는 tag, merge, GitHub Release와 binary upload를 수행하지 않는다.
 
 ## Alpha 6 자동 검증 상태와 내부 사용자 합격의 구분
 

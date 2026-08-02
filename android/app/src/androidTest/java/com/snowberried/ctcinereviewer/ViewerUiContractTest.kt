@@ -47,7 +47,7 @@ class ViewerUiContractTest {
         compose.onAllNodesWithTag("correction-status-dot").assertCountEquals(0)
 
         listOf(
-            "0.2.0-alpha.6",
+            BuildConfig.VERSION_NAME,
             "Android",
             "alpha",
             "internal",

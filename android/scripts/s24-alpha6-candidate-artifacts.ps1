@@ -12,6 +12,8 @@ function Import-CcrAlpha6CandidateArtifactManifest {
     [Parameter(Mandatory = $true)][string]$ExpectedDebugAppSha256,
     [string]$ExpectedRuntimeSourceSha = "c98264f2a10026a908e94c961bb13e4af2d59e60",
     [string]$ExpectedRuntimeInputsTreeSha256 = "3c932cf766d65f6b8dca7bdb4ec0fcf5232d0373d73e07a68bedbbe02b5e9468",
+    [string]$ExpectedVersionName = "0.2.0-alpha.6",
+    [int]$ExpectedVersionCode = 7,
     [string]$RepoRoot = (Get-CcrCandidateRepoRoot),
     [string]$FingerprintPath = (Join-Path (Get-CcrCandidateSigningDirectory) "ccr-internal-pilot-v1-cert.sha256"),
     [object]$AndroidTools = $null,
@@ -41,8 +43,14 @@ function Import-CcrAlpha6CandidateArtifactManifest {
       (Get-CcrPinnedRequiredProperty $manifest "candidateSigning") -ne $true) {
     throw "CANDIDATE_MANIFEST_SIGNING_MODE_MISMATCH"
   }
-  if ($ExpectedRuntimeSourceSha -cne "c98264f2a10026a908e94c961bb13e4af2d59e60") {
-    throw "CANDIDATE_RUNTIME_SOURCE_SHA_MISMATCH"
+  if (-not (Test-CcrPinnedGitSha $ExpectedRuntimeSourceSha)) {
+    throw "CANDIDATE_RUNTIME_SOURCE_SHA_INVALID"
+  }
+  if (-not (Test-CcrPinnedSha256 $ExpectedRuntimeInputsTreeSha256)) {
+    throw "CANDIDATE_RUNTIME_INPUTS_TREE_SHA_INVALID"
+  }
+  if ([string]::IsNullOrWhiteSpace($ExpectedVersionName) -or $ExpectedVersionCode -lt 1) {
+    throw "CANDIDATE_VERSION_INVALID"
   }
   $embeddedRuntimeSourceSha = Get-CcrPinnedRequiredProperty $manifest "embeddedRuntimeSourceSha"
   foreach ($role in @("debugApp", "benchmarkApp")) {
@@ -60,8 +68,8 @@ function Import-CcrAlpha6CandidateArtifactManifest {
   $script:CcrPinnedArtifactSetRevision = $script:CcrCandidateArtifactSetRevision
   $script:CcrPinnedRuntimeSourceSha = $ExpectedRuntimeSourceSha
   $script:CcrPinnedRuntimeInputsTreeSha256 = $ExpectedRuntimeInputsTreeSha256
-  $script:CcrPinnedVersionName = "0.2.0-alpha.6"
-  $script:CcrPinnedVersionCode = 7
+  $script:CcrPinnedVersionName = $ExpectedVersionName
+  $script:CcrPinnedVersionCode = $ExpectedVersionCode
   $script:CcrPinnedDebugAppSha256 = $ExpectedDebugAppSha256
   $script:CcrPinnedSigningCertificateSha256 = $policyFingerprint
   return & $script:CcrCandidateBaseImportPinnedArtifactManifest `

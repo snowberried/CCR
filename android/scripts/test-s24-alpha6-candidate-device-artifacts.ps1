@@ -127,7 +127,11 @@ try {
       [long]$BuildCommandCount = 0L,
       [string[]]$Scripts = $closedScripts,
       [string]$ExpectedManifestSha = $null,
-      [string]$RunId = $null
+      [string]$RunId = $null,
+      [string]$ExpectedRuntimeSource = $runtimeSource,
+      [string]$ExpectedRuntimeTree = $runtimeTree,
+      [string]$ExpectedVersionName = "0.2.0-alpha.6",
+      [int]$ExpectedVersionCode = 7
     )
     $path = Join-Path $root "manifest-$([Guid]::NewGuid().ToString('N')).json"
     $sha = Write-CcrAlpha6CandidateBridgeManifest $Manifest $path
@@ -141,10 +145,12 @@ try {
       -ArtifactManifestSha256 $ExpectedManifestSha `
       -OutputDirectory (Join-Path $root "output") `
       -RunId $RunId `
-      -RuntimeSourceSha $runtimeSource `
+      -RuntimeSourceSha $ExpectedRuntimeSource `
       -HarnessSourceSha $harnessSource `
-      -RuntimeInputsTreeSha256 $runtimeTree `
+      -RuntimeInputsTreeSha256 $ExpectedRuntimeTree `
       -ExpectedDebugAppSha256 $ExpectedDebugSha `
+      -ExpectedVersionName $ExpectedVersionName `
+      -ExpectedVersionCode $ExpectedVersionCode `
       -PreflightOnly $true `
       -BuildCommandCount $BuildCommandCount `
       -ValidationScriptPaths $Scripts `
@@ -180,6 +186,40 @@ try {
   Assert-CcrAlpha6CandidateBridgeTest (
     $context.BuildCommandCount -eq 0L -and (Assert-CcrAlpha6CandidateDeviceIdentityUnchanged $context)
   ) "zero-build-and-post-import-rehash"
+
+  $v1Manifest = Copy-CcrAlpha6CandidateBridgeValue $manifest
+  $v1Manifest.versionName = "1.0.0"
+  $v1Manifest.versionCode = 8
+  foreach ($artifact in @($v1Manifest.artifacts | Where-Object role -in @("debugApp", "benchmarkApp"))) {
+    $artifact.versionName = "1.0.0"
+    $artifact.versionCode = 8
+  }
+  $savedDebugIdentity = $identities.debugApp
+  $savedBenchmarkIdentity = $identities.benchmarkApp
+  try {
+    $identities.debugApp = Copy-CcrAlpha6CandidateBridgeValue $savedDebugIdentity
+    $identities.benchmarkApp = Copy-CcrAlpha6CandidateBridgeValue $savedBenchmarkIdentity
+    $identities.debugApp.versionName = "1.0.0"
+    $identities.debugApp.versionCode = 8
+    $identities.benchmarkApp.versionName = "1.0.0"
+    $identities.benchmarkApp.versionCode = 8
+    $v1Context = Invoke-CcrAlpha6CandidateBridgeTestPreflight `
+      -Manifest $v1Manifest `
+      -RunId "bridge-v1-positive" `
+      -ExpectedVersionName "1.0.0" `
+      -ExpectedVersionCode 8
+    Assert-CcrAlpha6CandidateBridgeTest (
+      [string]$v1Context.ArtifactSet.Manifest.versionName -ceq "1.0.0" -and
+        [int]$v1Context.ArtifactSet.Manifest.versionCode -eq 8 -and
+        $script:CcrPinnedVersionName -ceq "1.0.0" -and
+        $script:CcrPinnedVersionCode -eq 8
+    ) "v1-explicit-version-contract"
+  } finally {
+    $identities.debugApp = $savedDebugIdentity
+    $identities.benchmarkApp = $savedBenchmarkIdentity
+    $script:CcrPinnedVersionName = "0.2.0-alpha.6"
+    $script:CcrPinnedVersionCode = 7
+  }
 
   $fixtureRecords = @($script:CcrAlpha6FixtureOpenRequiredFixtures | ForEach-Object {
     $fixtureName = [string]$_
