@@ -362,3 +362,85 @@ smoke했다. pinch/pan/Fit과 최종 chevron 방향(접힘 위/펼침 아래)은
 정상 확인했다. 비식별 fixture와 device 임시 XML·screenshot은 검증 후 삭제했고,
 두 앱과 독립 앱 데이터는 유지했다.
 Full Stage 1, Random 250, candidate 승격과 release Gate는 이 기록에서 PASS로 판정하지 않는다.
+
+## 2026-08-03 Android 1.0.0 서명 후보 검증
+
+`PARTIAL — IMMUTABLE_REPRESENTATIVE_FIXTURE_CACHE_MISSING`
+
+이번 결과는 위 Alpha 6 및 portrait UI redesign 기록을 수정하지 않는 별도 1.0.0 후보
+검증이다. 시작 branch는 `main`, 최종 후보 source는
+`aa75f44023473ea1e16c47e3132dbd5d83a549b9`이며 versionName/versionCode는
+`1.0.0` / `8`이다. candidate signing lineage는 기존
+`ccr-internal-pilot-v1`을 유지했고 일반 debug APK를 승격하지 않았다.
+
+### 후보 아티팩트
+
+- artifact set:
+  `C:\Users\snowb\Documents\CCR-Artifacts\CCR-Android-1.0.0-aa75f44-20260803-023901`
+- manifest:
+  `C:\Users\snowb\Documents\CCR-Artifacts\CCR-Android-1.0.0-aa75f44-20260803-023901\artifact-manifest-v5.json`
+- manifest SHA-256:
+  `76f164c1286fbe9e4ed5558b2124ba34398ea812fe49e2f87d4d6d25cc1815fa`
+- runtime/harness source:
+  `aa75f44023473ea1e16c47e3132dbd5d83a549b9`
+- runtime inputs tree SHA-256:
+  `9060666cf1fe2f885155662db05ab2c09da52a47a6222518fab39f485ce78b12`
+
+| 역할 | SHA-256 |
+| --- | --- |
+| debug app | `884f4d0f89ca46291c3ea359ad7c7672800b953c97d423f53fa7ce053dd095a5` |
+| debug test | `6cd89ab5a52203d4c43d98c6d7cc48a29d95ff1ba612a2929670d6c56f8e4082` |
+| benchmark app | `8fa6b80e74dda6220a2fb1c6626ee6fc4704d0f446754cf4deababb9b54619d8` |
+| macrobenchmark test | `59028e57186cc06ad0f06576b36dfcb9b02ae6721275eac61f1d83f5949c421e` |
+
+candidate wrapper는 private 입력을 기록하지 않고 key·두 backup·공개 policy,
+`signingReport`, package/version/source/tree와 APK 네 개의 동일 signer를 검증한 뒤
+revision 5 artifact set을 만들었다. S24의 기존 package는 삭제하지 않고 같은 signer의
+versionCode 8 APK로 `install -r` 업데이트했다. 앱 데이터와 signing lineage를 유지했으며
+push, tag, release와 binary upload는 수행하지 않았다.
+
+### host 및 S24 결과
+
+- v1 candidate builder host 17, signing host 29, candidate device bridge 55,
+  Stage 1 host 188, Random host 24 검사는 모두 PASS다.
+- `lintInternalDebug testInternalDebugUnitTest assembleInternalDebug
+  assembleInternalDebugAndroidTest assembleInternalBenchmark
+  :macrobenchmark:assembleInternalBenchmark`는 `BUILD SUCCESSFUL in 1m 13s`,
+  167 tasks다. JVM은 174 tests, failure/error/skip 0이다.
+- lint는 error 0, warning 5이고 APK privacy preflight는 forbidden permission 0이다.
+- standalone source-contract 실행은 Windows watchdog argv 직렬화 문제로 두 번
+  시작하지 못했으므로 PASS로 기록하지 않는다. Gradle gate와 candidate source/tree/APK
+  identity 검증은 별도로 통과했다.
+- S24에서 identity smoke, 17-fixture open smoke, device settings, settings settle와
+  render-open smoke가 PASS했다. 이어 기존 17-fixture exact Gate도 PASS했고 mismatch,
+  write-open, swap failure, surface invalid와 publication invariant violation은 0이다.
+- 다음 representative-resolution exact 단계는
+  `representative-resolution/720p-h264-bframes.json`이 APK에 없어 fail-closed로
+  중단됐다. correctness 전체와 performance를 PASS로 판정하지 않는다.
+- Random 250은 화면이 Dozing이던 첫 시도에서 Surface 생성 전에 중단됐다. 사용자가
+  화면을 열고 `Awake`를 확인한 fresh run은 Surface를 통과했지만 같은 representative
+  fixture 부재로 정확성 첫 fixture에서 중단됐다. exact 250/250과 performance 250은
+  실행되지 않았고 두 fresh run 모두 cleanup failure 0이다.
+- 사용자는 같은 S24에서 portrait/inset, frame tap/hold, 실제 PTS timeline,
+  보정 panel과 값 유지·reset·Original 비교, zoom/pan/Fit 및 chevron 방향을 확인했고
+  현재 사용 경험을 만족스럽다고 판정했다. 세 상태 S24 screenshot은
+  `validation/ui-redesign-screenshots/s24-01-correction-collapsed-default.png`,
+  `s24-02-correction-expanded.png`,
+  `s24-03-correction-collapsed-adjusted.png`에 유지한다.
+
+### Pending gate와 재개 조건
+
+필요한 exact cache key는
+`ccr-representative-resolution-v1-ada531a0ccebaafebe49accb3065bebc7c3d2cea31e7b669a5e6975420d4dafb`다.
+저장소 generated 경로, 로컬 CCR 작업공간·검증·아티팩트 폴더, Downloads/Desktop와
+연결된 GitHub Actions cache에서 exact key를 찾지 못했다. 이 노트북의 FFmpeg는 고정
+버전과 일치하지만 `nvidia-smi`가 없고 고정 RTX 4080 SUPER/NVENC host가 아니므로
+임의 재생성과 lock 갱신은 금지한다.
+
+신뢰할 수 있는 immutable cache를 exact key로 복원한 뒤 full fixture verifier를
+통과시키고, 같은 clean source에서 APK 네 개를 다시 candidate 서명해야 한다. 그 새
+artifact set으로 Full Stage 1과 Random 250을 처음부터 실행하기 전까지 최종 자동
+판정은 `PARTIAL`이다. 이 blocker는 decoder/navigation 제품 회귀 증거가 아니며
+`ExactFrameSession`, frame-index/publication/cache/stale-result/Surface lease와
+`ViewerViewModel` navigation/hold cadence 의미는 이번 후보 identity 및 harness 수정에서
+변경하지 않았다.
