@@ -91,34 +91,21 @@
 - 같은 blocker 또는 동일 실행 형태를 자동 재시도하지 않는다. 같은 blocker가 두 번
   발생하면 추가 시도는 사용자 승인 없이는 금지한다.
 
-## 현재 단계: v0.5.9 Configurable RAM Cache
+## 현재 상태: 프로젝트 1차 완성 및 종료
 
-- Phase 0 기획은 완료됐다.
-- 기능 기준 커밋 `ae70761a098ce69cc47228881d3be08c348f0fd1`의 decoder/cache/navigation, View Transform, annotation, export와 crosshair 의미는 동결한다.
-- `HANDOFF_PHASE5.md`, `docs/19_PHASE5_LINKED_DUAL_VIEW.md`, `docs/20_V051_UI_POLISH.md`, `docs/21_FRAME_NAVIGATION_LAYOUT.md`와 `docs/22_V052_MODERN_DARK_PROFESSIONAL.md`를 먼저 읽고 기능 동결과 UI 배치 계약을 확인한다.
-- v0.5.2에서 Modern Dark Professional 시각 체계, 제공 SVG, 시각적 타임라인, 조정·정보 탭 패널(기본 조정)과 3:1:3 대칭 프레임 탐색을 적용했다. 동영상 자동 재생과 오디오는 사용자 결정으로 계속 제외한다.
-- Phase 1 기술 스파이크와 Phase 2 최소 실사용 뷰어 범위는 승인됐고 완료됐다.
-- 파일 열기, Canvas 표시, 정확한 프레임 탐색, 상태·진단 표시와 방향성 RAM cache를 구현했다.
-- FFmpeg는 Phase 1B에서 승인된 BtbN Windows x64 LGPL shared 고정 자산만 사용하며 `scripts/setup-ffmpeg.ps1`의 checksum 검증을 거쳐 로컬 배치한다.
-- Phase 2.1 RGBA rollback cache 예산은 72MiB, 목표 최소 5·최대 61프레임이다. 대표 영상은 순방향 20/40, 역방향 40/20, 교대 30/30을 사용한다.
-- Zoom/Pan/Fit/Fullscreen, MP4 Video Display, 세션 전용 프레임 주석과 PNG/clipboard 내보내기를 구현했다. 자동 재생, 프로젝트 저장, DICOM과 PACS는 구현하지 않는다.
-- 전체 I420 cache, 제한 block LRU와 WebGL2 BT.601 limited 표시를 Phase 2.3 제품 기본 경로로 통합했다.
-- `CCR_FORCE_RGBA=1` 긴급 rollback과 기존 Phase 2.1 RGBA segment cache를 삭제하지 않는다.
-- Phase 3A View Transform은 image pixel center와 Fit 대비 1~10배 zoom을 공통 의미로 사용하며 decoder/cache와 결합하지 않는다.
-- Phase 3B preset은 화면 픽셀 기반 candidate이며 실제 HU 값이나 진단 보장을 뜻하지 않는다.
-- Phase 3B 승인 후 Ctrl+wheel 10%p step과 Pan/Zoom/Fit/100% 세로 도구 막대를 추가했다. 좌클릭 tool과 우클릭 Level/Width는 단일 pointer 소유권으로 분리한다.
-- Phase 4A 주석 geometry는 원본 image pixel 좌표이며 프로젝트 저장 없이 세션 RAM에만 유지한다.
-- Phase 4B-1은 실제 displayed frame snapshot만 저장하며 OS/window screenshot, temp preview와 decoder/cache 재실행을 사용하지 않는다.
-- Phase 5 비교 뷰의 두 pane는 같은 `frameIndex`, fingerprint와 decoded pixels를 공유한다. View Transform, Video Display, persistent tool과 임시 pointer/Original 상태만 pane별 독립이다.
-- linked crosshair는 기존 Phase 3A image↔viewport 변환을 재사용하는 image pixel correspondence이며 DICOM spatial registration이 아니다.
-- decoder/cache/navigation/annotation store/timeline은 각각 하나만 유지하고 export는 active pane 기준이다.
-- 실제 사용 피드백과 별도 사용자 승인 전 프로젝트 저장, JPEG 또는 clip/batch 내보내기로 범위를 넓히지 않는다. 개인정보 마스킹은 현재 제품 범위에서 제외한다.
-- Phase 2.3 NSIS 패키징, unpacked/privacy/checksum 검증, 실제 설치와 재설치를 완료했다.
-- 실제 설치 앱에서 Sample A~K, full cache, 직접 입력, Home/End, 휠, 파일 전환과 RGBA rollback을 검증했다.
-- v0.5.8은 5프레임 정·역방향 전체 이동 foreground 재디코드 0을 실사용 확인해 안정판으로 확정하고 공개 Release로 배포했다.
-- v0.5.9은 PC 전체 RAM 구간별 2/4/6/8GiB 수동 cache 상한을 제공하며, 파일 open 시 실제 상한을 현재 여유 RAM의 50% 이내로 제한한다. 기본값은 기존 자동 최대 2GiB다.
-- 실제 Explorer drag/drop, Windows 제거 등록 확인과 사용자 파일럿 피드백은 남아 있다.
-- 설치 UI 세부 항목과 동일 버전 덮어쓰기는 추후 통합 QA로 이월했으며 Phase 2.3 완료를 막지 않는다.
+- 사용자는 2026-08-03 KST에 Windows v0.5.9와 Android 내부용 v1.0.0을 현재 합의 범위의 완성본으로 결정했다.
+- 새 작업자는 `docs/29_PROJECT_COMPLETION_GUIDE.md`, `README.md`, 대상 플랫폼 README와 `docs/docs_hub.md`를 먼저 읽는다.
+- 단계별 임시 `HANDOFF_*.md`는 최종 안내서와 정식 `docs/`에 유효 결론을 통합한 뒤 제거했다. 삭제된 handoff를 복원하거나 현재 기준으로 인용하지 않는다.
+- Windows v0.5.9은 기준 commit `92f26ddb3fcbfd125986cf85f21560fb9a5655b2`, tag `v0.5.9`의 공개 안정판이다.
+- 데스크톱 기능 기준 `ae70761a098ce69cc47228881d3be08c348f0fd1`의 decoder/cache/navigation, View Transform, annotation, export와 crosshair 의미를 검증 없이 바꾸지 않는다.
+- 데스크톱은 I420 full/LRU와 WebGL2가 기본이며 `CCR_FORCE_RGBA=1`의 72MiB RGBA rollback을 유지한다.
+- Android v1.0.0은 `com.snowberried.ctcinereviewer.internal`, versionCode 8, `ccr-internal-pilot-v1` 서명의 S24 내부 사용자 합격 안정판이다.
+- Android 최종 runtime source는 `f4d2ec16e555d938380b46f422ed3f9c9ea32b94`이며 제품 판정은 `PASS — ANDROID_1_0_0_INTERNAL_USER_ACCEPTED`다.
+- Android `ExactFrameSession`, frame-index/publication/cache/stale-result, Surface lease와 `ViewerViewModel` navigation/hold cadence 의미는 동결한다.
+- Android 대표 해상도 Full Stage 1과 Random 250은 `DEFERRED — REPRESENTATIVE_RESOLUTION_AUTOMATION`이며 PASS로 바꾸지 않는다.
+- 자동 재생·오디오, 프로젝트 저장, DICOM/PACS, AI와 cloud는 두 제품의 현재 범위가 아니다.
+- Android 1.0에는 landscape, 비교 보기, 펜·주석, 직접 frame 입력, export와 Play 배포가 없다.
+- 실제 재현 가능한 제품 결함 또는 사용자가 범위·성공 기준을 명시적으로 승인한 다음 버전 외에는 새 제품 작업을 시작하지 않는다.
 
 ## 단계별 개발 규칙
 

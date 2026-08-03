@@ -1,111 +1,91 @@
-# Docs Hub
+# CCR Docs Hub
 
-프로젝트 문서를 빠르게 찾기 위한 인덱스이다. 새 문서 파일을 만들거나 문서 위치를 바꾸면 이 파일을 함께 갱신한다.
+CT Cine Reviewer 문서 인덱스다. 프로젝트는 2026-08-03 KST에 Windows v0.5.9와 Android
+내부용 v1.0.0을 기준으로 1차 완성·종료됐다. 새 문서를 추가하거나 삭제·이동하면 이
+인덱스를 같은 작업에서 갱신한다.
 
-## 상위 문서
-
-| 문서 | 위치 | 용도 |
-| --- | --- | --- |
-| 프로젝트 개요 | `../README.md` | CT Cine Reviewer 명칭, 현재 단계, v0.1 범위와 제외 범위 |
-| Latest Project Handoff | `../HANDOFF_V059.md` | v0.5.9 PC RAM 기반 수동 cache 상한과 설치 검증 상태 |
-| Phase 1 Handoff | `../HANDOFF_PHASE1.md` | Phase 1~2 구현 과정과 이전 기준선 |
-| 프로젝트 작업 지침 | `../AGENTS.md` | 중요한 결정 전 사용자 확인, 의료·보안 경계, 단계별 검증 원칙 |
-
-## 기획 문서
+## 처음 읽을 문서
 
 | 문서 | 위치 | 용도 |
 | --- | --- | --- |
-| Project Charter | `00_PROJECT_CHARTER.md` | 문제, 사용자, 목표, 비목표, 한계와 성공 정의 |
-| Product Requirements | `01_PRODUCT_REQUIREMENTS.md` | P0/P1/P2 요구사항, 사용자 흐름, 조작, 오류, 성능 목표 |
-| Architecture Options | `02_ARCHITECTURE_OPTIONS.md` | 기술 후보 비교, 1순위 제안과 위험 |
-| Technical Spike Plan | `03_TECHNICAL_SPIKE_PLAN.md` | 대표 MP4 분석, 프레임·PTS·캐시 검증 계획과 합격 기준 |
-| Data and State Model | `04_DATA_AND_STATE_MODEL.md` | 원본 식별, 프레임, 보정, 주석, preset, 프로젝트 저장 개념 |
-| Roadmap | `05_ROADMAP.md` | Phase별 목적, 산출물, 진입·완료 조건과 사용자 승인 |
-| Decisions and Open Questions | `06_DECISIONS_AND_OPEN_QUESTIONS.md` | 확정 사항, 제안, 미결정과 Phase 1 승인 체크리스트 |
-| Phase 1 Spike Results | `07_PHASE1_SPIKE_RESULTS.md` | Phase 1 scaffold, 테스트, 실제 샘플 측정 결과와 남은 차단 사항 |
-| FFmpeg Distribution | `08_FFMPEG_DISTRIBUTION.md` | 고정 BtbN 자산, checksum, buildconf, 라이선스와 취득 절차 |
-| Frame Decoding and Cache | `09_FRAME_DECODING_AND_CACHE.md` | Phase 1C 프레임 전달·정확성·캐시 실측과 추천 전략 |
-| Phase 2 Minimum Viewer | `10_PHASE2_MINIMUM_VIEWER.md` | 최소 실사용 UI, 방향성 cache, 실제·합성 QA와 메모리 검사 |
-| Phase 2.1 Windows Installer Pilot | `11_PHASE2_1_WINDOWS_INSTALLER.md` | 실제 설치·제거·재설치, 경로·프로세스·네트워크 검증과 남은 항목 |
-| Phase 2.2 Continuous Scan Cache Spike | `12_CONTINUOUS_SCAN_CACHE_SPIKE.md` | 전체 I420 cache, block LRU, WebGL2, 연속 탐색과 메모리 실측 |
-| Phase 2.3 Product Cache Integration | `13_PHASE2_3_PRODUCT_CACHE_INTEGRATION.md` | 제품 mode, 색·fallback, 설치본과 내구 검증 |
-| Phase 3A View Transform Foundation | `14_PHASE3A_VIEW_TRANSFORM.md` | 좌표계, Zoom/Pan/Fit, fullscreen과 renderer 공통 transform |
-| Phase 3B Video Display Adjustment | `15_PHASE3B_VIDEO_DISPLAY.md` | MP4 Level/Width, Gamma, Inverse, Sharp, preset과 Original 비교 |
-| Post-Phase 3B Viewer Controls | `16_POST_PHASE3B_VIEWER_CONTROLS.md` | 고정 10%p zoom, PACS식 Pan/Zoom 도구와 입력 충돌 검증 |
-| Phase 4A Frame Annotation MVP | `17_PHASE4A_FRAME_ANNOTATION.md` | image pixel 주석, Undo/Redo, annotated timeline과 렌더링 회귀 |
-| Phase 4B-1 Frame Export & Clipboard | `18_PHASE4B1_FRAME_EXPORT.md` | displayed-frame snapshot, 전체/현재 보기 PNG와 OS clipboard |
-| Phase 5 Linked Dual View & Crosshair | `19_PHASE5_LINKED_DUAL_VIEW.md` | 동일 frame A/B, pane별 상태, image-space crosshair와 성능 QA |
-| v0.5.1 UI Polish | `20_V051_UI_POLISH.md` | Electron 메뉴 제거, 전역 명령 계층, 한국어 label과 반응형 QA |
-| Frame Navigation & Right Panel Tabs | `21_FRAME_NAVIGATION_LAYOUT.md` | 프레임 시간 표시, 시각적 타임라인과 조정·정보 탭 패널 |
-| v0.5.2 Modern Dark Professional | `22_V052_MODERN_DARK_PROFESSIONAL.md` | 기능 동결을 유지한 Modern Dark UI, SVG 자산, 3:1:3 탐색과 시각 QA |
-| GitHub Windows Release Automation | `23_GITHUB_RELEASE_AUTOMATION.md` | main 버전 증가 감지, 자동 태그와 Windows Latest Release 절차 |
-| Android S24 Ultra Exact-Frame Spike | `24_ANDROID_S24_EXACT_FRAME_SPIKE.md` | v0.5.9 동결 기준선, Android 환경과 Gate 0~3 정확성 범위 |
-| Android Canonical Image Coordinates | `25_ANDROID_CANONICAL_COORDINATES.md` | inclusive crop, PAR, clockwise rotation, canonical image와 EGL 물리 픽셀 계약 |
-| Android Representative Resolution Validation | `26_ANDROID_REPRESENTATIVE_RESOLUTION_VALIDATION.md` | 720p/1080p exact subset, 64 MiB cache, smoothness·내구·배터리 검증 계약 |
-| Android ReverseWindowEngine Spike | `27_ANDROID_REVERSE_WINDOW_SPIKE.md` | 이전 sync 순방향 decode, 제한 window, exact fallback과 generation 무효화 설계 |
-| Android alpha.4 Sequential Navigation | `28_ANDROID_ALPHA4_SEQUENTIAL_NAVIGATION.md` | completion-driven hold, forward sequential 정확성, S24 실측과 남은 성능 Gate |
-| Android S24 Gate 3 Evidence | `evidence/android/s24/README.md` | 비식별 Gate 3 PASS 요약, 기준 tag와 artifact/fixture checksum |
-| Android S24 Gate 3 Device Baseline | `../android/validation/device-baselines/sm-s928n-android16-2026-07-15/README.md` | 고정된 비식별 sanitized report와 재검증 가능한 checksum |
-| Android Alpha 5 Bidirectional Validation | `../android/validation/ALPHA5_BIDIRECTIONAL_VALIDATION.md` | Alpha 4 기준선, Alpha 5 구조, 동일 아티팩트와 S24 A–H 검증 계약 |
-| Android Alpha 6 Reverse Refill Validation | `../android/validation/ALPHA6_REVERSE_REFILL_VALIDATION.md` | renderer cache 게시, 자동 QA historical evidence·deferred debt와 내부 사용자 합격 기준선 |
-| Android Alpha 6 Handoff | `../HANDOFF_ANDROID_ALPHA6.md` | Alpha 6 내부 사용자 합격, 제품 APK·signer·runtime 기준선과 closure 원칙 |
-| Android Internal-pilot Signing | `../android/signing/README.md` | 검증 완료된 ccr-internal-pilot-v1 공개 정책, revision 5 runner identity와 복구 절차 |
-| Android Local Sample Pilot | `../local-samples/README.md` | 실제 파일을 추적하지 않는 비식별 로컬 파일럿 manifest와 수동 체크리스트 |
-| Latest Design QA | `../design-qa.md` | Android portrait redesign 최신 비교·판정과 과거 v0.5.2 desktop 기록 |
-| v0.5.2 Modern Dark Handoff | `../HANDOFF_V052_MODERN_DARK.md` | 최신 UI·확대율 의미, 검증 결과, 설치본과 후속 작업 상태 |
-| v0.5.3 Handoff | `../HANDOFF_V053.md` | 버전 표시, 설정 모달, 수동 업데이트 확인과 검증된 설치본 |
-| v0.5.4 Handoff | `../HANDOFF_V054.md` | 앱·바로가기·설치 프로그램 공통 아이콘과 설치 안내 메시지 |
-| v0.5.5 Handoff | `../HANDOFF_V055.md` | Electron 배포본 설치, 명시적 GitHub Release와 v0.5.4 실패 기록 |
-| v0.5.6 Handoff | `../HANDOFF_V056.md` | 프리셋 제거, 빈 화면 열기, 빠른 이동 간격과 사용자 지정 단축키 |
-| v0.5.7 Handoff | `../HANDOFF_V057.md` | 2GiB 초과 영상의 현재 위치 중심 LRU와 방향성 선읽기 |
-| v0.5.8 Handoff | `../HANDOFF_V058.md` | 8-block high-water와 최대 4-block 묶음 선읽기 |
-| v0.5.9 Handoff | `../HANDOFF_V059.md` | PC RAM 구간별 수동 cache 상한, 여유 RAM 안전 제한과 설치파일 |
-| Phase 2.2 Handoff | `../HANDOFF_PHASE2_2.md` | 최종 검증 상태와 제품 통합 전 승인 사항 |
-| Phase 2.3 Handoff | `../HANDOFF_PHASE2_3.md` | 제품 통합 최종 상태와 Phase 3 진입 조건 |
-| Phase 3A Handoff | `../HANDOFF_PHASE3A.md` | View Transform 최종 상태와 Phase 3B 진입 조건 |
-| Phase 3B Handoff | `../HANDOFF_PHASE3B.md` | Video Display 최종 상태와 preset 파일럿 조건 |
-| Phase 4A Handoff | `../HANDOFF_PHASE4A.md` | 주석 MVP 최종 상태와 후속 승인 범위 |
-| Phase 4B-1 Handoff | `../HANDOFF_PHASE4B1.md` | deterministic export 최종 상태와 후속 승인 범위 |
-| Phase 5 Handoff | `../HANDOFF_PHASE5.md` | 비교 뷰 최종 상태, 설치본과 기능 동결 후보 |
-| Project Troubleshooting | `troubleshooting.md` | CT Cine Reviewer에서만 발생하는 문제와 검증된 해결 방법 |
-| Docs Hub | `docs_hub.md` | 프로젝트 문서 목록과 위치 안내 |
+| 최종 프로젝트 안내서 | `29_PROJECT_COMPLETION_GUIDE.md` | 제품, 사용법, 구조, 빌드, 검증, 서명, 제한과 재개 절차의 최종 통합 기준 |
+| 프로젝트 개요 | `../README.md` | 처음 보는 사람을 위한 짧은 입구와 빠른 실행 |
+| 프로젝트 작업 규칙 | `../AGENTS.md` | 개인정보·의료·서명·검증·실행 안전 규칙 |
+| Android 1.0.0 | `../android/README.md` | Android runtime, UI, S24 검증과 최종 candidate 기록 |
+| Project Troubleshooting | `troubleshooting.md` | CCR 고유 영상·cache·렌더·배포 문제 해결 기록 |
 
-## 현재 단계
+문서가 충돌하면 `AGENTS.md`의 안전 규칙, 이 최종 안내서, 대상 플랫폼 README, 더 나중
+번호의 구현·검증 문서, 초기 기획 문서 순으로 해석한다. 초기 기획에는 구현되지 않은
+후보 기능도 있으므로 현재 제품 설명으로 단독 사용하지 않는다.
 
-- Phase 0 기획은 완료됐다.
-- Phase 1 기술 스파이크와 Phase 2 최소 실사용 뷰어를 완료했다.
-- Phase 2.1 NSIS 패키징, unpacked smoke test와 실제 설치·제거·재설치를 완료했다.
-- 실제 Explorer drag/drop, Windows 제거 등록 확인과 사용자 파일럿 피드백은 남아 있다.
-- Phase 2.2 연속 탐색·대용량 RAM cache 기술 스파이크의 구현·실샘플·30분 내구 검증과 문서화를 완료했다.
-- Phase 2.3에서 검증된 I420 cache를 제품 기본 경로로 통합하고 NSIS·실제 설치 앱 검증을 완료했다.
-- Phase 3A View Transform과 Phase 3B 플랫폼 중립 Video Display를 통합하고 설치 검증을 완료했다.
-- Phase 3B 승인 후 고정 10%p zoom과 PACS식 Pan/Zoom 도구 막대를 추가하고 WebGL/RGBA 회귀를 완료했다.
-- I420 full/LRU는 기본 자동 최대 2GiB이며, v0.5.9부터 PC RAM 구간에 따라 2/4/6/8GiB 수동 상한을 제공한다. 초과 영상의 LRU는 현재 위치 중심 warmup과 8-block high-water·최대 4-block 묶음 선읽기를 사용한다. 72MiB 방향성 cache는 RGBA rollback으로 유지한다.
-- Phase 4A 세션 전용 주석과 annotated timeline을 구현하고 WebGL/RGBA·cached navigation 회귀를 완료했다.
-- Phase 4B-1 displayed-frame PNG 저장과 clipboard 복사를 구현하고 양 renderer·privacy 회귀를 완료했다.
-- Phase 5에서 같은 frame/pixels를 공유하는 View A/B 비교 뷰와 image-space linked crosshair를 구현했다.
-- v0.5.1에서 기능 의미를 유지한 채 Electron 기본 메뉴, toolbar 계층과 한국어 표시 명칭을 정리했다.
-- 프레임 시간 표시와 시각적 타임라인, 기본 조정 상태의 조정·정보 탭 패널을 추가했다. 동영상 자동 재생은 사용자 결정으로 폐기했다.
-- v0.5.2에서 Modern Dark Professional 리디자인, 제공 SVG 아이콘과 3:1:3 대칭 프레임 탐색을 적용했다.
-- 확대율 셀은 원본 픽셀 기준 현재 `%`를 표시하고 Fit·50~200% 선택과 실제 배율 10%p step을 제공한다.
-- v0.5.3에서 상단 버전 표시, 조정 패널의 구분선 UI와 독립 설정창·수동 업데이트 확인을 추가하고 NSIS 설치본을 검증했다.
-- v0.5.4에서 앱·바탕화면 바로가기·설치/제거 프로그램의 아이콘을 통일하고 설치 시작 안내 페이지를 추가했다.
-- `main`에서 앱 버전이 증가하면 Windows 설치본과 업데이트 메타데이터를 검증한 뒤 태그와 GitHub Latest Release를 자동 생성한다.
-- v0.5.5에서 깨끗한 GitHub Windows 러너의 Electron 배포본 설치와 명시적 publish 경로를 보완했다.
-- v0.5.6에서 화면 보정 프리셋을 제거하고 빈 화면 파일 열기, 빠른 이동 간격과 사용자 지정 단축키를 추가했다.
-- v0.5.7에서 2GiB 초과 영상의 LRU를 현재 위치 중심 warmup과 최대 4-block 방향성 선읽기로 보완했다.
-- v0.5.8에서 5프레임 연속 이동 중 남은 foreground 재디코드를 줄이기 위해 최대 4-block 단일-process refill을 추가했다.
-- v0.5.9에서 PC 전체 RAM에 맞는 수동 cache 상한과 파일 open 시 여유 RAM 50% 안전 제한을 추가했다.
-- Android S24 Ultra 정확 프레임 스파이크는 Samsung `SM-S928N`에서 17개 합성 골든, duplicate PTS, hardware H.264/HEVC, burst와 A→B 전환을 통과해 Gate 3 `PASS`로 확정했다.
-- Android `0.2.0-alpha.6`은 2026-07-31 KST에 S24 Ultra 실제 제품 화면과 실제 CCR 영상
-  실사용에서 큰 문제가 없음을 확인해
-  `PASS — ANDROID_ALPHA6_INTERNAL_USER_ACCEPTED`로 내부 파일럿 합격했다. Full Stage 1,
-  Random 250과 GateActivity/Surface harness 문제는 자동 PASS가 아닌
-  `DEFERRED_AUTOMATION_QA_DEBT`이며 내부 파일럿을 차단하지 않는다.
-- 사용자 승인 전 프로젝트 저장, 마스크와 DICOM/PACS를 시작하지 않는다.
+## 기획과 초기 기술 결정
 
-## 갱신 규칙
+| 문서 | 위치 | 용도 |
+| --- | --- | --- |
+| Project Charter | `00_PROJECT_CHARTER.md` | 최초 문제, 사용자, 목표, 비목표와 의료적 한계 |
+| Product Requirements | `01_PRODUCT_REQUIREMENTS.md` | 초기 P0/P1/P2 후보와 사용자 흐름 |
+| Architecture Options | `02_ARCHITECTURE_OPTIONS.md` | Electron/Tauri/Qt/.NET 비교와 Electron 선택 근거 |
+| Technical Spike Plan | `03_TECHNICAL_SPIKE_PLAN.md` | MP4 분석, 프레임·PTS·cache 검증 계획 |
+| Data and State Model | `04_DATA_AND_STATE_MODEL.md` | frame, display, view, annotation과 수명 개념 |
+| Roadmap | `05_ROADMAP.md` | 과거 Phase별 목적과 완료 조건 |
+| Decisions and Open Questions | `06_DECISIONS_AND_OPEN_QUESTIONS.md` | 당시 결정과 미결정 기록; 현재 상태는 최종 안내서 우선 |
 
-- 새 문서를 추가하면 위 표에 문서 이름, 위치, 용도를 기록한다.
-- 문서가 삭제되거나 이동하면 이 인덱스도 같은 작업에서 수정한다.
-- 중요한 결정이나 운영 원칙은 먼저 `../AGENTS.md`에 맞는지 확인한다.
+## Windows 데스크톱 구현과 검증
+
+| 문서 | 위치 | 용도 |
+| --- | --- | --- |
+| Phase 1 Spike Results | `07_PHASE1_SPIKE_RESULTS.md` | scaffold, ffprobe와 실제 sample 초기 측정 |
+| FFmpeg Distribution | `08_FFMPEG_DISTRIBUTION.md` | 고정 BtbN LGPL 자산, checksum과 라이선스 |
+| Frame Decoding and Cache | `09_FRAME_DECODING_AND_CACHE.md` | 정확 프레임 전달과 초기 cache 전략 |
+| Phase 2 Minimum Viewer | `10_PHASE2_MINIMUM_VIEWER.md` | 최소 UI, 방향성 RGBA cache와 QA |
+| Windows Installer Pilot | `11_PHASE2_1_WINDOWS_INSTALLER.md` | NSIS 설치·제거·재설치와 privacy 검증 |
+| Continuous Scan Cache Spike | `12_CONTINUOUS_SCAN_CACHE_SPIKE.md` | I420 full cache, block LRU와 WebGL2 spike |
+| Product Cache Integration | `13_PHASE2_3_PRODUCT_CACHE_INTEGRATION.md` | I420 기본 경로와 RGBA rollback 통합 |
+| View Transform | `14_PHASE3A_VIEW_TRANSFORM.md` | image 좌표, Zoom/Pan/Fit와 fullscreen |
+| Video Display | `15_PHASE3B_VIDEO_DISPLAY.md` | 화면 픽셀 보정과 WebGL/RGBA parity |
+| Viewer Controls | `16_POST_PHASE3B_VIEWER_CONTROLS.md` | 10%p zoom, Pan/Zoom 도구와 입력 소유권 |
+| Annotation MVP | `17_PHASE4A_FRAME_ANNOTATION.md` | image-pixel 주석, Undo/Redo와 timeline |
+| Frame Export | `18_PHASE4B1_FRAME_EXPORT.md` | displayed-frame PNG와 clipboard snapshot |
+| Linked Dual View | `19_PHASE5_LINKED_DUAL_VIEW.md` | 동일 frame A/B와 image-space crosshair |
+| v0.5.1 UI Polish | `20_V051_UI_POLISH.md` | 명령 계층, 한국어 label과 반응형 QA |
+| Navigation Layout | `21_FRAME_NAVIGATION_LAYOUT.md` | PTS timeline, 대칭 탐색과 조정/정보 panel |
+| Modern Dark UI | `22_V052_MODERN_DARK_PROFESSIONAL.md` | 최종 데스크톱 시각 체계와 자산 |
+| Windows Release Automation | `23_GITHUB_RELEASE_AUTOMATION.md` | 버전 증가 main push의 tag·Release 절차 |
+
+## Android 설계와 검증
+
+| 문서 | 위치 | 용도 |
+| --- | --- | --- |
+| S24 Exact-Frame Spike | `24_ANDROID_S24_EXACT_FRAME_SPIKE.md` | 17개 fixture와 Gate 0~3 정확성 기준선 |
+| Canonical Coordinates | `25_ANDROID_CANONICAL_COORDINATES.md` | crop, PAR, rotation과 EGL 물리 pixel 계약 |
+| Representative Resolution | `26_ANDROID_REPRESENTATIVE_RESOLUTION_VALIDATION.md` | 720p/1080p exact/cache/smoothness 검증 계약 |
+| Reverse Window Spike | `27_ANDROID_REVERSE_WINDOW_SPIKE.md` | 역방향 window, exact fallback과 generation |
+| Sequential Navigation | `28_ANDROID_ALPHA4_SEQUENTIAL_NAVIGATION.md` | completion-driven hold와 forward sequential |
+| Android 제품 README | `../android/README.md` | 1.0.0 최종 상태와 과거 Alpha 검증 구분 |
+| Alpha 5 Validation | `../android/validation/ALPHA5_BIDIRECTIONAL_VALIDATION.md` | bidirectional 구조와 S24 검증 |
+| Alpha 6 Validation | `../android/validation/ALPHA6_REVERSE_REFILL_VALIDATION.md` | reverse refill, historical failure와 deferred debt |
+| S24 Gate 3 Evidence | `evidence/android/s24/README.md` | 비식별 Gate 3 PASS 요약 |
+| S24 Device Baseline | `../android/validation/device-baselines/sm-s928n-android16-2026-07-15/README.md` | sanitized device report와 checksum |
+| Android Signing | `../android/signing/README.md` | `ccr-internal-pilot-v1` 공개 정책과 candidate 경계 |
+| Signing Recovery | `../android/signing/SIGNING_RECOVERY_RUNBOOK.md` | key 손실·복구와 새 lineage 절차 |
+| Signing Incident | `../android/signing/SIGNING_INCIDENT_2026-07-27.md` | 과거 debug signing 문제의 historical evidence |
+
+## 샘플·디자인·지원 문서
+
+| 문서 | 위치 | 용도 |
+| --- | --- | --- |
+| Local Sample Pilot | `../local-samples/README.md` | 실제 파일을 추적하지 않는 비식별 검증 규칙 |
+| Android Frame Accuracy Fixtures | `../android/testdata/frame-accuracy/README.md` | 합성 정확성 fixture 계약 |
+| Representative Fixtures | `../android/testdata/representative-resolution/README.md` | 외부 exact cache와 lock 계약 |
+| Latest Design QA | `../design-qa.md` | Android portrait redesign과 데스크톱 시각 QA |
+| Docs Hub | `docs_hub.md` | 현재 문서 인덱스 |
+
+## 최종 상태 요약
+
+- Windows v0.5.9은 공개 Latest Release 안정판이다.
+- Android v1.0.0은 S24 Ultra 내부 사용자 합격 안정판이다.
+- Android 대표 해상도 Full Stage 1과 Random 250은 `DEFERRED`이며 PASS가 아니다.
+- 원본 MP4, 환자 식별정보, 실제 파일명·경로와 private signing secret은 Git에 없다.
+- DICOM/PACS, AI, cloud, autoplay/audio와 프로젝트 저장은 현재 범위가 아니다.
+- 임시 `HANDOFF_*.md` 18개는 유효 결론을 최종 안내서와 정식 문서에 통합한 뒤 제거했다.
+- 새 제품 작업은 재현 가능한 결함 또는 명시적으로 승인된 다음 버전 범위에서만 시작한다.

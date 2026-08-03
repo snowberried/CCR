@@ -1,72 +1,88 @@
 # CT Cine Reviewer
 
-**CCR — CT 동영상 프레임 검토 및 주석 도구**
+**CCR — CT cine MP4를 정확한 프레임 단위로 검토하는 완전 로컬 보조 뷰어**
 
-- 프로젝트 식별자: `ct-cine-reviewer`
+> 프로젝트 상태: **1차 완성 및 종료** (`2026-08-03 KST`)
 
-카카오톡 등으로 전달받은 CT cine 동영상을 Windows PC에서 프레임 단위로 검토하고, 화면 표시를 보정하며, 주석을 붙여 공유하기 위한 완전 로컬 보조 뷰어 프로젝트이다.
+프로젝트를 처음 보는 사람은 먼저
+[최종 프로젝트 안내서](docs/29_PROJECT_COMPLETION_GUIDE.md)를 읽으면 된다. 제품 목적,
+Windows와 Android의 차이, 사용법, 코드 구조, 빌드, 검증, 서명, 제한과 재개 절차를 한
+문서에 정리했다.
 
-> 이 프로젝트는 의료기기나 공식 진단·PACS 프로그램이 아니며, 원본 PACS/DICOM 판독을 대체하지 않는다.
+CCR은 의료기기나 공식 진단·PACS·DICOM 프로그램이 아니다. 원본 MP4에서 사라진 HU와
+의료 정보를 복원하지 않으며 정식 판독 환경을 대체하지 않는다.
 
-## 현재 단계
+## 완성된 제품
 
-Phase 2.3 I420 제품 cache부터 Phase 4B-1 PNG/clipboard까지의 기준선 위에 Phase 5 **비교 보기**를 통합했다. 왼쪽 영역과 오른쪽 영역은 항상 같은 영상의 동일한 현재 프레임을 공유하고, Zoom/Pan과 화면 보정은 영역별로 독립적이다. 연결 십자선은 DICOM registration이 아니라 같은 image pixel 좌표를 두 transform 사이에서 대응시킨다. v0.5.2는 이 기능 기준선을 유지한 채 Modern Dark Professional UI, 시각적 타임라인, 조정·정보 탭 패널과 대칭 프레임 탐색을 적용한다. 상세 내용은 [Phase 5](docs/19_PHASE5_LINKED_DUAL_VIEW.md), [v0.5.1 UI Polish](docs/20_V051_UI_POLISH.md), [Frame Navigation & Right Panel](docs/21_FRAME_NAVIGATION_LAYOUT.md)과 [v0.5.2 Modern Dark Professional](docs/22_V052_MODERN_DARK_PROFESSIONAL.md)에서 확인한다.
+| 제품 | 상태 | 주요 용도 |
+| --- | --- | --- |
+| Windows desktop `v0.5.9` | 공개 안정판 | 정확 프레임 탐색, Zoom/Pan, 화면 보정, 비교 보기, 주석, PNG/clipboard |
+| Android `v1.0.0` | S24 내부 사용자 합격 | portrait 단일 영상, `-5/-1/+1/+5`, PTS timeline, pinch/pan/Fit, 화면 보정 |
 
-- 실제 로컬 샘플은 Git에 포함하지 않으며 컴퓨터별 `local-samples/`에서 확인함
-- Electron/React/TypeScript 최소 scaffold 작성됨
-- 데스크톱·모바일 공용 영상 분석 모델, 프레임 검증 규칙과 `VideoProbeProvider` 포트 작성됨
-- 고정 BtbN LGPL shared FFmpeg/ffprobe 취득·checksum·라이선스 기록 절차 작성됨
-- `FfmpegCliProbeProvider` 실제 실행, timeout·취소·출력 제한과 비식별 Sample A 분석 완료
-- 실제 비식별 샘플 세 개에서 프레임·PTS·픽셀 fingerprint 정확성 검증 완료
-- FFmpeg stdout RGBA rawvideo와 61프레임 RAM 구간 캐시를 Phase 2 기본안으로 결정
-- 전체 raw RAM, 전체 PNG 디스크와 181프레임 RAM 캐시는 실측 결과 기본안에서 제외
-- 상단·빈 화면 클릭 파일 선택, 기본 `Ctrl+O`, MP4 drag/drop과 세션 전환 구현
-- Canvas 원본 비율 표시와 UI 1 기반 프레임 탐색 구현
-- 72MiB 예산 기반 최대 61프레임 방향성 RAM cache 구현
-- Phase 2.2 격리 경로에서 전체 I420 RAM cache, 제한 block LRU와 RGBA fallback 검증
-- 실제 11개 제품 경로에서 첫 I420 p95 131.8ms, 전체 cache p95 1.321초, cache 탐색 p95 0.327ms
-- WebGL2 BT.601 limited 색 정확성 통과와 실제 Electron 30초 press-and-hold 로딩 0회 검증
-- Phase 2.3 제품 기본 mode는 I420 full/LRU이며, 2GiB 초과 영상의 LRU는 현재 위치 중심 warmup과 8-block 방향성 범위·최대 4-block 묶음 선읽기를 사용하고 안전하지 않은 색·layout은 RGBA fallback
-- `CCR_FORCE_RGBA=1`에서 기존 Phase 2.1 RGBA 경로로 즉시 rollback 가능
-- Phase 2.3 설치본에서 실제 A~K full cache, 순·역 30초 hold, 직접 입력·Home/End·휠과 종료 정리 검증 완료
-- Phase 3A Fit 대비 1~10배 Zoom, cursor anchor, pointer Pan, Electron fullscreen과 renderer 공통 transform 구현
-- Phase 3B 밝기/명암, 감마, 반전, 선명도와 Original hold compare 구현
-- 고정 10%p Ctrl+wheel, 상단 Zoom/화면 맞춤/100% 명령과 왼쪽 Pan/Zoom 도구 막대 구현
-- 프레임별 Arrow/Text/Ellipse/Rectangle 주석, 선택·이동·resize·삭제와 전역 Undo/Redo 구현
-- 픽셀 열 집계 annotated timeline과 WebGL/RGBA 공통 SVG overlay 구현
-- 확정 Video Display와 선택적 주석을 포함한 전체 프레임/현재 보기 PNG 저장·clipboard 복사 구현
-- 동일 frame/pixels를 공유하는 왼쪽/오른쪽 영역 비교 보기, 영역별 독립 View/Display/tool과 image-space 연결 십자선 구현
-- `MM:SS.mmm / MM:SS.mmm` 시간 표시와 진행 구간·marker·playhead가 있는 프레임 타임라인 구현
-- 오른쪽 화면/주석/내보내기 조정 탭과 영상/진단 정보 탭 통합(기본 조정)
-- 첫·빠른 이전 N·이전 1 / 현재 프레임 / 다음 1·빠른 다음 N·마지막의 3:1:3 대칭 탐색과 2~999프레임 빠른 이동 간격 설정 구현
-- 파일·프레임·화면·표시 보정 단축키의 변경·해제·충돌 검증과 로컬 저장 구현(주석 편집키·Esc·입력키는 고정)
-- 사용자가 확인·승인하는 GitHub Release 업데이트 다운로드, 현재 사용자용 자동 설치와 앱 재실행 구현
-- `main`의 앱 버전 증가 push에서 검증 후 태그와 Windows Latest Release를 자동 생성
-- v0.5.7에서 2GiB 초과 영상의 LRU background 전체 순회를 제거하고 현재 위치 중심 방향성 선읽기를 적용
-- v0.5.8에서 5프레임 연속 이동을 위해 선읽기 low/high-water와 최대 4-block 묶음 decode를 적용
-- v0.5.9에서 PC 전체 RAM에 따라 2/4/6/8GiB 수동 cache 상한을 제한적으로 제공하고 파일 open 시 여유 RAM의 50% 이내로 다시 제한
-- Sample A/B/C와 합성 HEVC·1080p/60fps·VFR·B-frame·회전 metadata QA 완료
-- 실행: `npm start`
-- Windows 패키지 생성: `npm run package:win`
-- 세부 결과는 [Phase 2 Minimum Viewer](docs/10_PHASE2_MINIMUM_VIEWER.md)에서 확인한다.
+Windows 공개 설치본은
+[GitHub v0.5.9 Release](https://github.com/snowberried/CCR/releases/tag/v0.5.9)에서 받을 수
+있다. Android 1.0.0은 Play Store 배포본이 아니라 검증된 내부 파일럿 서명 앱이다.
 
-## v0.1 범위
+## 핵심 원칙
 
-- MP4 중심의 동영상 파일 열기와 정확한 프레임 인덱스 탐색
-- 확대·축소, Pan, 화면 맞춤과 동일 프레임 비교 뷰
-- 밝기/명암, 감마, 반전, 선명도 등 화면 픽셀 기반 표시 보정
-- 화살표·텍스트·기본 도형 주석
-- 원본·보정·주석 포함 프레임을 PNG로 저장·복사
-- 영상 검토 기능은 인터넷, 로그인, 텔레메트리 없이 완전 로컬 동작
+- 내부 0 기반 `frameIndex`와 실제 PTS를 구분한다.
+- VFR 프레임 위치를 평균 FPS로 추정하지 않는다.
+- 원본 영상은 읽기 전용이며 재인코딩하거나 수정하지 않는다.
+- 영상·파일명·경로와 사용 기록을 외부로 전송하지 않는다.
+- MP4 밝기·명암 보정은 화면 픽셀 연산이며 DICOM HU window가 아니다.
+- 오래된 요청, 이전 파일과 이전 Surface 결과를 화면에 게시하지 않는다.
 
-## v0.1 제외 범위
+## 빠른 개발 시작
 
-- DICOM 폴더/ZIP 및 실제 HU 기반 Window Center/Width
-- HU·거리·면적 측정
-- PACS 또는 DICOMweb 연동
-- AI 판독, 클라우드 동기화, 사용자 계정, 백그라운드 자동 확인·강제 업데이트
-- 서로 다른 프레임·영상 비교, registration, 개인정보 마스킹, 프로젝트 저장, JPEG/clip/batch export와 자동 재생
+### Windows desktop
 
-## 문서 안내
+```powershell
+npm.cmd install
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ffmpeg.ps1
+npm.cmd test
+npm.cmd run build
+npm.cmd start
+```
 
-전체 기획 문서는 [Docs Hub](docs/docs_hub.md)에서 찾을 수 있다. 아직 확정되지 않은 선택은 [Decisions and Open Questions](docs/06_DECISIONS_AND_OPEN_QUESTIONS.md)에 모아 둔다.
+설치 파일 생성:
+
+```powershell
+npm.cmd run package:win
+npm.cmd run verify:package
+```
+
+### Android
+
+JDK 17, Android SDK Platform 37, Build Tools 36.0.0과 platform-tools가 필요하다.
+
+```powershell
+cd android
+$env:ANDROID_HOME = Join-Path $env:LOCALAPPDATA 'Android\Sdk'
+$env:CCR_ANDROID_COMMIT_SHA = (git rev-parse HEAD)
+.\gradlew.bat lintInternalDebug testInternalDebugUnitTest `
+  assembleInternalDebug assembleInternalDebugAndroidTest `
+  assembleInternalBenchmark :macrobenchmark:assembleInternalBenchmark
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\verify-apk-privacy.ps1
+```
+
+일반 debug APK는 장기 S24 candidate가 아니다. Android 서명 정책은
+[android/signing/README.md](android/signing/README.md)를 따른다.
+
+## 문서
+
+- [최종 프로젝트 안내서](docs/29_PROJECT_COMPLETION_GUIDE.md)
+- [전체 Docs Hub](docs/docs_hub.md)
+- [Android 1.0.0 안내와 최종 검증](android/README.md)
+- [프로젝트 작업 규칙](AGENTS.md)
+- [프로젝트 troubleshooting](docs/troubleshooting.md)
+
+단계별 설계와 검증 근거는 `docs/00`~`docs/28`, Android 검증 기록은
+`android/validation/`에 보존한다. 과거 임시 `HANDOFF_*.md` 문서는 최종 안내서와 정식
+문서에 내용을 통합한 뒤 제거했다.
+
+## 프로젝트 재개 조건
+
+현재는 종료 상태다. 실제 사용 중 재현 가능한 결함을 수정하거나 사용자가 다음 버전의
+범위와 성공 기준을 명시적으로 승인할 때만 새 제품 작업을 시작한다. 작업 전에는
+`AGENTS.md`와 최종 안내서를 읽고 branch, HEAD와 미커밋 변경을 먼저 확인한다.
