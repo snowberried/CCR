@@ -436,7 +436,7 @@ push, tag, release와 binary upload는 수행하지 않았다.
   `s24-02-correction-expanded.png`,
   `s24-03-correction-collapsed-adjusted.png`에 유지한다.
 
-### 최종 브랜딩 후보 (S24 갱신 전)
+### 최종 브랜딩 후보 (S24 확인 완료)
 
 선행 `aa75f44` 후보는 S24 제품 동작 승인 evidence로 보존하지만 launcher icon이 없는
 artifact이므로 최종 설치·배포 대상에서는 대체한다. 정식 앱 이름과 adaptive/round/themed
@@ -476,8 +476,15 @@ launcher icon을 추가한 최종 브랜딩 후보 source는
   error 0, warning 5다.
 - `aa75f44..f4d2ec1` 변경 파일은 README, manifest, launcher resource와
   `ProjectContractTest`뿐이다. decoder/navigation/rendering 의미 변경은 없다.
-- 동일 signer `install -r`와 S24 앱 서랍의 정식 이름·아이콘 확인은 아직 실행하지
-  않았으므로 PASS로 기록하지 않는다. 기존 candidate 앱은 삭제하지 않는다.
+- S24의 기존 candidate package를 삭제하지 않고 동일 signer `install -r`로 갱신했다.
+  설치된 `base.apk` SHA-256은 debug app의
+  `622f7cd85ca50a49b2aba4c9d1ab499e4a78f072ccc61d959041444572d81c93`과
+  정확히 일치하고 주 사용자 package versionCode는 `8`이다.
+- MainActivity cold launch는 `Status: ok`, `LaunchState: COLD`, `TotalTime: 651 ms`였고
+  실행 뒤 앱 process 생존을 확인했다.
+- 사용자는 S24 앱 서랍에서 정식 이름 `CT Cine Reviewer`와 파란 CCR launcher icon이
+  정상 표시됨을 확인했다. 별도 package의 `CCR Redesign Dev`는 임의 삭제하지 않아
+  독립 앱 데이터와 cache를 유지한다.
 
 ### 이월한 자동 검증과 선택적 재개 조건
 
