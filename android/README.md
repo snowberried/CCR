@@ -363,15 +363,23 @@ smoke했다. pinch/pan/Fit과 최종 chevron 방향(접힘 위/펼침 아래)은
 두 앱과 독립 앱 데이터는 유지했다.
 Full Stage 1, Random 250, candidate 승격과 release Gate는 이 기록에서 PASS로 판정하지 않는다.
 
-## 2026-08-03 Android 1.0.0 서명 후보 검증
+## 2026-08-03 Android 1.0.0 서명 후보 검증과 내부 사용자 승인
 
-`PARTIAL — IMMUTABLE_REPRESENTATIVE_FIXTURE_CACHE_MISSING`
+`PASS — ANDROID_1_0_0_INTERNAL_USER_ACCEPTED`
+
+`DEFERRED — REPRESENTATIVE_RESOLUTION_AUTOMATION`
 
 이번 결과는 위 Alpha 6 및 portrait UI redesign 기록을 수정하지 않는 별도 1.0.0 후보
 검증이다. 시작 branch는 `main`, 최종 후보 source는
 `aa75f44023473ea1e16c47e3132dbd5d83a549b9`이며 versionName/versionCode는
 `1.0.0` / `8`이다. candidate signing lineage는 기존
 `ccr-internal-pilot-v1`을 유지했고 일반 debug APK를 승격하지 않았다.
+
+사용자는 S24 실제 사용 결과와 기존 17-fixture exact Gate를 근거로 이 후보를 1.0.0
+내부 안정판으로 승인했다. representative-resolution fixture는 APK 제품 런타임이나
+사용자 영상 열기에 필요한 구성요소가 아니라 추가 자동 검증 자산이므로 현재 제품
+승인을 차단하지 않고 이월한다. 이 결정은 Full Stage 1 또는 Random 250을 PASS로
+바꾸는 것이 아니며 해당 자동 Gate의 미실행·중단 evidence는 그대로 보존한다.
 
 ### 후보 아티팩트
 
@@ -428,7 +436,7 @@ push, tag, release와 binary upload는 수행하지 않았다.
   `s24-02-correction-expanded.png`,
   `s24-03-correction-collapsed-adjusted.png`에 유지한다.
 
-### Pending gate와 재개 조건
+### 이월한 자동 검증과 선택적 재개 조건
 
 필요한 exact cache key는
 `ccr-representative-resolution-v1-ada531a0ccebaafebe49accb3065bebc7c3d2cea31e7b669a5e6975420d4dafb`다.
@@ -437,10 +445,11 @@ push, tag, release와 binary upload는 수행하지 않았다.
 버전과 일치하지만 `nvidia-smi`가 없고 고정 RTX 4080 SUPER/NVENC host가 아니므로
 임의 재생성과 lock 갱신은 금지한다.
 
-신뢰할 수 있는 immutable cache를 exact key로 복원한 뒤 full fixture verifier를
-통과시키고, 같은 clean source에서 APK 네 개를 다시 candidate 서명해야 한다. 그 새
-artifact set으로 Full Stage 1과 Random 250을 처음부터 실행하기 전까지 최종 자동
-판정은 `PARTIAL`이다. 이 blocker는 decoder/navigation 제품 회귀 증거가 아니며
-`ExactFrameSession`, frame-index/publication/cache/stale-result/Surface lease와
-`ViewerViewModel` navigation/hold cadence 의미는 이번 후보 identity 및 harness 수정에서
-변경하지 않았다.
+향후 대표 해상도 자동 회귀 증거가 필요해질 때만 신뢰할 수 있는 immutable cache를
+exact key로 복원하고 full fixture verifier를 통과시킨다. 그때 같은 clean source에서
+APK 네 개를 다시 candidate 서명하고 Full Stage 1과 Random 250을 처음부터 실행한다.
+그 전까지 두 자동 Gate는 `DEFERRED`이며 1.0.0 내부 사용자 승인을 차단하지 않는다.
+이 이월 항목은 decoder/navigation 제품 회귀 증거가 아니며 `ExactFrameSession`,
+frame-index/publication/cache/stale-result/Surface lease와 `ViewerViewModel`
+navigation/hold cadence 의미는 이번 후보 identity 및 harness 수정에서 변경하지 않았다.
+Play 배포, 의료기기 검증 완료 또는 모든 자동 Gate PASS를 뜻하지 않는다.
