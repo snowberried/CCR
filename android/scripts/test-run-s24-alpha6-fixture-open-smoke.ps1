@@ -395,7 +395,7 @@ try {
   $wrongRuntimeArguments.RuntimeSourceSha = $harnessSource
   Assert-Alpha6FixtureOpenThrowsLike {
     & $runner @wrongRuntimeArguments | Out-Null
-  } "CANDIDATE_RUNTIME_SOURCE_SHA_MISMATCH" "fixture-open-smoke-wrong-runtime-identity-rejected"
+  } "CANDIDATE_MANIFEST_EMBEDDED_RUNTIME_IDENTITY_MISMATCH:debugApp" "fixture-open-smoke-wrong-runtime-identity-rejected"
 
   $revision4 = ($manifest | ConvertTo-Json -Depth 15 -Compress) | ConvertFrom-Json
   $revision4.artifactSetRevision = 4
