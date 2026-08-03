@@ -328,7 +328,7 @@ try {
   $wrongRuntimeArguments.RuntimeSourceSha = $harnessSource
   Assert-Alpha6IdentitySmokeThrowsLike {
     & $runner @wrongRuntimeArguments | Out-Null
-  } "CANDIDATE_RUNTIME_SOURCE_SHA_MISMATCH" "wrong-runtime-sha-rejected"
+  } "CANDIDATE_MANIFEST_EMBEDDED_RUNTIME_IDENTITY_MISMATCH:debugApp" "wrong-runtime-sha-rejected"
 
   $wrongHarnessArguments = @{} + $arguments
   $wrongHarnessArguments.OutputDirectory = Join-Path $root "wrong-harness-output"

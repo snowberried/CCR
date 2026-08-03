@@ -87,6 +87,8 @@ const computeRuntimeInputsV1 = readFileSync(
   "utf8",
 );
 const v1RuntimeSourceSha = "f4d2ec16e555d938380b46f422ed3f9c9ea32b94";
+const v1RuntimeInputsTreeSha256 =
+  "13bfb8f7452a24f14de1ca541acc38dca0c9e77dc374b28c4b5118eb96a79414";
 const baselineDir = resolve(
   androidRoot,
   "validation/device-baselines/sm-s928n-android16-2026-07-15",
@@ -528,6 +530,14 @@ requireContract(
 requireContract(
   workflow.includes(`CCR_ANDROID_COMMIT_SHA: ${v1RuntimeSourceSha}`),
   "Android CI does not pin the final v1.0.0 runtime source SHA",
+);
+requireContract(
+  workflow.includes(`CCR_ANDROID_COMMIT_SHA: ${runtimeInputsAlpha6.runtimeSourceSha}`),
+  "Android CI does not isolate the Alpha 6 historical host harness identity",
+);
+requireContract(
+  workflow.includes(`CCR_ANDROID_RUNTIME_INPUTS_TREE_SHA256: ${v1RuntimeInputsTreeSha256}`),
+  "Android CI does not pin the final v1.0.0 runtime-input tree",
 );
 for (const scriptName of [
   "test-s24-alpha6-pinned-artifacts.ps1",

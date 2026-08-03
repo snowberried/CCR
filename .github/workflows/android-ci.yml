@@ -28,7 +28,6 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      CCR_ANDROID_COMMIT_SHA: f4d2ec16e555d938380b46f422ed3f9c9ea32b94
       CCR_ANDROID_SIGNING_ROLE: CI_EPHEMERAL_DEBUG
 
     steps:
@@ -57,6 +56,8 @@ jobs:
         run: .\gradlew.bat --version
 
       - name: Verify fixed fixtures and runtime baselines
+        env:
+          CCR_ANDROID_COMMIT_SHA: f4d2ec16e555d938380b46f422ed3f9c9ea32b94
         run: |
           node .\android\tools\verify-frame-accuracy.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -75,6 +76,8 @@ jobs:
 
       - name: Verify pinned S24 host harness
         shell: powershell
+        env:
+          CCR_ANDROID_COMMIT_SHA: c98264f2a10026a908e94c961bb13e4af2d59e60
         run: |
           $parseErrors = @()
           Get-ChildItem -LiteralPath .\android\scripts -Filter *.ps1 | ForEach-Object {
@@ -111,6 +114,9 @@ jobs:
 
       - name: Test and build non-candidate internal APK
         working-directory: android
+        env:
+          CCR_ANDROID_COMMIT_SHA: f4d2ec16e555d938380b46f422ed3f9c9ea32b94
+          CCR_ANDROID_RUNTIME_INPUTS_TREE_SHA256: 13bfb8f7452a24f14de1ca541acc38dca0c9e77dc374b28c4b5118eb96a79414
         run: .\gradlew.bat lintInternalDebug testInternalDebugUnitTest assembleInternalDebug assembleInternalDebugAndroidTest assembleInternalBenchmark :macrobenchmark:assembleInternalBenchmark --stacktrace
 
       - name: Record non-candidate signing role
