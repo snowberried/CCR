@@ -8,6 +8,7 @@ const toolDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(toolDir, "..", "..");
 const manifestPath = resolve(repoRoot, "android/validation/runtime-inputs-alpha6-v1.json");
 const runtimeSourceSha = "c98264f2a10026a908e94c961bb13e4af2d59e60";
+const historicalOnly = process.argv.includes("--historical-only");
 const includePaths = [
   "android/app/src/main",
   "android/app/src/debug",
@@ -122,9 +123,13 @@ assert(manifest.runtimeInputsTreeSha256 === hashTree(manifest.files), "tree SHA"
 
 const historical = snapshot(runtimeSourceSha);
 assert(JSON.stringify(historical.files) === JSON.stringify(manifest.files), "historical runtime snapshot");
-const head = snapshot("HEAD");
-assert(JSON.stringify(head.files) === JSON.stringify(manifest.files), "HEAD changes frozen runtime inputs");
-assertNoRuntimeWorkingTreeChanges();
+if (!historicalOnly) {
+  const head = snapshot("HEAD");
+  assert(JSON.stringify(head.files) === JSON.stringify(manifest.files), "HEAD changes frozen runtime inputs");
+  assertNoRuntimeWorkingTreeChanges();
+}
 
-console.log(`verified ${manifest.files.length} frozen Alpha 6 runtime inputs`);
+console.log(
+  `verified ${manifest.files.length} frozen Alpha 6 runtime inputs${historicalOnly ? " (historical snapshot)" : ""}`,
+);
 console.log(`runtimeInputsTreeSha256=${manifest.runtimeInputsTreeSha256}`);

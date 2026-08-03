@@ -571,6 +571,8 @@ checksum을 통과한 뒤 `vX.Y.Z` tag와 Latest Release를 만든다.
 Android CI 결과는 `CI_EPHEMERAL_DEBUG`이며 S24 candidate가 아니다. GitHub Actions가 만든
 debug APK를 장기 파일럿 artifact로 승격하면 안 된다. Android candidate는 외부 private
 signing preflight가 필요한 로컬 명시 작업이다.
+CI는 Alpha 6 runtime manifest를 과거 스냅샷으로 계속 검증하고, 현재 제품 runtime은
+v1.0.0 기준선 `f4d2ec16e555d938380b46f422ed3f9c9ea32b94`와 별도로 일치하는지 확인한다.
 
 ## 14. 알려진 제한과 의도적으로 남긴 항목
 

@@ -82,6 +82,11 @@ const verifyRuntimeInputsAlpha6 = readFileSync(
   resolve(androidRoot, "tools/verify-runtime-inputs-alpha6.mjs"),
   "utf8",
 );
+const computeRuntimeInputsV1 = readFileSync(
+  resolve(androidRoot, "tools/compute-runtime-inputs-v1.mjs"),
+  "utf8",
+);
+const v1RuntimeSourceSha = "f4d2ec16e555d938380b46f422ed3f9c9ea32b94";
 const baselineDir = resolve(
   androidRoot,
   "validation/device-baselines/sm-s928n-android16-2026-07-15",
@@ -341,12 +346,12 @@ requireContract(session.includes('openFileDescriptor(uri, "r")'), "source URI is
 requireContract(!/openFileDescriptor\([^\n]+,\s*"(?:w|rw|rwt|wa)"/.test(session), "write-capable source open mode");
 requireContract(provider.includes("ParcelFileDescriptor.MODE_READ_ONLY"), "fixture provider is not read-only");
 requireContract(provider.includes('if (mode != "r")'), "fixture provider does not reject write modes");
-requireContract(/versionCode\s*=\s*7\b/.test(build), "versionCode is not 7");
-requireContract(/versionName\s*=\s*"0\.2\.0-alpha\.6"/.test(build), "versionName is not 0.2.0-alpha.6");
+requireContract(/versionCode\s*=\s*8\b/.test(build), "versionCode is not 8");
+requireContract(/versionName\s*=\s*"1\.0\.0"/.test(build), "versionName is not 1.0.0");
 requireContract(build.includes('applicationIdSuffix = ".internal"'), "internal application ID suffix is missing");
 requireContract(
-  build.includes('androidx.compose.material3.adaptive:adaptive:1.2.0'),
-  "approved adaptive Compose dependency is missing",
+  !build.includes("androidx.compose.material3.adaptive:adaptive"),
+  "obsolete adaptive Compose dependency remains",
 );
 requireContract(build.includes('create("internalRelease")'), "internalRelease signing config is missing");
 for (const name of [
@@ -479,11 +484,11 @@ requireContract(gitignore.split(/\r?\n/).includes("signing.properties"), "recurs
 requireContract(workflow.includes('      - "codex/android-*"'), "Android CI codex/android-* push filter is missing");
 requireContract(workflow.includes("fetch-depth: 0"), "Android CI does not fetch frozen runtime history");
 requireContract(
-  workflow.includes("name: ccr-android-0.2.0-alpha.6-ci-ephemeral-debug"),
+  workflow.includes("name: ccr-android-1.0.0-ci-ephemeral-debug"),
   "Android CI artifact identity is stale",
 );
 requireContract(
-  workflow.includes("name: ccr-android-0.2.0-alpha.6-ci-ephemeral-test-tools"),
+  workflow.includes("name: ccr-android-1.0.0-ci-ephemeral-test-tools"),
   "Android CI test-tool artifact identity is stale",
 );
 requireContract(
@@ -502,8 +507,15 @@ requireContract(
   "Alpha 5 runtime-input verifier is missing from CI",
 );
 requireContract(
-  workflow.includes("verify-runtime-inputs-alpha6.mjs"),
-  "Alpha 6 runtime-input verifier is missing from CI",
+  workflow.includes("verify-runtime-inputs-alpha6.mjs --historical-only") &&
+    verifyRuntimeInputsAlpha6.includes('process.argv.includes("--historical-only")'),
+  "Alpha 6 historical runtime-input verifier is missing from CI",
+);
+requireContract(
+  workflow.includes(
+    "compute-runtime-inputs-v1.mjs $env:CCR_ANDROID_COMMIT_SHA --verify-head",
+  ) && computeRuntimeInputsV1.includes('arguments.includes("--verify-head")'),
+  "v1.0.0 runtime-input verifier is missing from CI",
 );
 requireContract(
   workflow.includes("test-s24-pinned-artifacts.ps1"),
@@ -514,8 +526,8 @@ requireContract(
   "Alpha 5 pinned S24 negative tests are missing from CI",
 );
 requireContract(
-  workflow.includes(`CCR_ANDROID_COMMIT_SHA: ${runtimeInputsAlpha6.runtimeSourceSha}`),
-  "Android CI does not separate the runtime source SHA from the harness SHA",
+  workflow.includes(`CCR_ANDROID_COMMIT_SHA: ${v1RuntimeSourceSha}`),
+  "Android CI does not pin the final v1.0.0 runtime source SHA",
 );
 for (const scriptName of [
   "test-s24-alpha6-pinned-artifacts.ps1",
@@ -1283,21 +1295,31 @@ for (const marker of [
   requireContract(alpha6RandomEvidence.includes(marker), `Alpha 6 random report missing ${marker}`);
 }
 for (const marker of [
-  runtimeInputsAlpha6.runtimeSourceSha,
-  runtimeInputsAlpha6.runtimeInputsTreeSha256,
+  "BuildConfig.COMMIT_SHA.lowercase() == runtimeSourceSha",
+  "runtimeInputsTreeSha256 == BuildConfig.RUNTIME_INPUTS_TREE_SHA256.lowercase()",
   "EXPECTED_ARTIFACT_SET_REVISION = 5",
 ]) {
-  requireContract(validationHarnessV2.includes(marker), `Alpha 6 validation harness identity missing ${marker}`);
+  requireContract(validationHarnessV2.includes(marker), `validation harness identity missing ${marker}`);
 }
-for (const source of [benchmarkActivity, macrobenchmark]) {
-  requireContract(source.includes(runtimeInputsAlpha6.runtimeSourceSha), "Alpha 6 benchmark runtime SHA mismatch");
-  requireContract(source.includes(runtimeInputsAlpha6.runtimeInputsTreeSha256), "Alpha 6 benchmark runtime tree mismatch");
-  requireContract(source.includes("ARTIFACT_SET_REVISION = 5"), "Alpha 6 benchmark artifact revision mismatch");
+for (const marker of [
+  "runtimeSourceSha == BuildConfig.COMMIT_SHA.lowercase()",
+  "runtimeInputsTreeSha256 == BuildConfig.RUNTIME_INPUTS_TREE_SHA256.lowercase()",
+  "ARTIFACT_SET_REVISION = 5",
+]) {
+  requireContract(benchmarkActivity.includes(marker), `benchmark app identity missing ${marker}`);
+}
+for (const marker of [
+  "runtimeSourceSha = required(ARG_RUNTIME_SOURCE_SHA)",
+  "runtimeInputsTreeSha256 = required(ARG_RUNTIME_INPUTS_TREE_SHA256)",
+  "identity.artifactSetRevision == ARTIFACT_SET_REVISION",
+  "ARTIFACT_SET_REVISION = 5",
+]) {
+  requireContract(macrobenchmark.includes(marker), `macrobenchmark identity missing ${marker}`);
 }
 for (const marker of [
   '$ExpectedApplicationId = "com.snowberried.ctcinereviewer.internal"',
-  '$ExpectedVersionName = "0.2.0-alpha.6"',
-  "$ExpectedVersionCode = 7",
+  '$ExpectedVersionName = "1.0.0"',
+  "$ExpectedVersionCode = 8",
   "android.permission.INTERNET",
   "android.permission.READ_MEDIA_VIDEO",
   "android.permission.MANAGE_EXTERNAL_STORAGE",
@@ -1451,4 +1473,4 @@ requireContract(
   "local sample reference frame index/PTS contract",
 );
 
-console.log("verified Android 0.2.0-alpha.6 identity, Alpha 4/5/6 runtime freezes, v4 host gates, evidence privacy, CI, local sample, and signing contracts");
+console.log("verified Android 1.0.0 identity, Alpha 4/5/6 historical freezes, v1 runtime freeze, v4 host gates, evidence privacy, CI, local sample, and signing contracts");

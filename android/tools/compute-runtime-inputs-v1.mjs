@@ -74,11 +74,25 @@ function assertCleanRuntimeInputs() {
   if (untracked.length > 0) throw new Error(`untracked runtime input: ${untracked.join(", ")}`);
 }
 
-const runtimeSourceSha = resolveCommit(process.argv[2] ?? "HEAD");
+const arguments = process.argv.slice(2);
+const unknownOptions = arguments.filter(
+  (argument) => argument.startsWith("--") && argument !== "--verify-head",
+);
+if (unknownOptions.length > 0) throw new Error(`unknown option: ${unknownOptions.join(", ")}`);
+const revisions = arguments.filter((argument) => !argument.startsWith("--"));
+if (revisions.length > 1) throw new Error("only one runtime source revision is allowed");
+const verifyHead = arguments.includes("--verify-head");
+const runtimeSourceSha = resolveCommit(revisions[0] ?? "HEAD");
 const headSha = resolveCommit("HEAD");
-if (runtimeSourceSha === headSha) assertCleanRuntimeInputs();
+if (runtimeSourceSha === headSha || verifyHead) assertCleanRuntimeInputs();
 const runtime = snapshot(runtimeSourceSha);
 if (runtime.files.length === 0) throw new Error("runtime input set is empty");
+if (verifyHead) {
+  const head = snapshot(headSha);
+  if (JSON.stringify(head.files) !== JSON.stringify(runtime.files)) {
+    throw new Error("HEAD changes frozen v1.0.0 runtime inputs");
+  }
+}
 
 console.log(JSON.stringify({
   schemaVersion: 1,
