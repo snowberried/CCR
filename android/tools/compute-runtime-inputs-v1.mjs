@@ -74,14 +74,14 @@ function assertCleanRuntimeInputs() {
   if (untracked.length > 0) throw new Error(`untracked runtime input: ${untracked.join(", ")}`);
 }
 
-const arguments = process.argv.slice(2);
-const unknownOptions = arguments.filter(
+const cliArgs = process.argv.slice(2);
+const unknownOptions = cliArgs.filter(
   (argument) => argument.startsWith("--") && argument !== "--verify-head",
 );
 if (unknownOptions.length > 0) throw new Error(`unknown option: ${unknownOptions.join(", ")}`);
-const revisions = arguments.filter((argument) => !argument.startsWith("--"));
+const revisions = cliArgs.filter((argument) => !argument.startsWith("--"));
 if (revisions.length > 1) throw new Error("only one runtime source revision is allowed");
-const verifyHead = arguments.includes("--verify-head");
+const verifyHead = cliArgs.includes("--verify-head");
 const runtimeSourceSha = resolveCommit(revisions[0] ?? "HEAD");
 const headSha = resolveCommit("HEAD");
 if (runtimeSourceSha === headSha || verifyHead) assertCleanRuntimeInputs();

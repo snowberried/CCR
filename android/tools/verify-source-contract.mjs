@@ -514,7 +514,7 @@ requireContract(
 requireContract(
   workflow.includes(
     "compute-runtime-inputs-v1.mjs $env:CCR_ANDROID_COMMIT_SHA --verify-head",
-  ) && computeRuntimeInputsV1.includes('arguments.includes("--verify-head")'),
+  ) && computeRuntimeInputsV1.includes('cliArgs.includes("--verify-head")'),
   "v1.0.0 runtime-input verifier is missing from CI",
 );
 requireContract(
