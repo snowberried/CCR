@@ -370,7 +370,7 @@ Full Stage 1, Random 250, candidate 승격과 release Gate는 이 기록에서 P
 `DEFERRED — REPRESENTATIVE_RESOLUTION_AUTOMATION`
 
 이번 결과는 위 Alpha 6 및 portrait UI redesign 기록을 수정하지 않는 별도 1.0.0 후보
-검증이다. 시작 branch는 `main`, 최종 후보 source는
+검증이다. 시작 branch는 `main`, 최초 사용자 승인 후보 source는
 `aa75f44023473ea1e16c47e3132dbd5d83a549b9`이며 versionName/versionCode는
 `1.0.0` / `8`이다. candidate signing lineage는 기존
 `ccr-internal-pilot-v1`을 유지했고 일반 debug APK를 승격하지 않았다.
@@ -381,7 +381,7 @@ Full Stage 1, Random 250, candidate 승격과 release Gate는 이 기록에서 P
 승인을 차단하지 않고 이월한다. 이 결정은 Full Stage 1 또는 Random 250을 PASS로
 바꾸는 것이 아니며 해당 자동 Gate의 미실행·중단 evidence는 그대로 보존한다.
 
-### 후보 아티팩트
+### 선행 후보 아티팩트 (브랜딩 보완으로 대체됨)
 
 - artifact set:
   `C:\Users\snowb\Documents\CCR-Artifacts\CCR-Android-1.0.0-aa75f44-20260803-023901`
@@ -435,6 +435,49 @@ push, tag, release와 binary upload는 수행하지 않았다.
   `validation/ui-redesign-screenshots/s24-01-correction-collapsed-default.png`,
   `s24-02-correction-expanded.png`,
   `s24-03-correction-collapsed-adjusted.png`에 유지한다.
+
+### 최종 브랜딩 후보 (S24 갱신 전)
+
+선행 `aa75f44` 후보는 S24 제품 동작 승인 evidence로 보존하지만 launcher icon이 없는
+artifact이므로 최종 설치·배포 대상에서는 대체한다. 정식 앱 이름과 adaptive/round/themed
+launcher icon을 추가한 최종 브랜딩 후보 source는
+`f4d2ec16e555d938380b46f422ed3f9c9ea32b94`다. 개발용 병렬 variant 이름
+`CCR Redesign Dev`와 원래 candidate package/signing lineage는 그대로 유지한다.
+
+- artifact set:
+  `C:\Users\snowb\Documents\CCR-Artifacts\CCR-Android-1.0.0-f4d2ec1-20260803-093150`
+- manifest:
+  `C:\Users\snowb\Documents\CCR-Artifacts\CCR-Android-1.0.0-f4d2ec1-20260803-093150\artifact-manifest-v5.json`
+- manifest SHA-256:
+  `4f17e0fe25012630d87c8ef520f6c034e0b96d0ad324607f880977ac8aa1df66`
+- runtime/harness source:
+  `f4d2ec16e555d938380b46f422ed3f9c9ea32b94`
+- runtime inputs tree SHA-256:
+  `13bfb8f7452a24f14de1ca541acc38dca0c9e77dc374b28c4b5118eb96a79414`
+- signer certificate SHA-256:
+  `3a995765c4cb2502815b5bff31afd11aba220874be83f525fcd5ee64ab007e2e`
+
+| 역할 | 파일 | SHA-256 |
+| --- | --- | --- |
+| debug app | `app-internal-debug.apk` | `622f7cd85ca50a49b2aba4c9d1ab499e4a78f072ccc61d959041444572d81c93` |
+| debug test | `app-internal-debug-androidTest.apk` | `b1a22e62d43f2a67d37d15abe89226923447e889d5bb538b7843926f335855a6` |
+| benchmark app | `app-internal-benchmark.apk` | `67028c124ccdcd20271aa64cfd0309c6fce90e8d65794258d7e5a57f649d675e` |
+| macrobenchmark test | `macrobenchmark-internal-benchmark.apk` | `59028e57186cc06ad0f06576b36dfcb9b02ae6721275eac61f1d83f5949c421e` |
+
+- candidate wrapper의 key·backup·public policy, package/version/source/tree와 네 APK의
+  동일 signer 검증은 PASS다.
+- AAPT2로 debug app의 package
+  `com.snowberried.ctcinereviewer.internal`, `1.0.0` / `8`, label
+  `CT Cine Reviewer`와 `res/mipmap-anydpi-v26/ic_launcher.xml`을 확인했다.
+- `lintInternalDebug testInternalDebugUnitTest assembleInternalDebug
+  assembleInternalDebugAndroidTest assembleInternalBenchmark
+  :macrobenchmark:assembleInternalBenchmark`는 `BUILD SUCCESSFUL in 1m 19s`, 91 tasks
+  (34 executed, 57 up-to-date)다. JVM은 175 tests, failure/error/skip 0이고 lint는
+  error 0, warning 5다.
+- `aa75f44..f4d2ec1` 변경 파일은 README, manifest, launcher resource와
+  `ProjectContractTest`뿐이다. decoder/navigation/rendering 의미 변경은 없다.
+- 동일 signer `install -r`와 S24 앱 서랍의 정식 이름·아이콘 확인은 아직 실행하지
+  않았으므로 PASS로 기록하지 않는다. 기존 candidate 앱은 삭제하지 않는다.
 
 ### 이월한 자동 검증과 선택적 재개 조건
 
